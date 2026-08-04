@@ -20,6 +20,8 @@ apps/web/.vite/
 runs/
 data/potentials/user/
 third_party/kart/
+tools/cache/
+tools/aegis_env.ps1
 *.log
 
 # OS / IDE

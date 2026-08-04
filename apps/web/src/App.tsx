@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as THREE from "three";
 
 type ElementFraction = { symbol: string; atomic_percent: number };
@@ -43,7 +43,14 @@ type JobInfo = {
   id: string;
   status: string;
   project_name: string;
+  material_id: string;
+  potential_id: string;
+  scenario_id: string;
+  created_at: string;
+  updated_at: string;
   message: string;
+  run_params: RunParams;
+  run_kart_anneal: boolean;
   defect_summary?: Record<string, number | string | object>;
   kart_summary?: Record<string, unknown>;
 };
@@ -73,9 +80,22 @@ type RunParams = {
   dump_every: number;
   dump_style: string;
   restart_every: number;
+  ws_lattice_A: number | null;
   cluster_cutoff_A: number;
   confirm_large: boolean;
 };
+
+type TabId = "material" | "potential" | "scenario" | "params" | "run" | "results" | "engines";
+
+const TABS: { id: TabId; step: string; label: string }[] = [
+  { id: "material", step: "01", label: "Material" },
+  { id: "potential", step: "02", label: "Potential" },
+  { id: "scenario", step: "03", label: "Scenario" },
+  { id: "params", step: "04", label: "LAMMPS" },
+  { id: "run", step: "05", label: "Run" },
+  { id: "results", step: "06", label: "Results" },
+  { id: "engines", step: "07", label: "Engines" },
+];
 
 const defaultParams: RunParams = {
   mode: "cascade",
@@ -103,17 +123,73 @@ const defaultParams: RunParams = {
   dump_every: 1000,
   dump_style: "custom",
   restart_every: 0,
+  ws_lattice_A: null,
   cluster_cutoff_A: 3.5,
   confirm_large: false,
 };
+
+function formatApiError(payload: unknown, fallback: string): string {
+  if (typeof payload === "string") return payload || fallback;
+  if (!payload || typeof payload !== "object") return fallback;
+  const detail = (payload as { detail?: unknown }).detail;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => {
+        if (!item || typeof item !== "object") return String(item);
+        const issue = item as { loc?: Array<string | number>; msg?: string };
+        const path = issue.loc?.filter((part) => part !== "body").join(" → ");
+        return `${path ? `${path}: ` : ""}${issue.msg || "Invalid value"}`;
+      })
+      .join(" · ");
+  }
+  return fallback;
+}
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, init);
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(text || res.statusText);
+    let payload: unknown = text;
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      /* Plain-text response. */
+    }
+    throw new Error(formatApiError(payload, `${res.status} ${res.statusText}`));
   }
   return res.json() as Promise<T>;
+}
+
+function normalizeComposition(rows: ElementFraction[]): ElementFraction[] {
+  const total = rows.reduce((sum, row) => sum + Math.max(0, Number(row.atomic_percent) || 0), 0);
+  if (total <= 0) throw new Error("Composition must contain a positive atomic fraction.");
+  return rows.map((row) => ({
+    symbol: row.symbol.trim(),
+    atomic_percent: (Math.max(0, Number(row.atomic_percent) || 0) / total) * 100,
+  }));
+}
+
+function Field({
+  label,
+  unit,
+  children,
+  htmlFor,
+}: {
+  label: string;
+  unit?: string;
+  children: ReactNode;
+  htmlFor?: string;
+}) {
+  return (
+    <label htmlFor={htmlFor}>
+      <span>
+        {label}
+        {unit ? <span className="unit"> · {unit}</span> : null}
+      </span>
+      {children}
+    </label>
+  );
 }
 
 function DefectViz({ points }: { points: Array<{ x: number; y: number; z: number; kind: string }> }) {
@@ -122,21 +198,21 @@ function DefectViz({ points }: { points: Array<{ x: number; y: number; z: number
     if (!ref.current) return;
     const el = ref.current;
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x0c0e12);
-    const camera = new THREE.PerspectiveCamera(45, el.clientWidth / el.clientHeight, 0.1, 1000);
+    scene.background = new THREE.Color(0x07090d);
+    const camera = new THREE.PerspectiveCamera(45, el.clientWidth / Math.max(el.clientHeight, 1), 0.1, 1000);
     camera.position.set(12, 10, 16);
     camera.lookAt(0, 0, 0);
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(el.clientWidth, el.clientHeight);
     el.appendChild(renderer.domElement);
-    const light = new THREE.DirectionalLight(0xffffff, 1.1);
+    const light = new THREE.DirectionalLight(0xffffff, 1.05);
     light.position.set(5, 10, 7);
     scene.add(light);
     scene.add(new THREE.AmbientLight(0x6688aa, 0.35));
 
     const group = new THREE.Group();
     for (const p of points.slice(0, 2000)) {
-      const color = p.kind === "vacancy" ? 0xc45c4a : p.kind === "interstitial" ? 0xc47a3a : 0x5b9a6f;
+      const color = p.kind === "vacancy" ? 0xd46555 : p.kind === "interstitial" ? 0xd4894a : 0x3d9a6a;
       const geo = new THREE.SphereGeometry(0.12, 10, 10);
       const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.45, metalness: 0.2 });
       const mesh = new THREE.Mesh(geo, mat);
@@ -146,10 +222,11 @@ function DefectViz({ points }: { points: Array<{ x: number; y: number; z: number
     scene.add(group);
     let frame = 0;
     let alive = true;
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const animate = () => {
       if (!alive) return;
       frame = requestAnimationFrame(animate);
-      group.rotation.y += 0.004;
+      if (!reduce) group.rotation.y += 0.004;
       renderer.render(scene, camera);
     };
     animate();
@@ -160,26 +237,27 @@ function DefectViz({ points }: { points: Array<{ x: number; y: number; z: number
       el.innerHTML = "";
     };
   }, [points]);
-  return <div className="viz" ref={ref} />;
+  return <div className="viz" ref={ref} role="img" aria-label="3D defect point cloud" />;
 }
 
 export default function App() {
-  const [tab, setTab] = useState("setup");
+  const [tab, setTab] = useState<TabId>("material");
   const [materials, setMaterials] = useState<Material[]>([]);
   const [potentials, setPotentials] = useState<Potential[]>([]);
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
   const [engines, setEngines] = useState<EngineStatus | null>(null);
   const [materialId, setMaterialId] = useState("w-pure");
-  const [composition, setComposition] = useState<ElementFraction[]>([
-    { symbol: "W", atomic_percent: 100 },
-  ]);
+  const [composition, setComposition] = useState<ElementFraction[]>([{ symbol: "W", atomic_percent: 100 }]);
   const [lattice, setLattice] = useState(3.165);
   const [potentialId, setPotentialId] = useState("");
   const [scenarioId, setScenarioId] = useState("dt-divertor");
   const [params, setParams] = useState<RunParams>(defaultParams);
   const [projectName, setProjectName] = useState("W-He study");
   const [runKart, setRunKart] = useState(false);
+  const [kartTemperatureK, setKartTemperatureK] = useState(600);
+  const [kartMaxEvents, setKartMaxEvents] = useState(1000);
   const [job, setJob] = useState<JobInfo | null>(null);
+  const [jobs, setJobs] = useState<JobInfo[]>([]);
   const [log, setLog] = useState("");
   const [defects, setDefects] = useState<{
     summary?: Record<string, unknown>;
@@ -192,21 +270,43 @@ export default function App() {
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const material = useMemo(
-    () => materials.find((m) => m.id === materialId),
-    [materials, materialId]
-  );
+  const material = useMemo(() => materials.find((m) => m.id === materialId), [materials, materialId]);
+  const selectedPot = useMemo(() => potentials.find((p) => p.id === potentialId), [potentials, potentialId]);
+  const scenario = useMemo(() => scenarios.find((s) => s.id === scenarioId), [scenarios, scenarioId]);
+
+  const compositionTotal = composition.reduce((s, e) => s + Number(e.atomic_percent || 0), 0);
+  const cellVolume = params.nx * params.ny * params.nz;
+  const largeCell = cellVolume > 20 * 20 * 20;
+
+  const blockers = useMemo(() => {
+    const list: string[] = [];
+    if (!potentialId) list.push("Select a potential");
+    if (selectedPot && !selectedPot.available) list.push("Potential file missing — upload or place under data/potentials/curated/");
+    if (compositionTotal <= 0) list.push("Composition requires a positive atomic fraction");
+    if (largeCell && !params.confirm_large) list.push("Large cell (>20³) — confirm in LAMMPS tab");
+    if (material?.metadata_only) list.push("Material is metadata-only (no runnable lattice recipe)");
+    return list;
+  }, [potentialId, selectedPot, compositionTotal, largeCell, params.confirm_large, material]);
+
+  const verdict = blockers.length
+    ? { tone: "blocked" as const, label: "Blocked", msg: blockers[0] }
+    : !engines?.lammps_found
+      ? { tone: "warn" as const, label: "Ready · dry-run", msg: "LAMMPS not on PATH — job will write demo dumps for pipeline testing." }
+      : { tone: "ready" as const, label: "Ready", msg: "Material, potential, and parameters look runnable." };
 
   useEffect(() => {
     Promise.all([
+      api<{ status: string }>("/api/health"),
       api<Material[]>("/api/materials"),
       api<Scenario[]>("/api/scenarios"),
       api<EngineStatus>("/api/engines/status"),
+      api<JobInfo[]>("/api/jobs"),
     ])
-      .then(([m, s, e]) => {
+      .then(([, m, s, e, history]) => {
         setMaterials(m);
         setScenarios(s);
         setEngines(e);
+        setJobs(history);
         const first = m.find((x) => x.id === "w-pure") || m[0];
         if (first) {
           setMaterialId(first.id);
@@ -214,7 +314,7 @@ export default function App() {
           setLattice(first.lattice_constant_A);
         }
       })
-      .catch((err) => setError(String(err)));
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
   }, []);
 
   useEffect(() => {
@@ -225,8 +325,8 @@ export default function App() {
         const avail = p.find((x) => x.available) || p[0];
         setPotentialId(avail?.id || "");
       })
-      .catch((err) => setError(String(err)));
-  }, [materialId, composition]);
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+  }, [materialId]);
 
   useEffect(() => {
     const sc = scenarios.find((s) => s.id === scenarioId);
@@ -235,15 +335,22 @@ export default function App() {
   }, [scenarioId, scenarios]);
 
   useEffect(() => {
+    if (tab !== "engines") return;
+    api<EngineStatus>("/api/engines/status")
+      .then(setEngines)
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+  }, [tab]);
+
+  useEffect(() => {
     if (!job) return;
     const wsProto = location.protocol === "https:" ? "wss" : "ws";
-    // Through Vite proxy
     const ws = new WebSocket(`${wsProto}://${location.host}/api/jobs/${job.id}/log`);
     ws.onmessage = (ev) => setLog((prev) => prev + ev.data);
     const timer = setInterval(async () => {
       try {
         const info = await api<JobInfo>(`/api/jobs/${job.id}`);
         setJob(info);
+        setJobs((history) => [info, ...history.filter((item) => item.id !== info.id)]);
         if (["completed", "failed", "cancelled"].includes(info.status)) {
           clearInterval(timer);
           if (info.status === "completed") {
@@ -253,7 +360,7 @@ export default function App() {
           }
         }
       } catch {
-        /* ignore transient */
+        /* ignore */
       }
     }, 1000);
     return () => {
@@ -261,6 +368,25 @@ export default function App() {
       clearInterval(timer);
     };
   }, [job?.id]);
+
+  async function loadJob(jobId: string) {
+    if (!jobId) return;
+    setBusy(true);
+    setError("");
+    setLog("");
+    setDefects(null);
+    try {
+      const info = await api<JobInfo>(`/api/jobs/${jobId}`);
+      setJob(info);
+      if (info.status === "completed") {
+        setDefects(await api<NonNullable<typeof defects>>(`/api/jobs/${jobId}/defects`));
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   function setParam<K extends keyof RunParams>(key: K, value: RunParams[K]) {
     setParams((p) => ({ ...p, [key]: value }));
@@ -271,17 +397,16 @@ export default function App() {
     setBusy(true);
     setError("");
     try {
+      const normalized = normalizeComposition(composition);
       const updated = await api<Material>(`/api/materials/${material.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          composition,
-          lattice_constant_A: lattice,
-        }),
+        body: JSON.stringify({ composition: normalized, lattice_constant_A: lattice }),
       });
+      setComposition(updated.composition);
       setMaterials((ms) => ms.map((m) => (m.id === updated.id ? updated : m)));
     } catch (err) {
-      setError(String(err));
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
@@ -308,26 +433,24 @@ export default function App() {
       setPotentials((p) => [...p, pot]);
       setPotentialId(pot.id);
     } catch (err) {
-      setError(String(err));
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
   }
 
   async function runJob() {
+    if (blockers.length) {
+      setError(blockers.join(" · "));
+      return;
+    }
     setBusy(true);
     setError("");
     setLog("");
     setDefects(null);
     try {
-      const total = composition.reduce((s, e) => s + Number(e.atomic_percent), 0);
-      const normalized =
-        total > 0
-          ? composition.map((e) => ({
-              ...e,
-              atomic_percent: (Number(e.atomic_percent) / total) * 100,
-            }))
-          : composition;
+      const normalized = normalizeComposition(composition);
+      setComposition(normalized);
       const body = {
         project_name: projectName,
         material_id: materialId,
@@ -338,8 +461,8 @@ export default function App() {
         scenario_id: scenarioId,
         run_params: params,
         run_kart_anneal: runKart,
-        kart_temperature_K: params.temperature_K,
-        kart_max_events: 200,
+        kart_temperature_K: kartTemperatureK,
+        kart_max_events: kartMaxEvents,
       };
       const info = await api<JobInfo>("/api/jobs", {
         method: "POST",
@@ -347,66 +470,154 @@ export default function App() {
         body: JSON.stringify(body),
       });
       setJob(info);
+      setJobs((history) => [info, ...history.filter((item) => item.id !== info.id)]);
       setTab("run");
     } catch (err) {
-      setError(String(err));
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
+  }
+
+  async function cancelJob() {
+    if (!job) return;
+    setBusy(true);
+    setError("");
+    try {
+      const cancelled = await api<JobInfo>(`/api/jobs/${job.id}/cancel`, { method: "POST" });
+      setJob(cancelled);
+      setJobs((history) => [cancelled, ...history.filter((item) => item.id !== cancelled.id)]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function exportDefects() {
+    if (!defects || !job) return;
+    const blob = new Blob([JSON.stringify(defects, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `aegis-${job.id}-defects.json`;
+    link.click();
+    URL.revokeObjectURL(url);
   }
 
   const clusterSizes = defects?.clusters?.map((c) => c.size) || [];
   const maxCluster = Math.max(1, ...clusterSizes);
 
   return (
-    <div className="app">
-      <header className="hero">
-        <div>
-          <span className="badge">PFM radiation damage bench</span>
-          <h1>Aegis</h1>
-          <p>
-            Configure plasma-facing materials, potentials, and LAMMPS cascade/implant
-            parameters. Optional k-ART (KART) annealing. D–D / D–T are scenario presets —
-            not a full tokamak.
+    <div className="shell">
+      <a className="skip-link" href="#main">
+        Skip to main content
+      </a>
+
+      <header className="topbar">
+        <div className="brand-block">
+          <p className="eyebrow">PFM radiation damage workbench</p>
+          <h1 className="brand">Aegis</h1>
+          <p className="brand-sub">
+            Cascade MD → defect analysis → optional k-ART. D–D / D–T are scenario presets, not plasma transport.
           </p>
         </div>
-        <div className="stack" style={{ alignItems: "flex-end" }}>
-          <span className="pill">
-            LAMMPS:{" "}
-            <strong className={engines?.lammps_found ? "status-ok" : "status-warn"}>
+        <div className="kpi-row" aria-label="Engine status">
+          <div className="kpi">
+            <span className="kpi-k">LAMMPS</span>
+            <span className={`kpi-v ${engines?.lammps_found ? "tone-ok" : "tone-warn"}`}>
               {engines?.lammps_found ? "found" : "dry-run"}
-            </strong>
-          </span>
-          <span className="pill">
-            KART:{" "}
-            <strong className={engines?.kart_found ? "status-ok" : "status-warn"}>
+            </span>
+          </div>
+          <div className="kpi">
+            <span className="kpi-k">KART</span>
+            <span className={`kpi-v ${engines?.kart_found ? "tone-ok" : "tone-warn"}`}>
               {engines?.kart_found ? "found" : "stub"}
-            </strong>
-          </span>
+            </span>
+          </div>
+          <div className="kpi">
+            <span className="kpi-k">Cell</span>
+            <span className="kpi-v">
+              {params.nx}×{params.ny}×{params.nz}
+            </span>
+          </div>
+          <div className="kpi">
+            <span className="kpi-k">Job</span>
+            <span className="kpi-v">{job?.status || "idle"}</span>
+          </div>
+          <button
+            type="button"
+            className="primary-run"
+            disabled={busy || blockers.length > 0}
+            onClick={runJob}
+            aria-label="Queue LAMMPS job"
+          >
+            {busy ? "Working…" : "Run job"}
+          </button>
         </div>
       </header>
 
-      <div className="tabs">
-        {["setup", "params", "run", "results", "engines"].map((t) => (
-          <button key={t} className={tab === t ? "active" : ""} onClick={() => setTab(t)}>
-            {t}
-          </button>
-        ))}
+      <div className="verdict" role="status" aria-live="polite">
+        <span className={`verdict-badge ${verdict.tone}`}>{verdict.label}</span>
+        <span className="verdict-msg">{verdict.msg}</span>
+        {blockers.length > 1 && (
+          <span className="chip">
+            <span className="chip-k">+</span>
+            <span className="chip-v">{blockers.length - 1} more</span>
+          </span>
+        )}
       </div>
 
-      {error && (
-        <div className="panel" style={{ marginBottom: "1rem", borderColor: "var(--err)" }}>
-          <span className="status-err">{error}</span>
-        </div>
-      )}
+      <aside className="rail" aria-label="Workflow">
+        <nav>
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              className={tab === t.id ? "active" : ""}
+              onClick={() => setTab(t.id)}
+              aria-current={tab === t.id ? "page" : undefined}
+            >
+              <span className="step">{t.step}</span>
+              {t.label}
+            </button>
+          ))}
+        </nav>
+      </aside>
 
-      {tab === "setup" && (
-        <div className="grid">
+      <main id="main" className="main">
+        {error && (
+          <div className="alert alert-fail" role="alert">
+            {error}
+          </div>
+        )}
+
+        {tab === "material" && (
           <section className="panel stack">
-            <h2>Material</h2>
-            <label>
-              Preset
+            <div className="panel-head">
+              <h2>Material</h2>
+              <div className="chip-row">
+                <span className="chip">
+                  <span className="chip-k">crystal</span>
+                  <span className="chip-v">{material?.crystal || "—"}</span>
+                </span>
+                <span className="chip">
+                  <span className="chip-k">Σ at%</span>
+                  <span className={`chip-v ${Math.abs(compositionTotal - 100) > 0.05 ? "tone-fail" : "tone-ok"}`}>
+                    {compositionTotal.toFixed(2)}
+                  </span>
+                </span>
+              </div>
+            </div>
+            <p className="hint">{material?.description}</p>
+            {Math.abs(compositionTotal - 100) > 0.05 && compositionTotal > 0 && (
+              <div className="alert alert-warn" role="status">
+                Composition is {compositionTotal.toFixed(2)} at%. Aegis will proportionally normalize it to 100% before save or run.
+              </div>
+            )}
+            <Field label="Preset" htmlFor="mat-preset">
               <select
+                id="mat-preset"
                 value={materialId}
                 onChange={(e) => {
                   const id = e.target.value;
@@ -425,13 +636,11 @@ export default function App() {
                   </option>
                 ))}
               </select>
-            </label>
-            <p className="muted">{material?.description}</p>
-            <h3>Composition (at%)</h3>
+            </Field>
+            <h3>Composition</h3>
             {composition.map((row, idx) => (
               <div className="comp-row" key={idx}>
-                <label>
-                  Element
+                <Field label="Element">
                   <input
                     value={row.symbol}
                     onChange={(e) => {
@@ -440,11 +649,11 @@ export default function App() {
                       setComposition(next);
                     }}
                   />
-                </label>
-                <label>
-                  at%
+                </Field>
+                <Field label="Atomic fraction" unit="at%">
                   <input
                     type="number"
+                    inputMode="decimal"
                     value={row.atomic_percent}
                     onChange={(e) => {
                       const next = [...composition];
@@ -452,10 +661,11 @@ export default function App() {
                       setComposition(next);
                     }}
                   />
-                </label>
+                </Field>
                 <button
                   className="secondary"
                   type="button"
+                  aria-label={`Remove ${row.symbol}`}
                   onClick={() => setComposition(composition.filter((_, i) => i !== idx))}
                 >
                   Remove
@@ -466,375 +676,625 @@ export default function App() {
               <button
                 className="secondary"
                 type="button"
-                onClick={() =>
-                  setComposition([...composition, { symbol: "Ta", atomic_percent: 0 }])
-                }
+                onClick={() => setComposition([...composition, { symbol: "Ta", atomic_percent: 0 }])}
               >
                 Add element
               </button>
-              <label>
-                Lattice a (Å)
+              <Field label="Lattice constant" unit="Å" htmlFor="lattice">
                 <input
+                  id="lattice"
                   type="number"
                   step="0.001"
+                  inputMode="decimal"
                   value={lattice}
                   onChange={(e) => setLattice(Number(e.target.value))}
                 />
-              </label>
+              </Field>
             </div>
-            <button type="button" disabled={busy} onClick={saveComposition}>
-              Save composition override
+            <button type="button" disabled={busy || compositionTotal <= 0} onClick={saveComposition}>
+              Normalize & save override
             </button>
           </section>
+        )}
 
-          <section className="panel stack">
-            <h2>Potential</h2>
-            <label>
-              Compatible potentials
-              <select value={potentialId} onChange={(e) => setPotentialId(e.target.value)}>
-                {potentials.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.available ? "●" : "○"} {p.name} [{p.source}]
-                  </option>
-                ))}
-              </select>
-            </label>
-            {potentials
-              .filter((p) => p.id === potentialId)
-              .map((p) => (
-                <div key={p.id} className="muted">
-                  <div>pair_style: {p.lammps_pair_style}</div>
-                  <div>elements: {p.elements.join(", ")}</div>
-                  <div>tags: {p.recommended_for.join(", ") || "—"}</div>
-                  {p.warnings?.map((w) => (
-                    <div key={w} className="status-warn">
+        {tab === "potential" && (
+          <div className="grid-2">
+            <section className="panel stack">
+              <h2>Potential library</h2>
+              <p className="hint">
+                Aegis never invents coefficients. Curated entries need a redistributable file on disk or an upload.
+              </p>
+              <Field label="Compatible potentials" htmlFor="pot-select">
+                <select id="pot-select" value={potentialId} onChange={(e) => setPotentialId(e.target.value)}>
+                  {potentials.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.available ? "●" : "○"} {p.name} [{p.source}]
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              {selectedPot && (
+                <div className="stack">
+                  <div className="chip-row">
+                    <span className="chip">
+                      <span className="chip-k">pair_style</span>
+                      <span className="chip-v">{selectedPot.lammps_pair_style}</span>
+                    </span>
+                    <span className="chip">
+                      <span className="chip-k">elements</span>
+                      <span className="chip-v">{selectedPot.elements.join(" ")}</span>
+                    </span>
+                    <span className="chip">
+                      <span className="chip-k">file</span>
+                      <span className={`chip-v ${selectedPot.available ? "tone-ok" : "tone-fail"}`}>
+                        {selectedPot.available ? "on disk" : "missing"}
+                      </span>
+                    </span>
+                  </div>
+                  {selectedPot.recommended_for?.length > 0 && (
+                    <p className="hint">Tags: {selectedPot.recommended_for.join(", ")}</p>
+                  )}
+                  {selectedPot.warnings?.map((w) => (
+                    <div key={w} className="alert alert-warn">
                       {w}
                     </div>
                   ))}
+                  {!selectedPot.available && (
+                    <div className="alert alert-fail" role="alert">
+                      Unavailable for real MD: this catalog record is a placeholder until its potential file is present on disk.
+                    </div>
+                  )}
                 </div>
-              ))}
-            <h3>Upload local potential</h3>
-            <label>
-              Display name
-              <input value={uploadName} onChange={(e) => setUploadName(e.target.value)} />
-            </label>
-            <label>
-              Elements (space-separated)
-              <input
-                value={uploadElements}
-                onChange={(e) => setUploadElements(e.target.value)}
-              />
-            </label>
-            <label>
-              File
-              <input
-                type="file"
-                onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
-              />
-            </label>
-            <button type="button" disabled={busy || !uploadFile} onClick={uploadPotential}>
-              Upload potential
-            </button>
-            <p className="muted">
-              Curated catalog entries need a redistributable file on disk (or upload) before a
-              job can run. Aegis never invents coefficients.
-            </p>
-          </section>
+              )}
+            </section>
+            <section className="panel stack">
+              <h2>Upload local potential</h2>
+              <Field label="Display name" htmlFor="up-name">
+                <input id="up-name" value={uploadName} onChange={(e) => setUploadName(e.target.value)} />
+              </Field>
+              <Field label="Elements" unit="space-separated" htmlFor="up-el">
+                <input id="up-el" value={uploadElements} onChange={(e) => setUploadElements(e.target.value)} />
+              </Field>
+              <Field label="Potential file" htmlFor="up-file">
+                <input
+                  id="up-file"
+                  type="file"
+                  onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
+                />
+              </Field>
+              <button type="button" disabled={busy || !uploadFile} onClick={uploadPotential}>
+                Upload potential
+              </button>
+            </section>
+          </div>
+        )}
 
-          <section className="panel stack" style={{ gridColumn: "1 / -1" }}>
-            <h2>Scenario</h2>
+        {tab === "scenario" && (
+          <section className="panel stack">
+            <h2>Irradiation scenario</h2>
+            <p className="hint">
+              Fuel choices set default PKA/He energies and temperature. They are not a tokamak transport model.
+            </p>
             <div className="row">
-              <label>
-                Fuel preset
-                <select value={scenarioId} onChange={(e) => setScenarioId(e.target.value)}>
+              <Field label="Fuel preset" htmlFor="scenario">
+                <select id="scenario" value={scenarioId} onChange={(e) => setScenarioId(e.target.value)}>
                   {scenarios.map((s) => (
                     <option key={s.id} value={s.id}>
                       {s.label} ({s.fuel})
                     </option>
                   ))}
                 </select>
-              </label>
-              <label>
-                Project name
-                <input value={projectName} onChange={(e) => setProjectName(e.target.value)} />
-              </label>
+              </Field>
+              <Field label="Project name" htmlFor="proj">
+                <input id="proj" value={projectName} onChange={(e) => setProjectName(e.target.value)} />
+              </Field>
             </div>
-            <p className="muted">{scenarios.find((s) => s.id === scenarioId)?.description}</p>
-          </section>
-        </div>
-      )}
-
-      {tab === "params" && (
-        <section className="panel stack">
-          <h2>LAMMPS parameters</h2>
-          <div className="row">
-            <label>
-              Mode
-              <select value={params.mode} onChange={(e) => setParam("mode", e.target.value)}>
-                <option value="cascade">cascade / PKA</option>
-                <option value="implant">ion implant</option>
-              </select>
-            </label>
-            <label>
-              T (K)
-              <input
-                type="number"
-                value={params.temperature_K}
-                onChange={(e) => setParam("temperature_K", Number(e.target.value))}
-              />
-            </label>
-            <label>
-              Seed
-              <input
-                type="number"
-                value={params.seed}
-                onChange={(e) => setParam("seed", Number(e.target.value))}
-              />
-            </label>
-          </div>
-          <h3>System</h3>
-          <div className="row">
-            {(["nx", "ny", "nz"] as const).map((k) => (
-              <label key={k}>
-                {k}
-                <input
-                  type="number"
-                  value={params[k]}
-                  onChange={(e) => setParam(k, Number(e.target.value))}
-                />
-              </label>
-            ))}
-            <label>
-              Boundary
-              <input
-                value={params.boundary}
-                onChange={(e) => setParam("boundary", e.target.value)}
-              />
-            </label>
-          </div>
-          <h3>Cascade / PKA</h3>
-          <div className="row">
-            <label>
-              PKA species
-              <input
-                value={params.pka_species}
-                onChange={(e) => setParam("pka_species", e.target.value)}
-              />
-            </label>
-            <label>
-              Energy (eV)
-              <input
-                type="number"
-                value={params.pka_energy_eV}
-                onChange={(e) => setParam("pka_energy_eV", Number(e.target.value))}
-              />
-            </label>
-            <label>
-              Direction
-              <input
-                value={params.pka_direction}
-                onChange={(e) => setParam("pka_direction", e.target.value)}
-                placeholder="random or 1 1 0"
-              />
-            </label>
-            <label>
-              # PKAs
-              <input
-                type="number"
-                value={params.n_pkas}
-                onChange={(e) => setParam("n_pkas", Number(e.target.value))}
-              />
-            </label>
-          </div>
-          <h3>Implant</h3>
-          <div className="row">
-            <label>
-              Ion
-              <input
-                value={params.ion_type}
-                onChange={(e) => setParam("ion_type", e.target.value)}
-              />
-            </label>
-            <label>
-              Ion E (eV)
-              <input
-                type="number"
-                value={params.ion_energy_eV}
-                onChange={(e) => setParam("ion_energy_eV", Number(e.target.value))}
-              />
-            </label>
-            <label>
-              Ion count
-              <input
-                type="number"
-                value={params.ion_count}
-                onChange={(e) => setParam("ion_count", Number(e.target.value))}
-              />
-            </label>
-          </div>
-          <h3>Dynamics / output</h3>
-          <div className="row">
-            <label>
-              Timestep (fs)
-              <input
-                type="number"
-                step="0.0001"
-                value={params.timestep_fs}
-                onChange={(e) => setParam("timestep_fs", Number(e.target.value))}
-              />
-            </label>
-            <label>
-              Max steps
-              <input
-                type="number"
-                value={params.max_steps}
-                onChange={(e) => setParam("max_steps", Number(e.target.value))}
-              />
-            </label>
-            <label>
-              Thermo every
-              <input
-                type="number"
-                value={params.thermo_every}
-                onChange={(e) => setParam("thermo_every", Number(e.target.value))}
-              />
-            </label>
-            <label>
-              Dump every
-              <input
-                type="number"
-                value={params.dump_every}
-                onChange={(e) => setParam("dump_every", Number(e.target.value))}
-              />
-            </label>
-          </div>
-          <label style={{ flexDirection: "row", alignItems: "center", gap: "0.5rem" }}>
-            <input
-              type="checkbox"
-              checked={params.confirm_large}
-              onChange={(e) => setParam("confirm_large", e.target.checked)}
-              style={{ width: "auto" }}
-            />
-            Confirm large cell (&gt;20³)
-          </label>
-          <label style={{ flexDirection: "row", alignItems: "center", gap: "0.5rem" }}>
-            <input
-              type="checkbox"
-              checked={runKart}
-              onChange={(e) => setRunKart(e.target.checked)}
-              style={{ width: "auto" }}
-            />
-            Queue KART anneal after MD
-          </label>
-          <button type="button" disabled={busy || !potentialId} onClick={runJob}>
-            Run job
-          </button>
-        </section>
-      )}
-
-      {tab === "run" && (
-        <section className="panel stack">
-          <h2>Run</h2>
-          {job ? (
-            <>
-              <div className="row">
-                <span className="pill">id: {job.id}</span>
-                <span className="pill">status: {job.status}</span>
-                <span className="pill">{job.message}</span>
-              </div>
-              <div className="log">{log || "Waiting for log…"}</div>
-              <button
-                className="secondary"
-                type="button"
-                onClick={() => api(`/api/jobs/${job.id}/cancel`, { method: "POST" })}
-              >
-                Cancel
-              </button>
-            </>
-          ) : (
-            <p className="muted">No active job. Configure setup/params and run.</p>
-          )}
-        </section>
-      )}
-
-      {tab === "results" && (
-        <div className="grid">
-          <section className="panel stack">
-            <h2>Defect summary</h2>
-            {defects?.summary ? (
-              <table className="table">
-                <tbody>
-                  {Object.entries(defects.summary).map(([k, v]) => (
-                    <tr key={k}>
-                      <th>{k}</th>
-                      <td>{typeof v === "object" ? JSON.stringify(v) : String(v)}</td>
-                    </tr>
+            <p className="hint">{scenario?.description}</p>
+            {scenario && (
+              <div className="chip-row">
+                {Object.entries(scenario.defaults)
+                  .slice(0, 8)
+                  .map(([k, v]) => (
+                    <span className="chip" key={k}>
+                      <span className="chip-k">{k}</span>
+                      <span className="chip-v">{String(v)}</span>
+                    </span>
                   ))}
-                </tbody>
-              </table>
-            ) : (
-              <p className="muted">No results yet.</p>
-            )}
-            <h3>Cluster sizes</h3>
-            <div className="chart">
-              {clusterSizes.length === 0 && <span className="muted">—</span>}
-              {clusterSizes.map((s, i) => (
-                <div
-                  key={i}
-                  className="bar"
-                  style={{ height: `${(s / maxCluster) * 100}%` }}
-                  title={`size ${s}`}
-                />
-              ))}
-            </div>
-            {job?.kart_summary && (
-              <>
-                <h3>KART</h3>
-                <pre className="muted" style={{ whiteSpace: "pre-wrap" }}>
-                  {JSON.stringify(job.kart_summary, null, 2)}
-                </pre>
-              </>
+              </div>
             )}
           </section>
-          <section className="panel stack">
-            <h2>3D defect points</h2>
-            <DefectViz points={defects?.points || []} />
-          </section>
-        </div>
-      )}
+        )}
 
-      {tab === "engines" && (
-        <section className="panel stack">
-          <h2>Engines</h2>
-          <h3>LAMMPS</h3>
-          <p>
-            Found:{" "}
-            <strong className={engines?.lammps_found ? "status-ok" : "status-warn"}>
-              {String(engines?.lammps_found)}
-            </strong>
-          </p>
-          <p className="muted">{engines?.lammps_path || "Set AEGIS_LAMMPS_BIN"}</p>
-          <p className="muted">{engines?.lammps_version}</p>
-          <h3>KART (k-ART)</h3>
-          <p>
-            Found:{" "}
-            <strong className={engines?.kart_found ? "status-ok" : "status-warn"}>
-              {String(engines?.kart_found)}
-            </strong>
-          </p>
-          <p className="muted">Expected commit: {engines?.kart_commit_expected}</p>
-          <p className="muted">{engines?.kart_root || "third_party/kart not present"}</p>
-          <p className="muted">{engines?.kart_message}</p>
-          <pre className="log" style={{ height: "auto" }}>
-{`# Clone KART (PAT or SSH — never commit tokens)
+        {tab === "params" && (
+          <section className="panel stack">
+            <div className="panel-head">
+              <h2>LAMMPS parameters</h2>
+              <span className="chip">
+                <span className="chip-k">atoms proxy</span>
+                <span className="chip-v">~{cellVolume * 2} BCC sites</span>
+              </span>
+            </div>
+            <fieldset className="fieldset">
+              <legend>Mode & thermostat</legend>
+              <div className="row">
+                <Field label="Mode" htmlFor="mode">
+                  <select id="mode" value={params.mode} onChange={(e) => setParam("mode", e.target.value)}>
+                    <option value="cascade">cascade / PKA</option>
+                    <option value="implant">ion implant</option>
+                  </select>
+                </Field>
+                <Field label="Temperature" unit="K" htmlFor="T">
+                  <input
+                    id="T"
+                    type="number"
+                    inputMode="decimal"
+                    value={params.temperature_K}
+                    onChange={(e) => setParam("temperature_K", Number(e.target.value))}
+                  />
+                </Field>
+                <Field label="Ensemble" htmlFor="ensemble">
+                  <select
+                    id="ensemble"
+                    value={params.ensemble}
+                    onChange={(e) => setParam("ensemble", e.target.value)}
+                  >
+                    <option value="nve">NVE</option>
+                    <option value="nvt">NVT</option>
+                  </select>
+                </Field>
+                <Field label="Thermostat damping" unit="ps" htmlFor="damp">
+                  <input
+                    id="damp"
+                    type="number"
+                    step="0.01"
+                    value={params.damp_ps}
+                    onChange={(e) => setParam("damp_ps", Number(e.target.value))}
+                  />
+                </Field>
+                <Field label="Seed" htmlFor="seed">
+                  <input
+                    id="seed"
+                    type="number"
+                    inputMode="numeric"
+                    value={params.seed}
+                    onChange={(e) => setParam("seed", Number(e.target.value))}
+                  />
+                </Field>
+              </div>
+            </fieldset>
+            <fieldset className="fieldset">
+              <legend>System</legend>
+              <div className="row">
+                {(["nx", "ny", "nz"] as const).map((k) => (
+                  <Field key={k} label={k} unit="unit cells" htmlFor={k}>
+                    <input
+                      id={k}
+                      type="number"
+                      inputMode="numeric"
+                      value={params[k]}
+                      onChange={(e) => setParam(k, Number(e.target.value))}
+                    />
+                  </Field>
+                ))}
+                <Field label="Boundary" htmlFor="boundary">
+                  <input
+                    id="boundary"
+                    value={params.boundary}
+                    onChange={(e) => setParam("boundary", e.target.value)}
+                  />
+                </Field>
+              </div>
+            </fieldset>
+            <fieldset className="fieldset">
+              <legend>Cascade / PKA</legend>
+              <div className="row">
+                <Field label="PKA species" htmlFor="pka-sp">
+                  <input
+                    id="pka-sp"
+                    value={params.pka_species}
+                    onChange={(e) => setParam("pka_species", e.target.value)}
+                  />
+                </Field>
+                <Field label="Energy" unit="eV" htmlFor="pka-e">
+                  <>
+                    <input
+                      id="pka-e"
+                      type="number"
+                      inputMode="decimal"
+                      value={params.pka_energy_eV}
+                      onChange={(e) => setParam("pka_energy_eV", Number(e.target.value))}
+                    />
+                    <span className="field-helper">{(params.pka_energy_eV / 1000).toLocaleString()} keV</span>
+                  </>
+                </Field>
+                <Field label="Direction" unit="random | h k l" htmlFor="pka-d">
+                  <input
+                    id="pka-d"
+                    value={params.pka_direction}
+                    onChange={(e) => setParam("pka_direction", e.target.value)}
+                  />
+                </Field>
+                <Field label="# PKAs" htmlFor="n-pka">
+                  <input
+                    id="n-pka"
+                    type="number"
+                    inputMode="numeric"
+                    value={params.n_pkas}
+                    onChange={(e) => setParam("n_pkas", Number(e.target.value))}
+                  />
+                </Field>
+                <Field label="PKA delay" unit="steps" htmlFor="pka-delay">
+                  <input
+                    id="pka-delay"
+                    type="number"
+                    value={params.pka_delay_steps}
+                    onChange={(e) => setParam("pka_delay_steps", Number(e.target.value))}
+                  />
+                </Field>
+              </div>
+            </fieldset>
+            <fieldset className="fieldset">
+              <legend>Implant</legend>
+              <div className="row">
+                <Field label="Ion" htmlFor="ion">
+                  <input id="ion" value={params.ion_type} onChange={(e) => setParam("ion_type", e.target.value)} />
+                </Field>
+                <Field label="Ion energy" unit="eV" htmlFor="ion-e">
+                  <input
+                    id="ion-e"
+                    type="number"
+                    inputMode="decimal"
+                    value={params.ion_energy_eV}
+                    onChange={(e) => setParam("ion_energy_eV", Number(e.target.value))}
+                  />
+                </Field>
+                <Field label="Ion count" htmlFor="ion-n">
+                  <input
+                    id="ion-n"
+                    type="number"
+                    inputMode="numeric"
+                    value={params.ion_count}
+                    onChange={(e) => setParam("ion_count", Number(e.target.value))}
+                  />
+                </Field>
+                <Field label="Incidence angle" unit="deg" htmlFor="ion-angle">
+                  <input
+                    id="ion-angle"
+                    type="number"
+                    step="0.1"
+                    value={params.ion_angle_deg}
+                    onChange={(e) => setParam("ion_angle_deg", Number(e.target.value))}
+                  />
+                </Field>
+              </div>
+            </fieldset>
+            <details className="advanced">
+              <summary>Advanced dynamics & output</summary>
+              <div className="row" style={{ marginTop: "0.75rem" }}>
+                <Field label="Timestep" unit="fs" htmlFor="dt">
+                  <input
+                    id="dt"
+                    type="number"
+                    step="0.0001"
+                    value={params.timestep_fs}
+                    onChange={(e) => setParam("timestep_fs", Number(e.target.value))}
+                  />
+                </Field>
+                <Field label="Max steps" htmlFor="steps">
+                  <input
+                    id="steps"
+                    type="number"
+                    value={params.max_steps}
+                    onChange={(e) => setParam("max_steps", Number(e.target.value))}
+                  />
+                </Field>
+                <Field label="Thermo every" htmlFor="thermo">
+                  <input
+                    id="thermo"
+                    type="number"
+                    value={params.thermo_every}
+                    onChange={(e) => setParam("thermo_every", Number(e.target.value))}
+                  />
+                </Field>
+                <Field label="Dump every" htmlFor="dump">
+                  <input
+                    id="dump"
+                    type="number"
+                    value={params.dump_every}
+                    onChange={(e) => setParam("dump_every", Number(e.target.value))}
+                  />
+                </Field>
+                <Field label="Neighbor skin" unit="Å" htmlFor="skin">
+                  <input
+                    id="skin"
+                    type="number"
+                    step="0.1"
+                    value={params.neighbor_skin}
+                    onChange={(e) => setParam("neighbor_skin", Number(e.target.value))}
+                  />
+                </Field>
+                <Field label="Dump style" htmlFor="dump-style">
+                  <input
+                    id="dump-style"
+                    value={params.dump_style}
+                    onChange={(e) => setParam("dump_style", e.target.value)}
+                  />
+                </Field>
+                <Field label="Restart every" unit="steps · 0 disables" htmlFor="restart">
+                  <input
+                    id="restart"
+                    type="number"
+                    value={params.restart_every}
+                    onChange={(e) => setParam("restart_every", Number(e.target.value))}
+                  />
+                </Field>
+                <Field label="Wigner–Seitz lattice" unit="Å · blank = material" htmlFor="ws-lattice">
+                  <input
+                    id="ws-lattice"
+                    type="number"
+                    step="0.001"
+                    value={params.ws_lattice_A ?? ""}
+                    onChange={(e) =>
+                      setParam("ws_lattice_A", e.target.value === "" ? null : Number(e.target.value))
+                    }
+                  />
+                </Field>
+                <Field label="Cluster cutoff" unit="Å" htmlFor="cut">
+                  <input
+                    id="cut"
+                    type="number"
+                    step="0.1"
+                    value={params.cluster_cutoff_A}
+                    onChange={(e) => setParam("cluster_cutoff_A", Number(e.target.value))}
+                  />
+                </Field>
+              </div>
+            </details>
+            <label className="check-row">
+              <input
+                type="checkbox"
+                checked={params.confirm_large}
+                onChange={(e) => setParam("confirm_large", e.target.checked)}
+              />
+              Confirm large cell (&gt;20³ unit cells)
+            </label>
+            <label className="check-row">
+              <input type="checkbox" checked={runKart} onChange={(e) => setRunKart(e.target.checked)} />
+              Queue KART anneal after MD
+              {!engines?.kart_found && <span className="unit"> · will stub if binary missing</span>}
+            </label>
+            {runKart && (
+              <fieldset className="fieldset">
+                <legend>k-ART anneal</legend>
+                <div className="row">
+                  <Field label="Anneal temperature" unit="K" htmlFor="kart-temperature">
+                    <input
+                      id="kart-temperature"
+                      type="number"
+                      value={kartTemperatureK}
+                      onChange={(e) => setKartTemperatureK(Number(e.target.value))}
+                    />
+                  </Field>
+                  <Field label="Maximum events" htmlFor="kart-events">
+                    <input
+                      id="kart-events"
+                      type="number"
+                      value={kartMaxEvents}
+                      onChange={(e) => setKartMaxEvents(Number(e.target.value))}
+                    />
+                  </Field>
+                </div>
+              </fieldset>
+            )}
+            <button type="button" disabled={busy || blockers.length > 0} onClick={runJob}>
+              Run job
+            </button>
+          </section>
+        )}
+
+        {tab === "run" && (
+          <section className="panel stack">
+            <div className="panel-head">
+              <h2>Run console</h2>
+              <Field label="Job history" htmlFor="job-history">
+                <select
+                  id="job-history"
+                  value={job?.id || ""}
+                  onChange={(e) => void loadJob(e.target.value)}
+                >
+                  <option value="">Select past job…</option>
+                  {jobs.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.project_name} · {item.status} · {item.id.slice(0, 8)}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            </div>
+            {job ? (
+              <>
+                <div className="chip-row">
+                  <span className="chip">
+                    <span className="chip-k">id</span>
+                    <span className="chip-v">{job.id}</span>
+                  </span>
+                  <span className="chip">
+                    <span className="chip-k">status</span>
+                    <span className="chip-v">{job.status}</span>
+                  </span>
+                  <span className="chip">
+                    <span className="chip-k">msg</span>
+                    <span className="chip-v">{job.message}</span>
+                  </span>
+                </div>
+                <div className="log" aria-live="polite">
+                  {log || "Waiting for log…"}
+                </div>
+                <button
+                  className="secondary"
+                  type="button"
+                  disabled={busy || ["completed", "failed", "cancelled"].includes(job.status)}
+                  onClick={() => void cancelJob()}
+                >
+                  Cancel job
+                </button>
+              </>
+            ) : (
+              <div className="empty">
+                <div className="empty-kicker">No active job</div>
+                <h3>Queue a cascade or implant</h3>
+                <p className="hint">Configure material → potential → scenario → LAMMPS, then Run.</p>
+                <ol>
+                  <li>Pick a potential with a file on disk</li>
+                  <li>Review cell size and PKA/He energy</li>
+                  <li>Use the top-bar Run job control</li>
+                </ol>
+              </div>
+            )}
+          </section>
+        )}
+
+        {tab === "results" && (
+          <div className="grid-2">
+            <section className="panel stack">
+              <div className="panel-head">
+                <h2>Defect summary</h2>
+                <button type="button" className="secondary" disabled={!defects} onClick={exportDefects}>
+                  Export defects JSON
+                </button>
+              </div>
+              <div className="alert alert-warn">
+                SIA/vacancy counts use a Wigner–Seitz proxy. Validate production conclusions against the trajectory,
+                reference lattice, and a domain-standard analysis workflow.
+              </div>
+              {defects?.summary ? (
+                <table className="table">
+                  <tbody>
+                    {Object.entries(defects.summary).map(([k, v]) => (
+                      <tr key={k}>
+                        <th>{k}</th>
+                        <td>{typeof v === "object" ? JSON.stringify(v) : String(v)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <div className="empty">
+                  <div className="empty-kicker">Awaiting analysis</div>
+                  <h3>No defect products yet</h3>
+                  <p className="hint">Complete a run to populate Wigner–Seitz proxy metrics.</p>
+                </div>
+              )}
+              <h3>Cluster sizes</h3>
+              <div className="chart" aria-hidden={clusterSizes.length === 0}>
+                {clusterSizes.length === 0 && <span className="hint">—</span>}
+                {clusterSizes.map((s, i) => (
+                  <div
+                    key={i}
+                    className="bar"
+                    style={{ height: `${(s / maxCluster) * 100}%` }}
+                    title={`size ${s}`}
+                  />
+                ))}
+              </div>
+              {job?.kart_summary && (
+                <>
+                  <h3>KART</h3>
+                  <pre className="log" style={{ height: "auto", maxHeight: 200 }}>
+                    {JSON.stringify(job.kart_summary, null, 2)}
+                  </pre>
+                </>
+              )}
+            </section>
+            <section className="panel stack">
+              <h2>3D defect points</h2>
+              <DefectViz points={defects?.points || []} />
+              <p className="hint">Vacancy = red · interstitial = copper · other = green. Proxy viz, not OVITO.</p>
+            </section>
+          </div>
+        )}
+
+        {tab === "engines" && (
+          <section className="panel stack">
+            <h2>Engines</h2>
+            <div className="grid-2">
+              <div className="stack">
+                <h3>LAMMPS</h3>
+                <div className="chip-row">
+                  <span className="chip">
+                    <span className="chip-k">status</span>
+                    <span className={`chip-v ${engines?.lammps_found ? "tone-ok" : "tone-warn"}`}>
+                      {engines?.lammps_found ? "found" : "missing"}
+                    </span>
+                  </span>
+                </div>
+                <p className="hint">{engines?.lammps_path || "Set AEGIS_LAMMPS_BIN or run setup_and_run.cmd"}</p>
+                <p className="hint">{engines?.lammps_version}</p>
+              </div>
+              <div className="stack">
+                <h3>KART (k-ART)</h3>
+                <div className="chip-row">
+                  <span className="chip">
+                    <span className="chip-k">status</span>
+                    <span className={`chip-v ${engines?.kart_found ? "tone-ok" : "tone-warn"}`}>
+                      {engines?.kart_found ? "found" : "not built"}
+                    </span>
+                  </span>
+                  <span className="chip">
+                    <span className="chip-k">pin</span>
+                    <span className="chip-v">{engines?.kart_commit_expected}</span>
+                  </span>
+                </div>
+                <p className="hint">{engines?.kart_root || "third_party/kart not present"}</p>
+                <p className="hint">{engines?.kart_message}</p>
+              </div>
+            </div>
+            <pre className="log" style={{ height: "auto" }}>
+{`# Prefer setup_and_run.cmd (installs LAMMPS + clones KART if missing)
+
+# Manual KART (PAT or SSH — never commit tokens)
 git clone git@gitlab.com:groupe_mousseau/kart.git third_party/kart
 cd third_party/kart
 git checkout 62d66adf
-# then build per https://kart-doc.readthedocs.io/
+# build per https://kart-doc.readthedocs.io/  (WSL recommended on Windows)
 # set AEGIS_KART_ROOT / AEGIS_KART_BIN`}
-          </pre>
-        </section>
-      )}
+            </pre>
+          </section>
+        )}
+      </main>
+      <aside className="recipe" aria-label="Run recipe summary">
+        <p className="eyebrow">Selected recipe</p>
+        <h2>{projectName || "Untitled study"}</h2>
+        <dl>
+          <div>
+            <dt>Material</dt>
+            <dd>{material?.name || "Not selected"}</dd>
+          </div>
+          <div>
+            <dt>Potential</dt>
+            <dd className={!selectedPot?.available ? "tone-fail" : ""}>{selectedPot?.name || "Not selected"}</dd>
+          </div>
+          <div>
+            <dt>Scenario</dt>
+            <dd>{scenario?.fuel || "Custom"} · {params.mode}</dd>
+          </div>
+          <div>
+            <dt>E<sub>PKA</sub></dt>
+            <dd>{params.pka_energy_eV.toLocaleString()} eV · {(params.pka_energy_eV / 1000).toLocaleString()} keV</dd>
+          </div>
+          <div>
+            <dt>Temperature</dt>
+            <dd>{params.temperature_K.toLocaleString()} K</dd>
+          </div>
+          <div>
+            <dt>Cell</dt>
+            <dd>{params.nx} × {params.ny} × {params.nz} unit cells</dd>
+          </div>
+        </dl>
+        <p className="recipe-note">
+          D–D and D–T are irradiation scenario presets for cascade or implantation studies, not plasma-scale predictions.
+        </p>
+      </aside>
     </div>
   );
 }

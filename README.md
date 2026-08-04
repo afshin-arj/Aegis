@@ -1,101 +1,116 @@
 # Aegis
 
-**Aegis** is a local simulation workbench for microscopic radiation damage in tokamak plasma-facing materials (PFMs).
+**Local workbench for microscopic radiation damage in tokamak plasma-facing materials (PFMs).**
 
-Configure material + composition → choose an interatomic potential → set D–D / D–T scenario and LAMMPS parameters → run cascade / implantation jobs → inspect defects → optionally anneal with **k-ART (KART)**.
+Configure material and composition → select a published interatomic potential → apply D–D / D–T scenario defaults → run configurable LAMMPS cascade or He implantation → inspect defects → optionally anneal with k-ART (KART).
 
-> Scale honesty: Aegis runs **cascade MD** and **KMC annealing**, not a full tokamak plasma transport code. Fuel choices (D–D / D–T) set irradiation **scenario presets**.
+![Aegis — PFM radiation damage workbench](docs/assets/aegis-banner.png)
 
-## Stack
+> **Scale honesty:** Aegis runs **cascade / implant MD** and optional **KMC annealing**. Fuel choices (D–D / D–T) are **irradiation scenario presets** (energies, temperature, labels)—not a full plasma transport or neutronics code.
 
-| Layer | Tech |
-|---|---|
-| UI | React + Vite (`apps/web`) |
-| API | FastAPI (`apps/api`) |
-| Engines | LAMMPS (out-of-process), KART / k-ART (optional) |
-| Data | JSON materials, scenarios, potential catalog |
+---
 
-## Quick start
+## Workflow
 
-### Prerequisites
+![Aegis simulation workflow](docs/assets/aegis-workflow.png)
 
-- Python 3.11+
-- Node.js 20+
-- [LAMMPS](https://www.lammps.org/) `lmp` on `PATH` (or set `AEGIS_LAMMPS_BIN`)
-- Optional: [KART](https://gitlab.com/groupe_mousseau/kart) (GitLab membership required)
+| Step | What you do | What Aegis produces |
+|------|-------------|---------------------|
+| 1 | Choose PFM preset; edit composition (at%) | `material.json` |
+| 2 | Pick curated or uploaded potential | Validated `pair_style` / file path |
+| 3 | Select D–D / D–T / He scenario; override any field | `run_params.json` |
+| 4 | Queue LAMMPS job | Live log, dumps, restart artifacts |
+| 5 | Review defects; optional k-ART | Vacancy / SIA proxy metrics, clusters, 3D points |
 
-### API
+---
 
-```bash
-cd apps/api
-python -m venv .venv
-# Windows:
-.venv\Scripts\activate
-pip install -r requirements.txt
-uvicorn aegis_api.main:app --reload --port 8000
+## Quick start (Windows)
+
+```bat
+setup_and_run.cmd
 ```
 
-### Web UI
+Installs only what is missing (Python, Node, Git, API/UI deps, **LAMMPS Windows**, KART **clone**), then opens the UI at [http://127.0.0.1:5173](http://127.0.0.1:5173).
+
+| Already installed? | Behavior |
+|--------------------|----------|
+| `python` / `node` / `git` on PATH | Skipped |
+| `lmp.exe` found | Skipped |
+| `third_party/kart` + binary | Skipped |
+
+**KART:** private GitLab project. Put `GITLAB_TOKEN` in a gitignored `.env` (or use SSH). Full obtain/build guide: [`engines/kart/SETUP.md`](engines/kart/SETUP.md). On Windows, build in **WSL** or **Docker**—native MSVC is unsupported.
+
+---
+
+## Manual start
 
 ```bash
+# API
+cd apps/api
+python -m venv ../../.venv
+../../.venv/Scripts/activate   # Windows
+pip install -r requirements.txt -e ../../packages/schema
+uvicorn aegis_api.main:app --reload --port 8000
+
+# UI (second terminal)
 cd apps/web
 npm install
 npm run dev
 ```
 
-Open http://localhost:5173 (proxies `/api` to the FastAPI server).
+---
 
-### Environment
+## Stack
 
-Copy `.env.example` to `.env` (gitignored). Never commit tokens or passwords.
+| Layer | Technology |
+|-------|------------|
+| UI | React + Vite — expert console for nuclear materials workflows |
+| API | FastAPI job orchestrator + WebSocket logs |
+| MD | LAMMPS (out-of-process) |
+| KMC | KART / k-ART (optional; stubs if binary missing) |
+| Data | JSON materials, scenarios, potential catalog |
 
-| Variable | Meaning |
-|---|---|
-| `AEGIS_LAMMPS_BIN` | Path to LAMMPS executable |
-| `AEGIS_KART_ROOT` | Path to local KART clone |
-| `AEGIS_KART_BIN` | Path to KART binary if not default |
-| `GITLAB_TOKEN` | Optional; only for cloning KART locally — never commit |
+---
 
-## KART (k-ART)
+## Environment
 
-1. Ensure GitLab access to `groupe_mousseau/kart`.
-2. Clone with SSH or a Personal Access Token (not a password in the URL):
+Copy `.env.example` → `.env` (never commit secrets).
 
-```bash
-git clone https://oauth2:${GITLAB_TOKEN}@gitlab.com/groupe_mousseau/kart.git third_party/kart
-cd third_party/kart
-git checkout 62d66adf   # docs-recommended first-time pin
-```
+| Variable | Purpose |
+|----------|---------|
+| `AEGIS_LAMMPS_BIN` | Path to `lmp` / `lmp.exe` |
+| `AEGIS_KART_ROOT` / `AEGIS_KART_BIN` | KART clone / binary |
+| `AEGIS_KART_COMMIT` | Pin (default `62d66adf`) |
+| `GITLAB_TOKEN` | Clone KART only (local `.env`) |
 
-3. Build per [kart-doc](https://kart-doc.readthedocs.io/en/latest/).
-4. Set `AEGIS_KART_ROOT` / `AEGIS_KART_BIN`. The Engines page reports status; anneal degrades gracefully if missing.
-
-Do **not** commit the KART tree into this public repo unless upstream terms allow redistribution.
+---
 
 ## Repository layout
 
 ```
-apps/web/          React workbench
-apps/api/          FastAPI orchestrator
-packages/schema/   Shared Pydantic / JSON schemas
-engines/lammps/    Input templates + launcher
-engines/kart/      Adapter + status discovery
-data/materials/    PFM presets
-data/scenarios/    D-D / D-T presets
-data/potentials/   Catalog + curated metadata (user uploads gitignored)
-runs/              Job artifacts (gitignored)
-.cursor/skills/    Agent skills for Aegis development
-.cursor/rules/     Sim-engineer agent rule
+setup_and_run.cmd     Windows bootstrap + UI
+scripts/bootstrap.ps1
+apps/web/             React workbench
+apps/api/             FastAPI
+packages/schema/      Shared schemas
+engines/lammps/       Input templates
+engines/kart/         Adapter + SETUP.md
+data/                 Materials, scenarios, potentials
+docs/assets/          README figures
+third_party/kart/     Local KART clone (gitignored)
+runs/                 Job artifacts (gitignored)
 ```
 
-## Cursor skills
+---
 
-Project skills under `.cursor/skills/`: `aegis-domain`, `aegis-lammps`, `aegis-materials`, `aegis-potentials`, `aegis-kart`, `aegis-ui`. Rule: `.cursor/rules/aegis-sim-engineer.mdc`.
+## Engineering notes
 
-## License
+- **Potentials:** Aegis never invents coefficients. Upload a published file or place one under `data/potentials/curated/`. The bundled placeholder is for pipeline wiring only—real MD requires a valid EAM/FS/MEAM file.
+- **Defect analysis:** Phase-1 Wigner–Seitz-style proxy for engineering inspection—not a replacement for OVITO production analysis.
+- **Large cells:** runs with &gt;20³ unit cells require explicit confirmation.
 
-MIT for Aegis application code. LAMMPS is GPL; KART has its own upstream terms. Potential files retain their original licenses/citations.
+---
 
-## Citation context
+## License & citation
 
-Designed for research workflows informed by fusion PFM literature (W / He damage, divertor loads). Always cite the interatomic potential and any KART/LAMMPS versions you use in publications.
+MIT for Aegis application code. LAMMPS is GPL; KART has upstream terms. Cite the interatomic potential and engine versions in publications.
