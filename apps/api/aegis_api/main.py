@@ -22,7 +22,10 @@ sys.path.insert(0, str(SCHEMA_PATH))
 sys.path.insert(0, str(ENGINES_PATH))
 
 from aegis_schema import (  # noqa: E402
+    DoeCampaignCreate,
+    DoeCampaignInfo,
     EngineStatus,
+    HpcExportRequest,
     JobCreate,
     JobInfo,
     JobStatus,
@@ -39,6 +42,7 @@ from mmonca.adapter import discover_mmonca  # noqa: E402
 from lammps.templates import write_cascade_input, write_implant_input  # noqa: E402
 
 from aegis_api.analysis import analyze_job_dir  # noqa: E402
+from aegis_api.campaigns import CampaignManager, write_campaign_submit_helper, write_hpc_pack  # noqa: E402
 from aegis_api.jobs import JobManager  # noqa: E402
 from aegis_api.store import DataStore  # noqa: E402
 
@@ -48,6 +52,7 @@ RUNS_ROOT.mkdir(parents=True, exist_ok=True)
 
 store = DataStore(DATA_ROOT)
 jobs = JobManager(RUNS_ROOT, store)
+campaigns = CampaignManager(RUNS_ROOT, jobs, store)
 
 app = FastAPI(title="Aegis API", version="0.1.0")
 app.add_middleware(
@@ -244,6 +249,98 @@ def create_job(body: JobCreate) -> JobInfo:
 @app.get("/api/jobs", response_model=list[JobInfo])
 def list_jobs() -> list[JobInfo]:
     return jobs.list_jobs()
+
+
+@app.post("/api/campaigns", response_model=DoeCampaignInfo)
+def create_campaign(body: DoeCampaignCreate) -> DoeCampaignInfo:
+    material = body.base.material_override or store.get_material(body.base.material_id)
+    if not material:
+        raise HTTPException(404, "material not found")
+    potential = store.get_potential(body.base.potential_id)
+    if not potential:
+        raise HTTPException(404, "potential not found")
+    resolved = store.resolve_potential_file(potential)
+    if not resolved:
+        raise HTTPException(400, "Selected potential has no file on disk.")
+    if not potential.available and not potential.is_placeholder:
+        raise HTTPException(400, "Selected potential is not runnable.")
+    try:
+        return campaigns.create(body, material, potential)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/api/campaigns", response_model=list[DoeCampaignInfo])
+def list_campaigns() -> list[DoeCampaignInfo]:
+    return campaigns.list_campaigns()
+
+
+@app.get("/api/campaigns/{campaign_id}", response_model=DoeCampaignInfo)
+def get_campaign(campaign_id: str) -> DoeCampaignInfo:
+    info = campaigns.get(campaign_id)
+    if not info:
+        raise HTTPException(404, "campaign not found")
+    refreshed = campaigns.refresh_summary(campaign_id)
+    return refreshed or info
+
+
+@app.post("/api/jobs/{job_id}/hpc-export")
+def export_job_hpc(job_id: str, body: HpcExportRequest) -> FileResponse:
+    info = jobs.get(job_id)
+    if not info:
+        raise HTTPException(404, "job not found")
+    job_dir = RUNS_ROOT / job_id
+    if not (job_dir / "in.aegis").exists():
+        try:
+            jobs.prepare_inputs(job_id)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(400, f"could not prepare inputs: {exc}") from exc
+    if not (job_dir / "in.aegis").exists():
+        raise HTTPException(400, "job has no in.aegis yet — wait until the run starts preparing inputs")
+    pack_dir = job_dir / "hpc_pack"
+    if pack_dir.exists():
+        shutil.rmtree(pack_dir)
+    zip_path = write_hpc_pack(job_dir, out_dir=pack_dir, req=body, job_id=job_id)
+    return FileResponse(zip_path, filename=zip_path.name, media_type="application/zip")
+
+
+@app.post("/api/campaigns/{campaign_id}/hpc-export")
+def export_campaign_hpc(campaign_id: str, body: HpcExportRequest) -> FileResponse:
+    info = campaigns.get(campaign_id)
+    if not info:
+        raise HTTPException(404, "campaign not found")
+    root = RUNS_ROOT / "campaigns" / campaign_id / "hpc_bundle"
+    if root.exists():
+        shutil.rmtree(root)
+    root.mkdir(parents=True, exist_ok=True)
+    exported = 0
+    case_dirs: list[str] = []
+    for case in info.cases:
+        if not case.job_id:
+            continue
+        job_dir = RUNS_ROOT / case.job_id
+        if not (job_dir / "in.aegis").exists():
+            try:
+                jobs.prepare_inputs(case.job_id)
+            except Exception as exc:  # noqa: BLE001
+                continue
+        if not (job_dir / "in.aegis").exists():
+            continue
+        case_out = root / case.job_id
+        write_hpc_pack(job_dir, out_dir=case_out, req=body, job_id=case.job_id, make_zip=False)
+        case_dirs.append(case.job_id)
+        exported += 1
+    if exported == 0:
+        raise HTTPException(400, "no cases with prepared inputs available for HPC export yet")
+    write_campaign_submit_helper(root, body, case_dirs)
+    import zipfile
+
+    zip_path = root.parent / f"{campaign_id}_hpc_bundle.zip"
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for f in root.rglob("*"):
+            if f.is_file():
+                zf.write(f, arcname=str(f.relative_to(root.parent)))
+    return FileResponse(zip_path, filename=zip_path.name, media_type="application/zip")
 
 
 @app.get("/api/jobs/{job_id}", response_model=JobInfo)

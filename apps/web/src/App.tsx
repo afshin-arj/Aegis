@@ -96,17 +96,18 @@ type RunParams = {
   confirm_large: boolean;
 };
 
-type TabId = "projects" | "material" | "potential" | "scenario" | "params" | "run" | "results" | "engines";
+type TabId = "projects" | "doe" | "material" | "potential" | "scenario" | "params" | "run" | "results" | "engines";
 
 const TABS: { id: TabId; step: string; label: string }[] = [
   { id: "projects", step: "01", label: "Projects" },
-  { id: "material", step: "02", label: "Material" },
-  { id: "potential", step: "03", label: "Potential" },
-  { id: "scenario", step: "04", label: "Scenario" },
-  { id: "params", step: "05", label: "LAMMPS" },
-  { id: "run", step: "06", label: "Run" },
-  { id: "results", step: "07", label: "Results" },
-  { id: "engines", step: "08", label: "Engines" },
+  { id: "doe", step: "02", label: "DOE" },
+  { id: "material", step: "03", label: "Material" },
+  { id: "potential", step: "04", label: "Potential" },
+  { id: "scenario", step: "05", label: "Scenario" },
+  { id: "params", step: "06", label: "LAMMPS" },
+  { id: "run", step: "07", label: "Run" },
+  { id: "results", step: "08", label: "Results" },
+  { id: "engines", step: "09", label: "Engines" },
 ];
 
 const PAIR_STYLE_WHITELIST = [
@@ -321,6 +322,20 @@ type KartSummary = {
   handoff?: string;
 };
 
+type DoeCampaign = {
+  id: string;
+  name: string;
+  status: string;
+  message: string;
+  axis_x: string;
+  values_x: number[];
+  axis_y?: string | null;
+  values_y?: number[] | null;
+  job_ids: string[];
+  summary_rows: Array<Record<string, unknown>>;
+  cases: Array<{ job_id?: string | null; label: string; status: string; overrides: Record<string, unknown> }>;
+};
+
 function KartTimeline({ events, label }: { events: KartEvent[]; label: string }) {
   if (!events.length) {
     return <p className="hint">No anneal events yet.</p>;
@@ -376,6 +391,16 @@ export default function App() {
   const [kartMaxKmcTimeS, setKartMaxKmcTimeS] = useState(1);
   const [kartDoeTemps, setKartDoeTemps] = useState("");
   const [kartSummary, setKartSummary] = useState<KartSummary | null>(null);
+  const [campaigns, setCampaigns] = useState<DoeCampaign[]>([]);
+  const [campaign, setCampaign] = useState<DoeCampaign | null>(null);
+  const [doeName, setDoeName] = useState("DEMO-energy-T");
+  const [doeAxisX, setDoeAxisX] = useState("pka_energy_eV");
+  const [doeValuesX, setDoeValuesX] = useState("5000,10000,20000");
+  const [doeAxisY, setDoeAxisY] = useState("temperature_K");
+  const [doeValuesY, setDoeValuesY] = useState("300,600,800");
+  const [doeLocal, setDoeLocal] = useState(true);
+  const [hpcScheduler, setHpcScheduler] = useState("slurm");
+  const [hpcCores, setHpcCores] = useState(8);
   const [job, setJob] = useState<JobInfo | null>(null);
   const [jobs, setJobs] = useState<JobInfo[]>([]);
   const [log, setLog] = useState("");
@@ -446,12 +471,14 @@ export default function App() {
       api<Scenario[]>("/api/scenarios"),
       api<EngineStatus>("/api/engines/status"),
       api<JobInfo[]>("/api/jobs"),
+      api<DoeCampaign[]>("/api/campaigns").catch(() => [] as DoeCampaign[]),
     ])
-      .then(([, m, s, e, history]) => {
+      .then(([, m, s, e, history, camps]) => {
         setMaterials(m);
         setScenarios(s);
         setEngines(e);
         setJobs(history);
+        setCampaigns(camps);
         const first = m.find((x) => x.id === "w-pure") || m[0];
         if (first) {
           setMaterialId(first.id);
@@ -712,6 +739,103 @@ export default function App() {
     }
   }
 
+  function parseNumList(raw: string): number[] {
+    return raw
+      .split(/[\s,]+/)
+      .map((x) => Number(x))
+      .filter((x) => Number.isFinite(x));
+  }
+
+  async function launchCampaign() {
+    if (blockers.length) {
+      setError(blockers.join(" · "));
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const normalized = normalizeComposition(composition);
+      setComposition(normalized);
+      const body = {
+        name: doeName || "doe-campaign",
+        run_locally: doeLocal,
+        axis_x: doeAxisX,
+        values_x: parseNumList(doeValuesX),
+        axis_y: doeAxisY || null,
+        values_y: doeAxisY ? parseNumList(doeValuesY) : null,
+        max_jobs: 12,
+        base: {
+          project_name: projectName,
+          material_id: materialId,
+          material_override: material
+            ? { ...material, composition: normalized, lattice_constant_A: lattice }
+            : undefined,
+          potential_id: potentialId,
+          scenario_id: scenarioId,
+          run_params: params,
+          run_kart_anneal: false,
+          run_mmonca_okmc: false,
+        },
+      };
+      const camp = await api<DoeCampaign>("/api/campaigns", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      setCampaign(camp);
+      setCampaigns((cs) => [camp, ...cs.filter((c) => c.id !== camp.id)]);
+      setTab("doe");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function refreshCampaign(id: string) {
+    const camp = await api<DoeCampaign>(`/api/campaigns/${id}`);
+    setCampaign(camp);
+    setCampaigns((cs) => [camp, ...cs.filter((c) => c.id !== camp.id)]);
+    const history = await api<JobInfo[]>("/api/jobs");
+    setJobs(history);
+  }
+
+  async function exportHpc(kind: "job" | "campaign") {
+    setBusy(true);
+    setError("");
+    try {
+      const payload = {
+        scheduler: hpcScheduler,
+        cores: hpcCores,
+        walltime: "04:00:00",
+        lammps_bin: "lmp",
+      };
+      const path =
+        kind === "job"
+          ? `/api/jobs/${job?.id}/hpc-export`
+          : `/api/campaigns/${campaign?.id}/hpc-export`;
+      if (kind === "job" && !job?.id) throw new Error("Select a job first");
+      if (kind === "campaign" && !campaign?.id) throw new Error("Select a campaign first");
+      const res = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = kind === "job" ? `aegis-${job!.id}-hpc.zip` : `aegis-${campaign!.id}-hpc.zip`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const clusterSizes = defects?.clusters?.map((c) => c.size) || [];
   const maxCluster = Math.max(1, ...clusterSizes);
 
@@ -850,6 +974,9 @@ export default function App() {
               >
                 New study
               </button>
+              <button type="button" className="secondary" onClick={() => setTab("doe")}>
+                Open DOE sweeps
+              </button>
               <button type="button" className="secondary" onClick={() => setTab("material")}>
                 Continue to Material
               </button>
@@ -881,6 +1008,155 @@ export default function App() {
                   </button>
                 ))}
               </div>
+            )}
+            {job && (
+              <div className="row">
+                <Field label="HPC scheduler" htmlFor="hpc-sched-proj">
+                  <select id="hpc-sched-proj" value={hpcScheduler} onChange={(e) => setHpcScheduler(e.target.value)}>
+                    <option value="slurm">Slurm</option>
+                    <option value="pbs">PBS</option>
+                    <option value="none">files only</option>
+                  </select>
+                </Field>
+                <Field label="Cores" htmlFor="hpc-cores-proj">
+                  <input
+                    id="hpc-cores-proj"
+                    type="number"
+                    value={hpcCores}
+                    onChange={(e) => setHpcCores(Number(e.target.value))}
+                  />
+                </Field>
+                <button type="button" className="secondary" disabled={busy} onClick={() => void exportHpc("job")}>
+                  Export HPC pack
+                </button>
+              </div>
+            )}
+          </section>
+        )}
+
+        {tab === "doe" && (
+          <section className="panel stack">
+            <div className="panel-head">
+              <h2>DEMO DOE sweeps</h2>
+              <span className="chip">
+                <span className="chip-k">campaigns</span>
+                <span className="chip-v">{campaigns.length}</span>
+              </span>
+            </div>
+            <p className="hint">
+              Phase-4 Cartesian sweeps (energy × T, etc.) using the current Material / Potential / LAMMPS recipe as the
+              base case. Local runs execute serially; uncheck local to prepare an HPC-oriented campaign record.
+            </p>
+            <Field label="Campaign name" htmlFor="doe-name">
+              <input id="doe-name" value={doeName} onChange={(e) => setDoeName(e.target.value)} />
+            </Field>
+            <div className="row">
+              <Field label="Axis X" htmlFor="doe-ax">
+                <select id="doe-ax" value={doeAxisX} onChange={(e) => setDoeAxisX(e.target.value)}>
+                  <option value="pka_energy_eV">PKA energy (eV)</option>
+                  <option value="ion_energy_eV">Ion energy (eV)</option>
+                  <option value="temperature_K">Temperature (K)</option>
+                  <option value="n_pkas">n PKAs</option>
+                  <option value="ion_count">Ion count</option>
+                  <option value="surface_fluence_ions">Surface fluence</option>
+                </select>
+              </Field>
+              <Field label="Values X" unit="comma-separated" htmlFor="doe-vx">
+                <input id="doe-vx" value={doeValuesX} onChange={(e) => setDoeValuesX(e.target.value)} />
+              </Field>
+            </div>
+            <div className="row">
+              <Field label="Axis Y" htmlFor="doe-ay">
+                <select id="doe-ay" value={doeAxisY} onChange={(e) => setDoeAxisY(e.target.value)}>
+                  <option value="temperature_K">Temperature (K)</option>
+                  <option value="pka_energy_eV">PKA energy (eV)</option>
+                  <option value="ion_energy_eV">Ion energy (eV)</option>
+                  <option value="">(none — 1D sweep)</option>
+                </select>
+              </Field>
+              <Field label="Values Y" unit="comma-separated" htmlFor="doe-vy">
+                <input id="doe-vy" value={doeValuesY} onChange={(e) => setDoeValuesY(e.target.value)} disabled={!doeAxisY} />
+              </Field>
+            </div>
+            <label className="check-row">
+              <input type="checkbox" checked={doeLocal} onChange={(e) => setDoeLocal(e.target.checked)} />
+              Run locally (serial queue)
+            </label>
+            <div className="row">
+              <button type="button" disabled={busy || blockers.length > 0} onClick={() => void launchCampaign()}>
+                Launch DOE campaign
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                disabled={busy || !campaign}
+                onClick={() => campaign && void refreshCampaign(campaign.id)}
+              >
+                Refresh summary
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                disabled={busy || !campaign}
+                onClick={() => void exportHpc("campaign")}
+              >
+                Export campaign HPC zip
+              </button>
+            </div>
+            {blockers.length > 0 && (
+              <div className="alert alert-warn">Fix readiness blockers before launching: {blockers[0]}</div>
+            )}
+            <h3>Campaign history</h3>
+            <div className="stack">
+              {campaigns.length === 0 && <p className="hint">No campaigns yet.</p>}
+              {campaigns.map((c) => (
+                <button
+                  key={c.id}
+                  type="button"
+                  className={`job-row ${campaign?.id === c.id ? "active" : ""}`}
+                  onClick={() => void refreshCampaign(c.id)}
+                >
+                  <span className="mono">{c.id}</span>
+                  <span>{c.name}</span>
+                  <span className={`chip-v status-${c.status}`}>{c.status}</span>
+                  <span className="hint">{c.message}</span>
+                </button>
+              ))}
+            </div>
+            {campaign && (
+              <>
+                <h3>Summary table</h3>
+                <p className="hint">
+                  {campaign.axis_x}
+                  {campaign.axis_y ? ` × ${campaign.axis_y}` : ""} · {campaign.status}
+                </p>
+                <div className="table-wrap">
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        {(campaign.summary_rows[0]
+                          ? Object.keys(campaign.summary_rows[0])
+                          : ["label", "status"]
+                        ).map((k) => (
+                          <th key={k}>{k}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(campaign.summary_rows.length
+                        ? campaign.summary_rows
+                        : campaign.cases.map((c) => ({ label: c.label, status: c.status, ...c.overrides }))
+                      ).map((row, i) => (
+                        <tr key={i}>
+                          {Object.values(row).map((v, j) => (
+                            <td key={j}>{v == null ? "—" : String(v)}</td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
             )}
           </section>
         )}
@@ -1551,14 +1827,34 @@ export default function App() {
                 <div className="log" aria-live="polite">
                   {log || "Waiting for log…"}
                 </div>
-                <button
-                  className="secondary"
-                  type="button"
-                  disabled={busy || ["completed", "failed", "cancelled"].includes(job.status)}
-                  onClick={() => void cancelJob()}
-                >
-                  Cancel job
-                </button>
+                <div className="row">
+                  <Field label="HPC scheduler" htmlFor="hpc-sched-run">
+                    <select id="hpc-sched-run" value={hpcScheduler} onChange={(e) => setHpcScheduler(e.target.value)}>
+                      <option value="slurm">Slurm</option>
+                      <option value="pbs">PBS</option>
+                      <option value="none">files only</option>
+                    </select>
+                  </Field>
+                  <Field label="Cores" htmlFor="hpc-cores-run">
+                    <input
+                      id="hpc-cores-run"
+                      type="number"
+                      value={hpcCores}
+                      onChange={(e) => setHpcCores(Number(e.target.value))}
+                    />
+                  </Field>
+                  <button type="button" className="secondary" disabled={busy} onClick={() => void exportHpc("job")}>
+                    Export HPC pack
+                  </button>
+                  <button
+                    className="secondary"
+                    type="button"
+                    disabled={busy || ["completed", "failed", "cancelled"].includes(job.status)}
+                    onClick={() => void cancelJob()}
+                  >
+                    Cancel job
+                  </button>
+                </div>
               </>
             ) : (
               <div className="empty">

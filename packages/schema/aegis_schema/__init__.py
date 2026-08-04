@@ -207,3 +207,58 @@ class EngineStatus(BaseModel):
     mmonca_found: bool = False
     mmonca_path: str | None = None
     mmonca_message: str = ""
+
+
+class DoeAxis(str, Enum):
+    TEMPERATURE_K = "temperature_K"
+    PKA_ENERGY_EV = "pka_energy_eV"
+    ION_ENERGY_EV = "ion_energy_eV"
+    N_PKAS = "n_pkas"
+    ION_COUNT = "ion_count"
+    SURFACE_FLUENCE = "surface_fluence_ions"
+
+
+class DoeCampaignCreate(BaseModel):
+    """DEMO-facing parameter sweep: Cartesian product of two axes (capped)."""
+
+    name: str = "doe-campaign"
+    base: JobCreate
+    axis_x: DoeAxis = DoeAxis.PKA_ENERGY_EV
+    values_x: list[float] = Field(default_factory=lambda: [5000.0, 10000.0, 20000.0])
+    axis_y: DoeAxis | None = DoeAxis.TEMPERATURE_K
+    values_y: list[float] | None = Field(default_factory=lambda: [300.0, 600.0, 800.0])
+    max_jobs: int = Field(12, ge=1, le=36)
+    run_locally: bool = True
+
+
+class DoeCase(BaseModel):
+    job_id: str | None = None
+    label: str
+    overrides: dict[str, Any] = Field(default_factory=dict)
+    status: str = "pending"
+
+
+class DoeCampaignInfo(BaseModel):
+    id: str
+    name: str
+    created_at: str
+    updated_at: str
+    status: str = "queued"
+    message: str = ""
+    axis_x: str
+    values_x: list[float]
+    axis_y: str | None = None
+    values_y: list[float] | None = None
+    cases: list[DoeCase] = Field(default_factory=list)
+    job_ids: list[str] = Field(default_factory=list)
+    summary_rows: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class HpcExportRequest(BaseModel):
+    scheduler: str = "slurm"
+    cores: int = Field(8, ge=1, le=256)
+    walltime: str = "04:00:00"
+    account: str = ""
+    queue: str = ""
+    lammps_module: str = ""
+    lammps_bin: str = "lmp"

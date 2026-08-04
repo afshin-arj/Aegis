@@ -17,11 +17,12 @@ Configure material and composition → select a published interatomic potential 
 | Step | What you do | What Aegis produces |
 |------|-------------|---------------------|
 | 1 | Choose or name a project; browse prior jobs | Job history under `runs/` |
-| 2 | Choose PFM preset; edit composition (at%/wt%) | `material.json` |
-| 3 | Pick curated or uploaded potential | Validated `pair_style` / file path |
-| 4 | Select D–D / D–T / He scenario; override any field | `run_params.json` |
-| 5 | Queue LAMMPS job | Live log, dumps, restart artifacts |
-| 6 | Review structure + defects; optional k-ART | Trajectory frames, vacancy / SIA proxy, clusters |
+| 2 | Optional: DEMO DOE sweep (energy × T, …) | Campaign summary + serial local jobs or HPC zip |
+| 3 | Choose PFM preset; edit composition (at%/wt%) | `material.json` |
+| 4 | Pick curated or uploaded potential | Validated `pair_style` / file path |
+| 5 | Select D–D / D–T / He / surface scenario; override fields | `run_params.json` |
+| 6 | Queue LAMMPS job (or export Slurm/PBS pack) | Live log, dumps, or remote `submit.slurm` |
+| 7 | Review structure + defects; optional k-ART / OKMC | Trajectory frames, vacancy / SIA proxy, clusters |
 
 ---
 

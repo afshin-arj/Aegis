@@ -102,6 +102,48 @@ class JobManager:
         t = threading.Thread(target=self._run, args=(job_id,), daemon=True)
         t.start()
 
+    def prepare_inputs(self, job_id: str) -> Path:
+        """Write in.aegis + copy potential without launching LAMMPS (HPC export packs)."""
+        job_dir = self.runs_root / job_id
+        material = Material(**json.loads((job_dir / "material.json").read_text(encoding="utf-8")))
+        potential = Potential(**json.loads((job_dir / "potential.json").read_text(encoding="utf-8")))
+        params = json.loads((job_dir / "run_params.json").read_text(encoding="utf-8"))
+        pot_file = self.store.resolve_potential_file(potential)
+        if not pot_file:
+            raise FileNotFoundError("potential file missing")
+        local_pot = job_dir / pot_file.name
+        shutil.copy2(pot_file, local_pot)
+        in_path = job_dir / "in.aegis"
+        mat_dict = material.model_dump()
+        pot_dict = potential.model_dump()
+        mode = str(getattr(params.get("mode"), "value", params.get("mode")) or "cascade")
+        if mode == "surface":
+            write_surface_input(
+                in_path,
+                material=mat_dict,
+                potential=pot_dict,
+                params=params,
+                potential_file=local_pot.name,
+            )
+        elif mode == "implant":
+            write_implant_input(
+                in_path,
+                material=mat_dict,
+                potential=pot_dict,
+                params=params,
+                potential_file=local_pot.name,
+            )
+        else:
+            write_cascade_input(
+                in_path,
+                material=mat_dict,
+                potential=pot_dict,
+                params=params,
+                potential_file=local_pot.name,
+            )
+        self._update(job_id, message="inputs prepared for HPC export")
+        return in_path
+
     def cancel(self, job_id: str) -> JobInfo | None:
         with self._lock:
             info = self._jobs.get(job_id)
