@@ -1,0 +1,38 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Node
+node_modules/
+apps/web/dist/
+apps/web/.vite/
+
+# Env & secrets
+.env
+.env.local
+*.pem
+
+# Runtime
+runs/
+data/potentials/user/
+third_party/kart/
+*.log
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Potentials (large binaries — keep metadata only in git)
+data/potentials/curated/*.eam
+data/potentials/curated/*.alloy
+data/potentials/curated/*.fs
+data/potentials/curated/*.meam
+data/potentials/curated/*.snap
+!data/potentials/curated/.gitkeep

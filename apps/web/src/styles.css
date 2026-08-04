@@ -1,0 +1,268 @@
+:root {
+  --bg: #12141a;
+  --bg-elev: #1a1e27;
+  --bg-panel: #222833;
+  --stroke: #2e3544;
+  --text: #e8e4dc;
+  --muted: #9aa3b5;
+  --copper: #c47a3a;
+  --copper-dim: #8a5528;
+  --ok: #5b9a6f;
+  --warn: #c9a227;
+  --err: #c45c4a;
+  --font-display: "Syne", sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-body);
+}
+
+body {
+  background-image:
+    radial-gradient(ellipse 80% 50% at 10% -10%, rgba(196, 122, 58, 0.12), transparent),
+    radial-gradient(ellipse 60% 40% at 100% 0%, rgba(46, 53, 68, 0.5), transparent);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+  background: var(--copper);
+  color: #1a1208;
+  border: none;
+  border-radius: 4px;
+  padding: 0.55rem 1rem;
+  font-weight: 600;
+}
+
+button.secondary {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--stroke);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+input,
+select,
+textarea {
+  background: var(--bg);
+  border: 1px solid var(--stroke);
+  border-radius: 4px;
+  padding: 0.45rem 0.6rem;
+  width: 100%;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.app {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 1.5rem 1.25rem 3rem;
+}
+
+.hero {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 1rem;
+  margin-bottom: 1.75rem;
+  border-bottom: 1px solid var(--stroke);
+  padding-bottom: 1.25rem;
+}
+
+.hero h1 {
+  font-family: var(--font-display);
+  font-size: 2.4rem;
+  margin: 0;
+  letter-spacing: -0.02em;
+}
+
+.hero p {
+  margin: 0.35rem 0 0;
+  color: var(--muted);
+  max-width: 36rem;
+}
+
+.badge {
+  display: inline-block;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid var(--stroke);
+  font-size: 0.75rem;
+  color: var(--copper);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 1.1fr 0.9fr;
+  gap: 1rem;
+}
+
+@media (max-width: 960px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.panel {
+  background: var(--bg-elev);
+  border: 1px solid var(--stroke);
+  border-radius: 8px;
+  padding: 1rem 1.1rem;
+}
+
+.panel h2 {
+  font-family: var(--font-display);
+  font-size: 1.15rem;
+  margin: 0 0 0.85rem;
+}
+
+.panel h3 {
+  font-size: 0.95rem;
+  margin: 1rem 0 0.5rem;
+  color: var(--copper);
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: flex-end;
+}
+
+.row > * {
+  flex: 1;
+  min-width: 120px;
+}
+
+.comp-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 0.5rem;
+  align-items: end;
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.log {
+  background: #0c0e12;
+  border: 1px solid var(--stroke);
+  border-radius: 6px;
+  padding: 0.75rem;
+  height: 220px;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.75rem;
+  white-space: pre-wrap;
+}
+
+.status-ok {
+  color: var(--ok);
+}
+.status-warn {
+  color: var(--warn);
+}
+.status-err {
+  color: var(--err);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.table th,
+.table td {
+  border-bottom: 1px solid var(--stroke);
+  padding: 0.4rem 0.35rem;
+  text-align: left;
+}
+
+.viz {
+  height: 280px;
+  border-radius: 6px;
+  border: 1px solid var(--stroke);
+  background: #0c0e12;
+  overflow: hidden;
+}
+
+.tabs {
+  display: flex;
+  gap: 0.35rem;
+  margin-bottom: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.tabs button {
+  background: var(--bg-panel);
+  color: var(--muted);
+  border: 1px solid var(--stroke);
+}
+
+.tabs button.active {
+  background: var(--copper-dim);
+  color: var(--text);
+  border-color: var(--copper);
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+  background: var(--bg-panel);
+  font-size: 0.75rem;
+}
+
+.chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 120px;
+  padding: 0.5rem 0;
+}
+
+.chart .bar {
+  flex: 1;
+  background: linear-gradient(180deg, var(--copper), var(--copper-dim));
+  border-radius: 2px 2px 0 0;
+  min-width: 4px;
+}

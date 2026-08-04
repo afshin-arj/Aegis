@@ -1,0 +1,6 @@
+# Placeholder potential file for Aegis dry-run / pipeline wiring.
+# Replace with a published, redistributable W EAM/FS file before production science.
+# This is NOT a valid EAM potential — LAMMPS will fail if executed with it.
+AEGIS_DEMO_POTENTIAL
+element W
+note Replace via upload or data/potentials/curated/

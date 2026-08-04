@@ -1,0 +1,62 @@
+[
+  {
+    "id": "dd-divertor",
+    "fuel": "D-D",
+    "label": "D–D divertor-like defaults",
+    "description": "Scenario preset for D–D-relevant cascade/He parameters (not full plasma transport). Lower neutron energy emphasis vs D–T.",
+    "defaults": {
+      "mode": "cascade",
+      "temperature_K": 600,
+      "pka_species": "W",
+      "pka_energy_eV": 5000,
+      "pka_direction": "random",
+      "n_pkas": 1,
+      "ion_type": "He",
+      "ion_energy_eV": 200,
+      "nx": 8,
+      "ny": 8,
+      "nz": 8,
+      "max_steps": 15000,
+      "timestep_fs": 0.001
+    }
+  },
+  {
+    "id": "dt-divertor",
+    "fuel": "D-T",
+    "label": "D–T divertor-like defaults",
+    "description": "Scenario preset reflecting D–T: 3.5 MeV α production context and harder PKA proxy. 14.1 MeV neutrons are not simulated directly — use self-ion/PKA energy as a damage proxy.",
+    "defaults": {
+      "mode": "cascade",
+      "temperature_K": 800,
+      "pka_species": "W",
+      "pka_energy_eV": 20000,
+      "pka_direction": "random",
+      "n_pkas": 1,
+      "ion_type": "He",
+      "ion_energy_eV": 500,
+      "nx": 10,
+      "ny": 10,
+      "nz": 10,
+      "max_steps": 25000,
+      "timestep_fs": 0.001
+    }
+  },
+  {
+    "id": "he-implant",
+    "fuel": "custom",
+    "label": "He implantation (bulk proxy)",
+    "description": "High-energy He-ion style defaults aligned with bulk bubble/loop studies (energies ≫ Ed).",
+    "defaults": {
+      "mode": "implant",
+      "temperature_K": 300,
+      "ion_type": "He",
+      "ion_energy_eV": 10000,
+      "ion_count": 1,
+      "nx": 8,
+      "ny": 8,
+      "nz": 12,
+      "max_steps": 20000,
+      "timestep_fs": 0.001
+    }
+  }
+]

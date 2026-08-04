@@ -1,0 +1,112 @@
+[
+  {
+    "id": "w-pure",
+    "name": "Tungsten (pure)",
+    "description": "ITER/DEMO baseline divertor armor candidate (BCC W).",
+    "crystal": "bcc",
+    "lattice_constant_A": 3.165,
+    "composition": [{"symbol": "W", "atomic_percent": 100}],
+    "tags": ["elemental", "divertor", "baseline"]
+  },
+  {
+    "id": "mo-pure",
+    "name": "Molybdenum (pure)",
+    "description": "High-Z PFM alternative studied in Alcator C-Mod.",
+    "crystal": "bcc",
+    "lattice_constant_A": 3.147,
+    "composition": [{"symbol": "Mo", "atomic_percent": 100}],
+    "tags": ["elemental", "divertor"]
+  },
+  {
+    "id": "ta-pure",
+    "name": "Tantalum (pure)",
+    "description": "Refractory BCC metal; higher He-fuzz threshold in some studies.",
+    "crystal": "bcc",
+    "lattice_constant_A": 3.304,
+    "composition": [{"symbol": "Ta", "atomic_percent": 100}],
+    "tags": ["elemental"]
+  },
+  {
+    "id": "re-pure",
+    "name": "Rhenium (pure)",
+    "description": "Often used as alloying addition to W; expensive as bulk PFM.",
+    "crystal": "hcp",
+    "lattice_constant_A": 2.761,
+    "composition": [{"symbol": "Re", "atomic_percent": 100}],
+    "tags": ["elemental", "dopant"],
+    "metadata_only": false
+  },
+  {
+    "id": "cr-pure",
+    "name": "Chromium (pure)",
+    "description": "Proposed structural / monoblock constituent with W.",
+    "crystal": "bcc",
+    "lattice_constant_A": 2.91,
+    "composition": [{"symbol": "Cr", "atomic_percent": 100}],
+    "tags": ["elemental"]
+  },
+  {
+    "id": "w-5ta",
+    "name": "W–5at% Ta",
+    "description": "Ta doping can delay dislocation-loop evolution and blistering vs pure W.",
+    "crystal": "bcc",
+    "lattice_constant_A": 3.17,
+    "composition": [
+      {"symbol": "W", "atomic_percent": 95},
+      {"symbol": "Ta", "atomic_percent": 5}
+    ],
+    "tags": ["alloy", "divertor"]
+  },
+  {
+    "id": "w-5re",
+    "name": "W–5at% Re",
+    "description": "Re improves ductility; transmutation also produces Re/Os in service.",
+    "crystal": "bcc",
+    "lattice_constant_A": 3.16,
+    "composition": [
+      {"symbol": "W", "atomic_percent": 95},
+      {"symbol": "Re", "atomic_percent": 5}
+    ],
+    "tags": ["alloy"]
+  },
+  {
+    "id": "taw-50",
+    "name": "Ta₀.₅W₀.₅",
+    "description": "Equiatomic Ta–W solid solution with high melting temperature.",
+    "crystal": "bcc",
+    "lattice_constant_A": 3.23,
+    "composition": [
+      {"symbol": "Ta", "atomic_percent": 50},
+      {"symbol": "W", "atomic_percent": 50}
+    ],
+    "tags": ["alloy"]
+  },
+  {
+    "id": "wtacrv-hea",
+    "name": "WTaCrV (HEA stub)",
+    "description": "Composition metadata for refractory HEA; cascade requires a matching potential.",
+    "crystal": "bcc",
+    "lattice_constant_A": 3.15,
+    "composition": [
+      {"symbol": "W", "atomic_percent": 38},
+      {"symbol": "Ta", "atomic_percent": 36},
+      {"symbol": "Cr", "atomic_percent": 15},
+      {"symbol": "V", "atomic_percent": 11}
+    ],
+    "tags": ["hea", "alloy"],
+    "metadata_only": true
+  },
+  {
+    "id": "wc-meta",
+    "name": "WC (metadata)",
+    "description": "Tungsten carbide — Phase-1 metadata only until a suitable potential is selected/uploaded.",
+    "crystal": "hex",
+    "lattice_constant_A": 2.906,
+    "composition": [
+      {"symbol": "W", "atomic_percent": 50},
+      {"symbol": "C", "atomic_percent": 50}
+    ],
+    "tags": ["ceramic"],
+    "metadata_only": true
+  }
+]

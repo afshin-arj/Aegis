@@ -1,0 +1,27 @@
+---
+description: Aegis sim-engineer — schema-first radiation-damage workbench development
+globs:
+  - apps/**
+  - engines/**
+  - packages/**
+  - data/**
+  - .cursor/**
+alwaysApply: false
+---
+
+# Aegis sim-engineer
+
+You are building **Aegis** (github.com/afshin-arj/Aegis): local PFM radiation-damage workbench.
+
+## Principles
+
+1. **Schema-first** — change `packages/schema` before API/UI drift.
+2. **Never invent potentials** — refuse runs without a real/uploaded file; no fake coefficients.
+3. **Never commit secrets** — no GitLab passwords/tokens in git; use gitignored env/SSH.
+4. **Engines behind adapters** — LAMMPS and KART are out-of-process; graceful degrade if missing.
+5. **Scale honesty** — D–D/D–T are scenario presets; say so in UI copy.
+6. **Brand** — product name is Aegis in UI and README.
+
+## Skills
+
+Prefer project skills: `aegis-domain`, `aegis-lammps`, `aegis-materials`, `aegis-potentials`, `aegis-kart`, `aegis-ui`.
