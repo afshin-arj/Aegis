@@ -40,6 +40,9 @@ type EngineStatus = {
   kart_binary?: string;
   kart_commit_expected: string;
   kart_message: string;
+  mmonca_found?: boolean;
+  mmonca_path?: string;
+  mmonca_message?: string;
 };
 type JobInfo = {
   id: string;
@@ -53,8 +56,11 @@ type JobInfo = {
   message: string;
   run_params: RunParams;
   run_kart_anneal: boolean;
+  run_mmonca_okmc?: boolean;
   defect_summary?: Record<string, number | string | object>;
   kart_summary?: Record<string, unknown>;
+  mmonca_summary?: Record<string, unknown>;
+  surface_summary?: Record<string, unknown>;
 };
 type RunParams = {
   mode: string;
@@ -76,6 +82,8 @@ type RunParams = {
   ion_energy_eV: number;
   ion_count: number;
   ion_angle_deg: number;
+  vacuum_layers: number;
+  surface_fluence_ions: number;
   timestep_fs: number;
   max_steps: number;
   neighbor_skin: number;
@@ -132,6 +140,8 @@ const defaultParams: RunParams = {
   ion_energy_eV: 500,
   ion_count: 1,
   ion_angle_deg: 0,
+  vacuum_layers: 4,
+  surface_fluence_ions: 1,
   timestep_fs: 0.001,
   max_steps: 20000,
   neighbor_skin: 2,
@@ -359,6 +369,7 @@ export default function App() {
   const [params, setParams] = useState<RunParams>(defaultParams);
   const [projectName, setProjectName] = useState("W-He study");
   const [runKart, setRunKart] = useState(false);
+  const [runMmonca, setRunMmonca] = useState(false);
   const [kartTemperatureK, setKartTemperatureK] = useState(600);
   const [kartMaxEvents, setKartMaxEvents] = useState(1000);
   const [kartMaxWallS, setKartMaxWallS] = useState(600);
@@ -626,6 +637,9 @@ export default function App() {
             .filter((x) => Number.isFinite(x) && x > 0);
           return doe.length ? doe : null;
         })(),
+        run_mmonca_okmc: runMmonca,
+        mmonca_temperature_K: kartTemperatureK,
+        mmonca_max_events: kartMaxEvents,
       };
       const info = await api<JobInfo>("/api/jobs", {
         method: "POST",
@@ -1153,7 +1167,8 @@ export default function App() {
                 <Field label="Mode" htmlFor="mode">
                   <select id="mode" value={params.mode} onChange={(e) => setParam("mode", e.target.value)}>
                     <option value="cascade">cascade / PKA</option>
-                    <option value="implant">ion implant</option>
+                    <option value="implant">ion implant (bulk)</option>
+                    <option value="surface">low-E surface (fuzz proxy)</option>
                   </select>
                 </Field>
                 <Field label="Temperature" unit="K" htmlFor="T">
@@ -1312,6 +1327,32 @@ export default function App() {
                 </Field>
               </div>
             </fieldset>
+            {params.mode === "surface" && (
+              <fieldset className="fieldset">
+                <legend>Surface MD (Phase-3)</legend>
+                <p className="hint">
+                  Free-surface slab with vacuum; low-E He/D fluence is a discrete ion-count proxy — not a plasma sheath.
+                </p>
+                <div className="row">
+                  <Field label="Vacuum layers" unit="lattice" htmlFor="vac-layers">
+                    <input
+                      id="vac-layers"
+                      type="number"
+                      value={params.vacuum_layers}
+                      onChange={(e) => setParam("vacuum_layers", Number(e.target.value))}
+                    />
+                  </Field>
+                  <Field label="Surface fluence" unit="ions" htmlFor="surf-flu">
+                    <input
+                      id="surf-flu"
+                      type="number"
+                      value={params.surface_fluence_ions}
+                      onChange={(e) => setParam("surface_fluence_ions", Number(e.target.value))}
+                    />
+                  </Field>
+                </div>
+              </fieldset>
+            )}
             <details className="advanced">
               <summary>Advanced dynamics & output</summary>
               <div className="row" style={{ marginTop: "0.75rem" }}>
@@ -1406,6 +1447,11 @@ export default function App() {
               <input type="checkbox" checked={runKart} onChange={(e) => setRunKart(e.target.checked)} />
               Queue KART anneal after MD
               {!engines?.kart_found && <span className="unit"> · will stub if binary missing</span>}
+            </label>
+            <label className="check-row">
+              <input type="checkbox" checked={runMmonca} onChange={(e) => setRunMmonca(e.target.checked)} />
+              Queue MMonCa OKMC (optional comparison)
+              {!engines?.mmonca_found && <span className="unit"> · stubs if binary missing</span>}
             </label>
             {runKart && (
               <fieldset className="fieldset">
@@ -1564,6 +1610,20 @@ export default function App() {
                   <p className="hint">Complete a run to populate Wigner–Seitz proxy metrics.</p>
                 </div>
               )}
+              {job?.surface_summary && (
+                <>
+                  <h3>Surface / fuzz proxies</h3>
+                  <p className="hint">Phase-3 engineering metrics — not calibrated sputtering yields.</p>
+                  <div className="chip-row">
+                    {Object.entries(job.surface_summary).map(([k, v]) => (
+                      <span className="chip" key={k}>
+                        <span className="chip-k">{k.replace(/_/g, " ")}</span>
+                        <span className="chip-v">{String(v)}</span>
+                      </span>
+                    ))}
+                  </div>
+                </>
+              )}
               <h3>Cluster sizes</h3>
               <div className="chart" aria-hidden={clusterSizes.length === 0}>
                 {clusterSizes.length === 0 && <span className="hint">—</span>}
@@ -1636,6 +1696,21 @@ export default function App() {
                   })()}
                 </>
               )}
+              {job?.mmonca_summary && (
+                <>
+                  <h3>MMonCa OKMC</h3>
+                  <div className="chip-row">
+                    <span className="chip">
+                      <span className="chip-k">status</span>
+                      <span className="chip-v">{String((job.mmonca_summary as { status?: string }).status || "—")}</span>
+                    </span>
+                  </div>
+                  <p className="hint">{String((job.mmonca_summary as { message?: string }).message || "")}</p>
+                  <pre className="log" style={{ height: "auto", maxHeight: 160 }}>
+                    {JSON.stringify((job.mmonca_summary as { final_objects?: unknown }).final_objects || job.mmonca_summary, null, 2)}
+                  </pre>
+                </>
+              )}
             </section>
             <section className="panel stack">
               <h2>Defect markers</h2>
@@ -1685,6 +1760,22 @@ export default function App() {
                   stubs events until Energy.dat appears.
                 </p>
               </div>
+              <div className="stack">
+                <h3>MMonCa (optional OKMC)</h3>
+                <div className="chip-row">
+                  <span className="chip">
+                    <span className="chip-k">status</span>
+                    <span className={`chip-v ${engines?.mmonca_found ? "tone-ok" : "tone-warn"}`}>
+                      {engines?.mmonca_found ? "found" : "optional"}
+                    </span>
+                  </span>
+                </div>
+                <p className="hint">{engines?.mmonca_path || "Not required — KART is the primary KMC path"}</p>
+                <p className="hint">{engines?.mmonca_message}</p>
+                <p className="hint">
+                  See <span className="mono">engines/mmonca/SETUP.md</span>. Comparison object-KMC only.
+                </p>
+              </div>
             </div>
             <pre className="log" style={{ height: "auto" }}>
 {`# Prefer setup_and_run.cmd (installs LAMMPS + clones KART if missing)
@@ -1695,7 +1786,9 @@ cd third_party/kart
 git checkout 62d66adf
 # build per https://kart-doc.readthedocs.io/  (WSL recommended on Windows)
 # set AEGIS_KART_ROOT / AEGIS_KART_BIN
-# After a cascade, open runs/<job>/kart_work/T*/ and adapt KMC.sh.aegis`}
+# After a cascade, open runs/<job>/kart_work/T*/ and adapt KMC.sh.aegis
+
+# Optional MMonCa: set AEGIS_MMONCA_BIN (see engines/mmonca/SETUP.md)`}
             </pre>
           </section>
         )}

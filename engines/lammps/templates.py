@@ -308,6 +308,142 @@ def write_implant_input(
     return path
 
 
+def write_surface_input(
+    path: Path,
+    *,
+    material: dict[str, Any],
+    potential: dict[str, Any],
+    params: dict[str, Any],
+    potential_file: str,
+) -> Path:
+    """Low-E He/D free-surface MD with vacuum slab (Phase-3 fuzz/erosion proxy)."""
+    elems = _elements_line(material["composition"])
+    ion = str(params.get("ion_type", "He"))
+    if ion not in elems:
+        elems = elems + [ion]
+    a = float(material.get("lattice_constant_A", 3.165))
+    nx, ny, nz = int(params["nx"]), int(params["ny"]), int(params["nz"])
+    vacuum = max(1, int(params.get("vacuum_layers", 4)))
+    nz_box = nz + vacuum
+    pair_style = potential["lammps_pair_style"]
+    pair_coeff = render_pair_coeff(
+        potential.get("pair_coeff_template", "pair_coeff * * {file} {elements}"),
+        potential_file,
+        elems,
+    )
+    E = float(params.get("ion_energy_eV", 50))
+    T = float(params["temperature_K"])
+    seed = int(params["seed"])
+    dt = float(params["timestep_fs"])
+    steps = int(params["max_steps"])
+    n_impacts = max(1, int(params.get("surface_fluence_ions") or params.get("ion_count", 1)))
+    angle_deg = float(params.get("ion_angle_deg", 0.0))
+    angle = math.radians(angle_deg)
+    mass_ion = _approx_mass(ion)
+    speed = math.sqrt(2.0 * E / mass_ion) * 98.226947
+    vx = speed * math.sin(angle)
+    vy = 0.0
+    vz = -speed * math.cos(angle)
+
+    masses = "\n".join(f"mass {i+1} {_approx_mass(sym)}" for i, sym in enumerate(elems))
+    ion_type = elems.index(ion) + 1
+    host_elems = [e for e in elems if e != ion]
+    create_host = (
+        f"region substrate block 0 {nx} 0 {ny} 0 {nz} units lattice\n"
+        f"create_atoms 1 region substrate"
+    )
+    if len(host_elems) > 1:
+        create_host = (
+            f"region substrate block 0 {nx} 0 {ny} 0 {nz} units lattice\n"
+            f"create_atoms 1 region substrate\n"
+            f"group all_atoms type 1\n"
+        )
+        remaining = 1.0
+        comp = {c["symbol"]: c["atomic_percent"] / 100.0 for c in material["composition"]}
+        for i, sym in enumerate(host_elems):
+            if i == 0:
+                continue
+            frac = comp.get(sym, 0.0)
+            if remaining <= 0:
+                break
+            f = min(frac / remaining, 1.0) if remaining else 0
+            create_host += f"set group all_atoms type/fraction {i+1} {f:.6f} {2000 + i}\n"
+            remaining -= frac
+
+    boundary = str(params.get("boundary") or "p p s")
+    if boundary.strip() == "p p p":
+        boundary = "p p s"
+    ensemble = _ensemble_fix(params)
+    dump, dump_mod = _dump_command(params, "dump.surface.*.lammpstrj")
+    restart = _restart_block(params)
+    crystal_note = _crystal_comment(material)
+
+    insert_lines = []
+    for i in range(n_impacts):
+        fx = 0.3 + 0.4 * ((i * 0.37) % 1.0)
+        fy = 0.3 + 0.4 * ((i * 0.61) % 1.0)
+        insert_lines.append(
+            f"create_atoms {ion_type} single {fx:.4f} {fy:.4f} {nz + 0.8} units lattice"
+        )
+    insert_block = "\n".join(insert_lines)
+
+    script = textwrap.dedent(
+        f"""\
+        # Aegis-generated low-E surface MD (Phase-3 fuzz / erosion proxy)
+        # Fluence proxy: {n_impacts} × {ion} at {E} eV onto free surface (vacuum={vacuum} layers)
+        {crystal_note}
+        units metal
+        dimension 3
+        boundary {boundary}
+        atom_style atomic
+
+        lattice bcc {a}
+        region box block 0 {nx} 0 {ny} 0 {nz_box} units lattice
+        create_box {len(elems)} box
+        {create_host}
+        {masses}
+
+        pair_style {pair_style}
+        {pair_coeff}
+
+        neighbor {params.get("neighbor_skin", 2.0)} bin
+        neigh_modify delay 0 every 1 check yes
+
+        velocity all create {T} {seed} mom yes rot yes
+        {ensemble}
+        run 500
+
+        # Reference free surface BEFORE irradiation
+        write_dump all custom dump.initial.lammpstrj id type x y z modify sort id
+
+        # Insert low-E beam above the free surface
+        {insert_block}
+        group beam type {ion_type}
+        velocity beam set {vx:.6f} {vy:.6f} {vz:.6f} units box
+
+        reset_timestep 0
+        thermo {int(params.get("thermo_every", 100))}
+        thermo_style custom step temp pe ke etotal
+        {dump}
+        {dump_mod}
+        {restart}
+        run 0
+        timestep {dt}
+        run {steps}
+
+        write_data final.data
+        print "Aegis surface MD finished"
+        """
+    )
+    script = script.replace(
+        f"lattice bcc {a}\n",
+        f"{_lattice_line(a, params)}\n",
+        1,
+    )
+    path.write_text(script, encoding="utf-8")
+    return path
+
+
 def _create_atoms_block(material: dict[str, Any], elems: list[str]) -> str:
     """Random substitutional alloy on BCC lattice for multi-element materials."""
     if len(elems) == 1:

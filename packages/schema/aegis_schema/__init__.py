@@ -20,6 +20,7 @@ class Ensemble(str, Enum):
 class RunMode(str, Enum):
     CASCADE = "cascade"
     IMPLANT = "implant"
+    SURFACE = "surface"  # low-E He/D free-surface MD (Phase-3)
 
 
 class ElementFraction(BaseModel):
@@ -121,6 +122,9 @@ class LammpsRunParams(BaseModel):
     ion_energy_eV: float = 500.0
     ion_count: int = 1
     ion_angle_deg: float = 0.0
+    # Phase-3 surface MD
+    vacuum_layers: int = Field(4, ge=1, le=32)
+    surface_fluence_ions: int = Field(1, ge=1, le=500)
     timestep_fs: float = 0.001
     max_steps: int = 20000
     neighbor_skin: float = 2.0
@@ -147,6 +151,9 @@ class JobCreate(BaseModel):
     kart_max_kmc_time_s: float = Field(1.0, ge=0.0)
     # DOE: multiple anneal temperatures after the same cascade (overrides single T when set)
     kart_anneal_temperatures: list[float] | None = None
+    run_mmonca_okmc: bool = False
+    mmonca_temperature_K: float = 600.0
+    mmonca_max_events: int = 1000
 
 
 class KartAnnealRequest(BaseModel):
@@ -181,8 +188,11 @@ class JobInfo(BaseModel):
     message: str = ""
     run_params: LammpsRunParams
     run_kart_anneal: bool = False
+    run_mmonca_okmc: bool = False
     defect_summary: dict[str, Any] | None = None
     kart_summary: dict[str, Any] | None = None
+    mmonca_summary: dict[str, Any] | None = None
+    surface_summary: dict[str, Any] | None = None
 
 
 class EngineStatus(BaseModel):
@@ -194,3 +204,6 @@ class EngineStatus(BaseModel):
     kart_binary: str | None = None
     kart_commit_expected: str = "62d66adf"
     kart_message: str = ""
+    mmonca_found: bool = False
+    mmonca_path: str | None = None
+    mmonca_message: str = ""

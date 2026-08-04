@@ -118,13 +118,13 @@ runs/                 Job artifacts (gitignored)
 2. **Projects** — name the study (e.g. `W-cascade-demo`).
 3. **Material** — preset *Tungsten (pure)*; optionally toggle wt%/at%.
 4. **Potential** — for a real run, upload a published W EAM/FS file (NIST potentials). The demo placeholder only exercises dry-run dumps.
-5. **Scenario** — start with *D–T divertor-like defaults*, or switch to *D–D* / *He implantation*.
-6. **LAMMPS** — keep a small cell (≤10³) for the first job; confirm if you go larger.
+5. **Scenario** — start with *D–T divertor-like defaults*, or switch to *D–D* / *He implantation* / *Low-E He|D surface*.
+6. **LAMMPS** — keep a small cell (≤10³) for the first job; confirm if you go larger. Surface mode uses vacuum + free `z` boundary.
 7. **Run** — start the job; watch the live log. Without LAMMPS or with the placeholder, Aegis writes demo dumps so Results still work.
-8. **Results** — scrub before/after structure frames; inspect vacancy/SIA proxy and clusters.
-9. Optional: enable **Queue KART anneal** on the LAMMPS tab. If the binary is missing, Engines explains clone/build (`engines/kart/SETUP.md`); anneal stubs honestly.
+8. **Results** — scrub before/after structure frames; inspect vacancy/SIA proxy, surface/fuzz chips (surface mode), and clusters.
+9. Optional: enable **Queue KART anneal** and/or **MMonCa OKMC**. Engines explains missing binaries; anneals stub honestly.
 
-For **W–He**, upload a W–He potential, pick the *He implantation* scenario (or set mode=implant), and ensure the potential’s element list includes `W` and `He`.
+For **W–He**, upload a W–He potential, pick the *He implantation* or *Low-E He surface* scenario, and ensure the potential’s element list includes `W` and `He`.
 
 ---
 

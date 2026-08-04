@@ -35,6 +35,7 @@ from aegis_schema import (  # noqa: E402
     Scenario,
 )
 from kart.adapter import discover_kart, run_anneal_stub_or_real  # noqa: E402
+from mmonca.adapter import discover_mmonca  # noqa: E402
 from lammps.templates import write_cascade_input, write_implant_input  # noqa: E402
 
 from aegis_api.analysis import analyze_job_dir  # noqa: E402
@@ -87,6 +88,7 @@ def engines_status() -> EngineStatus:
         except Exception:  # noqa: BLE001
             version = "found (version probe failed)"
     kart = discover_kart()
+    mmonca = discover_mmonca()
     return EngineStatus(
         lammps_found=path is not None,
         lammps_path=path,
@@ -96,6 +98,9 @@ def engines_status() -> EngineStatus:
         kart_binary=kart.get("kart_binary"),
         kart_commit_expected=kart.get("kart_commit_expected", "62d66adf"),
         kart_message=kart.get("kart_message", ""),
+        mmonca_found=bool(mmonca.get("mmonca_found")),
+        mmonca_path=mmonca.get("mmonca_path"),
+        mmonca_message=mmonca.get("mmonca_message", ""),
     )
 
 

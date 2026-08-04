@@ -58,5 +58,49 @@
       "max_steps": 20000,
       "timestep_fs": 0.001
     }
+  },
+  {
+    "id": "he-surface-lowE",
+    "fuel": "custom",
+    "label": "Low-E He surface (fuzz proxy)",
+    "description": "Phase-3 free-surface MD defaults for low-energy He (∼10–100 eV). Not a full plasma sheath model — fluence is a discrete ion-count proxy.",
+    "defaults": {
+      "mode": "surface",
+      "temperature_K": 1000,
+      "ion_type": "He",
+      "ion_energy_eV": 60,
+      "ion_count": 4,
+      "surface_fluence_ions": 4,
+      "vacuum_layers": 6,
+      "ion_angle_deg": 0,
+      "boundary": "p p s",
+      "nx": 8,
+      "ny": 8,
+      "nz": 10,
+      "max_steps": 15000,
+      "timestep_fs": 0.001
+    }
+  },
+  {
+    "id": "d-surface-lowE",
+    "fuel": "D-D",
+    "label": "Low-E D surface (retention proxy)",
+    "description": "Phase-3 free-surface MD defaults for low-energy deuterium. Retention/erosion metrics are engineering proxies only.",
+    "defaults": {
+      "mode": "surface",
+      "temperature_K": 500,
+      "ion_type": "D",
+      "ion_energy_eV": 40,
+      "ion_count": 4,
+      "surface_fluence_ions": 4,
+      "vacuum_layers": 6,
+      "ion_angle_deg": 0,
+      "boundary": "p p s",
+      "nx": 8,
+      "ny": 8,
+      "nz": 10,
+      "max_steps": 12000,
+      "timestep_fs": 0.001
+    }
   }
 ]

@@ -8,8 +8,8 @@ from typing import Any, Iterator
 def list_trajectory_frames(job_dir: Path) -> list[dict[str, Any]]:
     """Index dump frames for OVITO-like scrubbing.
 
-    Prefers ``dump.initial.lammpstrj`` as the pre-cascade reference, then
-    chronological ``dump.cascade.*`` / ``dump.implant.*`` (and any other dump.*).
+    Prefers ``dump.initial.lammpstrj`` as the pre-damage reference, then
+    chronological ``dump.cascade.*`` / ``dump.implant.*`` / ``dump.surface.*``.
     """
     frames: list[dict[str, Any]] = []
     index = 0
@@ -33,6 +33,7 @@ def list_trajectory_frames(job_dir: Path) -> list[dict[str, Any]]:
         {
             *job_dir.glob("dump.cascade*.lammpstrj"),
             *job_dir.glob("dump.implant*.lammpstrj"),
+            *job_dir.glob("dump.surface*.lammpstrj"),
             *job_dir.glob("dump.*.lammpstrj"),
         },
         key=_dump_sort_key,

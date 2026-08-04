@@ -14,8 +14,9 @@ from uuid import uuid4
 from aegis_schema import JobCreate, JobInfo, JobStatus, Material, Potential
 
 from aegis_api.analysis import analyze_job_dir
-from lammps.templates import write_cascade_input, write_implant_input
+from lammps.templates import write_cascade_input, write_implant_input, write_surface_input
 from kart.adapter import run_anneal_stub_or_real
+from mmonca.adapter import run_okmc_stub_or_real
 
 
 def _now() -> str:
@@ -67,6 +68,7 @@ class JobManager:
             message="queued",
             run_params=body.run_params,
             run_kart_anneal=body.run_kart_anneal,
+            run_mmonca_okmc=body.run_mmonca_okmc,
         )
         job_dir = self.runs_root / job_id
         job_dir.mkdir(parents=True, exist_ok=True)
@@ -83,6 +85,9 @@ class JobManager:
                     "kart_max_wall_s": body.kart_max_wall_s,
                     "kart_max_kmc_time_s": body.kart_max_kmc_time_s,
                     "kart_anneal_temperatures": body.kart_anneal_temperatures,
+                    "run_mmonca_okmc": body.run_mmonca_okmc,
+                    "mmonca_temperature_K": body.mmonca_temperature_K,
+                    "mmonca_max_events": body.mmonca_max_events,
                 },
                 indent=2,
             ),
@@ -143,7 +148,16 @@ class JobManager:
             in_path = job_dir / "in.aegis"
             mat_dict = material.model_dump()
             pot_dict = potential.model_dump()
-            if params.get("mode") == "implant" or str(getattr(params.get("mode"), "value", params.get("mode"))) == "implant":
+            mode = str(getattr(params.get("mode"), "value", params.get("mode")) or "cascade")
+            if mode == "surface":
+                write_surface_input(
+                    in_path,
+                    material=mat_dict,
+                    potential=pot_dict,
+                    params=params,
+                    potential_file=local_pot.name,
+                )
+            elif mode == "implant":
                 write_implant_input(
                     in_path,
                     material=mat_dict,
@@ -182,7 +196,10 @@ class JobManager:
                             "[Aegis] LAMMPS not found on PATH. Writing dry-run artifacts only.\n"
                             "Set AEGIS_LAMMPS_BIN or install LAMMPS to execute MD.\n"
                         )
-                    self._write_demo_dump(job_dir, material)
+                    if mode == "surface":
+                        self._write_demo_surface_dump(job_dir, material, params)
+                    else:
+                        self._write_demo_dump(job_dir, material)
                     log.write("[Aegis] demo dump written for analysis.\n")
                 else:
                     log.write(f"[Aegis] launching {lmp_path} -in {in_path.name}\n")
@@ -212,10 +229,13 @@ class JobManager:
                 lattice_A=material.lattice_constant_A,
                 cluster_cutoff_A=float(params.get("cluster_cutoff_A") or 3.5),
                 ws_lattice_A=params.get("ws_lattice_A") or material.lattice_constant_A,
+                mode=mode,
             )
             (job_dir / "defects.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+            surface_summary = (summary.get("surface") or {}).get("summary")
 
             kart_summary = None
+            mmonca_summary = None
             req = json.loads((job_dir / "request.json").read_text(encoding="utf-8"))
             info = self.get(job_id)
             if info and info.run_kart_anneal:
@@ -233,12 +253,25 @@ class JobManager:
                     potential=potential.model_dump(),
                 )
 
+            info = self.get(job_id)
+            if info and (info.run_mmonca_okmc or req.get("run_mmonca_okmc")):
+                self._update(job_id, status=JobStatus.ANNEALING, message="MMonCa OKMC")
+                with log_path.open("a", encoding="utf-8") as log:
+                    log.write("[Aegis] starting optional MMonCa OKMC path\n")
+                mmonca_summary = run_okmc_stub_or_real(
+                    job_dir,
+                    temperature_K=float(req.get("mmonca_temperature_K", 600)),
+                    max_events=int(req.get("mmonca_max_events", 1000)),
+                )
+
             self._update(
                 job_id,
                 status=JobStatus.COMPLETED,
                 message="completed",
                 defect_summary=summary.get("summary"),
                 kart_summary=kart_summary,
+                mmonca_summary=mmonca_summary,
+                surface_summary=surface_summary,
             )
         except Exception as exc:  # noqa: BLE001
             with log_path.open("a", encoding="utf-8") as log:
@@ -292,3 +325,48 @@ class JobManager:
             "\n".join(traj) + "\n", encoding="utf-8"
         )
         (job_dir / "final.data").write_text("# demo\n", encoding="utf-8")
+
+    def _write_demo_surface_dump(self, job_dir: Path, material: Material, params: dict) -> None:
+        """Demo free-surface trajectory with fuzz / implant proxies for dry-run."""
+        a = material.lattice_constant_A
+        nz = int(params.get("nz", 4))
+        vacuum = int(params.get("vacuum_layers", 4))
+        lz = (nz + vacuum) * a
+        ly = lx = 4 * a
+
+        def frame(timestep: int, fuzz: float = 0.0, he_depth: float = 0.0) -> list[str]:
+            atoms: list[str] = []
+            n = 0
+            for i in range(4):
+                for j in range(4):
+                    for k in range(max(2, nz)):
+                        n += 1
+                        z = k * a
+                        if k == max(2, nz) - 1:
+                            z += fuzz
+                        atoms.append(f"{n} 1 {i*a} {j*a} {z}")
+            if he_depth > 0:
+                n += 1
+                atoms.append(f"{n} 2 {2*a} {2*a} {max(0.0, (nz * a) - he_depth)}")
+            lines = [
+                "ITEM: TIMESTEP",
+                str(timestep),
+                "ITEM: NUMBER OF ATOMS",
+                str(n),
+                "ITEM: BOX BOUNDS pp pp ss",
+                f"0 {lx}",
+                f"0 {ly}",
+                f"0 {lz}",
+                "ITEM: ATOMS id type x y z",
+                *atoms,
+            ]
+            return lines
+
+        (job_dir / "dump.initial.lammpstrj").write_text(
+            "\n".join(frame(0, 0.0, 0.0)) + "\n", encoding="utf-8"
+        )
+        traj = frame(0, 0.1, 0.5) + frame(1000, 0.4, 1.2) + frame(5000, 0.7, 1.8)
+        (job_dir / "dump.surface.000000000.lammpstrj").write_text(
+            "\n".join(traj) + "\n", encoding="utf-8"
+        )
+        (job_dir / "final.data").write_text("# demo surface\n", encoding="utf-8")
