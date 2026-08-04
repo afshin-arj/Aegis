@@ -480,6 +480,8 @@ export default function App() {
         setEngines(e);
         setJobs(history);
         setCampaigns(camps);
+        const active = camps.find((c) => ["queued", "running"].includes(c.status));
+        if (active) setCampaign(active);
         const first = m.find((x) => x.id === "w-pure") || m[0];
         if (first) {
           setMaterialId(first.id);
@@ -516,32 +518,44 @@ export default function App() {
 
   useEffect(() => {
     if (!job) return;
+    const watchedId = job.id;
+    let cancelled = false;
     const wsProto = location.protocol === "https:" ? "wss" : "ws";
-    const ws = new WebSocket(`${wsProto}://${location.host}/api/jobs/${job.id}/log`);
-    ws.onmessage = (ev) => setLog((prev) => prev + ev.data);
+    const ws = new WebSocket(`${wsProto}://${location.host}/api/jobs/${watchedId}/log`);
+    ws.onmessage = (ev) => {
+      if (!cancelled) setLog((prev) => prev + ev.data);
+    };
     const timer = setInterval(async () => {
       try {
-        const info = await api<JobInfo>(`/api/jobs/${job.id}`);
-        setJob(info);
+        const info = await api<JobInfo>(`/api/jobs/${watchedId}`);
+        if (cancelled) return;
+        setJob((prev) => (prev?.id === watchedId ? info : prev));
         setJobs((history) => [info, ...history.filter((item) => item.id !== info.id)]);
-        if (["completed", "failed", "cancelled"].includes(info.status)) {
-          clearInterval(timer);
-          if (info.status === "completed") {
-            const d = await api<typeof defects>(`/api/jobs/${job.id}/defects`);
-            setDefects(d);
-            try {
-              setKartSummary(await api<KartSummary>(`/api/jobs/${job.id}/kart`));
-            } catch {
-              setKartSummary((info.kart_summary as KartSummary) || null);
-            }
-            setTab("results");
+        if (!["completed", "failed", "cancelled"].includes(info.status)) return;
+        clearInterval(timer);
+        if (info.status === "completed" || info.status === "failed") {
+          try {
+            const d = await api<NonNullable<typeof defects>>(`/api/jobs/${watchedId}/defects`);
+            if (!cancelled) setDefects(d);
+          } catch {
+            /* defects may be absent on early failure */
+          }
+          try {
+            const ks = await api<KartSummary>(`/api/jobs/${watchedId}/kart`);
+            if (!cancelled) setKartSummary(ks);
+          } catch {
+            if (!cancelled) setKartSummary((info.kart_summary as KartSummary) || null);
+          }
+          if (!cancelled && info.status === "completed") {
+            setTab((t) => (t === "run" ? "results" : t));
           }
         }
       } catch {
-        /* ignore */
+        /* ignore transient poll errors */
       }
     }, 1000);
     return () => {
+      cancelled = true;
       ws.close();
       clearInterval(timer);
     };
@@ -588,8 +602,12 @@ export default function App() {
     try {
       const info = await api<JobInfo>(`/api/jobs/${jobId}`);
       setJob(info);
-      if (info.status === "completed") {
-        setDefects(await api<NonNullable<typeof defects>>(`/api/jobs/${jobId}/defects`));
+      if (info.status === "completed" || info.status === "failed") {
+        try {
+          setDefects(await api<NonNullable<typeof defects>>(`/api/jobs/${jobId}/defects`));
+        } catch {
+          /* defects may be missing */
+        }
         try {
           setKartSummary(await api<KartSummary>(`/api/jobs/${jobId}/kart`));
         } catch {
@@ -1067,6 +1085,7 @@ export default function App() {
                   setJob(null);
                   setLog("");
                   setDefects(null);
+                  setKartSummary(null);
                 }}
               >
                 New study
@@ -1331,8 +1350,11 @@ export default function App() {
                                         type="button"
                                         className="linkish"
                                         onClick={() => {
+                                          const st = String(row.status || "");
                                           void loadJob(v);
-                                          setTab("run");
+                                          setTab(
+                                            st === "completed" || st === "failed" ? "results" : "run",
+                                          );
                                         }}
                                       >
                                         {v}
@@ -1868,11 +1890,9 @@ export default function App() {
                   />
                 </Field>
                 <Field label="Dump style" htmlFor="dump-style">
-                  <input
-                    id="dump-style"
-                    value={params.dump_style}
-                    onChange={(e) => setParam("dump_style", e.target.value)}
-                  />
+                  <select id="dump-style" value="custom" onChange={() => setParam("dump_style", "custom")}>
+                    <option value="custom">custom (id type x y z)</option>
+                  </select>
                 </Field>
                 <Field label="Restart every" unit="steps · 0 disables" htmlFor="restart">
                   <input

@@ -133,16 +133,30 @@ def _read_frame_at(path: Path, file_frame: int) -> tuple[list[dict[str, Any]], t
         i += 1
     header = text[i].split()[2:]
     idx = {name: k for k, name in enumerate(header)}
+    x_key = "x" if "x" in idx else "xu" if "xu" in idx else "xs" if "xs" in idx else None
+    y_key = "y" if "y" in idx else "yu" if "yu" in idx else "ys" if "ys" in idx else None
+    z_key = "z" if "z" in idx else "zu" if "zu" in idx else "zs" if "zs" in idx else None
+    if x_key is None or y_key is None or z_key is None:
+        raise KeyError("dump frame missing x/y/z columns")
+    lx, ly, lz = xhi - xlo, yhi - ylo, zhi - zlo
+    scaled = x_key == "xs"
     atoms: list[dict[str, Any]] = []
     for line in text[i + 1 : i + 1 + n]:
         parts = line.split()
+        x = float(parts[idx[x_key]])
+        y = float(parts[idx[y_key]])
+        z = float(parts[idx[z_key]])
+        if scaled:
+            x = xlo + x * lx
+            y = ylo + y * ly
+            z = zlo + z * lz
         atoms.append(
             {
                 "id": int(parts[idx.get("id", 0)]),
                 "type": int(parts[idx.get("type", 1)]),
-                "x": float(parts[idx["x"]]),
-                "y": float(parts[idx["y"]]),
-                "z": float(parts[idx["z"]]),
+                "x": x,
+                "y": y,
+                "z": z,
             }
         )
-    return atoms, (xhi - xlo, yhi - ylo, zhi - zlo), timestep
+    return atoms, (lx, ly, lz), timestep

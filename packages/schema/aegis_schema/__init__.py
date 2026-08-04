@@ -130,7 +130,7 @@ class LammpsRunParams(BaseModel):
     neighbor_skin: float = 2.0
     thermo_every: int = 100
     dump_every: int = 1000
-    dump_style: str = "custom"
+    dump_style: str = Field("custom", pattern="^custom$")
     restart_every: int = 0
     ws_lattice_A: float | None = None
     cluster_cutoff_A: float = 3.5

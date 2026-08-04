@@ -35,10 +35,23 @@ class JobManager:
 
     def _load_existing(self) -> None:
         for d in self.runs_root.iterdir() if self.runs_root.exists() else []:
+            if d.name == "campaigns" or not d.is_dir():
+                continue
             meta = d / "job.json"
             if meta.exists():
                 try:
                     info = JobInfo(**json.loads(meta.read_text(encoding="utf-8")))
+                    # In-flight statuses cannot resume after process restart
+                    if info.status in {
+                        JobStatus.QUEUED,
+                        JobStatus.RUNNING,
+                        JobStatus.ANALYZING,
+                        JobStatus.ANNEALING,
+                    }:
+                        info.status = JobStatus.FAILED
+                        info.message = "interrupted by server restart"
+                        info.updated_at = _now()
+                        (d / "job.json").write_text(info.model_dump_json(indent=2), encoding="utf-8")
                     self._jobs[info.id] = info
                 except Exception:  # noqa: BLE001
                     continue
@@ -149,6 +162,8 @@ class JobManager:
             info = self._jobs.get(job_id)
             if not info:
                 return None
+            if info.status in {JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED}:
+                return info
             proc = self._procs.get(job_id)
             if proc and proc.poll() is None:
                 proc.terminate()
@@ -158,9 +173,20 @@ class JobManager:
             self._persist(info)
             return info
 
+    def _is_cancelled(self, job_id: str) -> bool:
+        info = self.get(job_id)
+        return bool(info and info.status == JobStatus.CANCELLED)
+
     def _update(self, job_id: str, **kwargs: Any) -> JobInfo:
         with self._lock:
             info = self._jobs[job_id]
+            # Do not clobber a user cancel with later pipeline statuses
+            if info.status == JobStatus.CANCELLED:
+                new_status = kwargs.get("status")
+                if new_status is not None and new_status != JobStatus.CANCELLED:
+                    kwargs = {k: v for k, v in kwargs.items() if k != "status"}
+                    if not kwargs:
+                        return info
             data = info.model_dump()
             data.update(kwargs)
             data["updated_at"] = _now()
@@ -240,6 +266,8 @@ class JobManager:
                         )
                     if mode == "surface":
                         self._write_demo_surface_dump(job_dir, material, params)
+                    elif mode == "implant":
+                        self._write_demo_dump(job_dir, material, dump_name="dump.implant.000000000.lammpstrj")
                     else:
                         self._write_demo_dump(job_dir, material)
                     log.write("[Aegis] demo dump written for analysis.\n")
@@ -258,11 +286,12 @@ class JobManager:
                     code = proc.wait()
                     with self._lock:
                         self._procs.pop(job_id, None)
+                    if self._is_cancelled(job_id):
+                        return
                     if code != 0:
                         raise RuntimeError(f"LAMMPS exited with code {code}")
 
-            info = self.get(job_id)
-            if info and info.status == JobStatus.CANCELLED:
+            if self._is_cancelled(job_id):
                 return
 
             self._update(job_id, status=JobStatus.ANALYZING, message="defect analysis")
@@ -275,6 +304,9 @@ class JobManager:
             )
             (job_dir / "defects.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
             surface_summary = (summary.get("surface") or {}).get("summary")
+
+            if self._is_cancelled(job_id):
+                return
 
             kart_summary = None
             mmonca_summary = None
@@ -295,6 +327,9 @@ class JobManager:
                     potential=potential.model_dump(),
                 )
 
+            if self._is_cancelled(job_id):
+                return
+
             info = self.get(job_id)
             if info and (info.run_mmonca_okmc or req.get("run_mmonca_okmc")):
                 self._update(job_id, status=JobStatus.ANNEALING, message="MMonCa OKMC")
@@ -306,6 +341,9 @@ class JobManager:
                     max_events=int(req.get("mmonca_max_events", 1000)),
                 )
 
+            if self._is_cancelled(job_id):
+                return
+
             self._update(
                 job_id,
                 status=JobStatus.COMPLETED,
@@ -316,12 +354,16 @@ class JobManager:
                 surface_summary=surface_summary,
             )
         except Exception as exc:  # noqa: BLE001
+            if self._is_cancelled(job_id):
+                return
             with log_path.open("a", encoding="utf-8") as log:
                 log.write(f"\n[Aegis] FAILED: {exc}\n")
                 log.write(traceback.format_exc())
             self._update(job_id, status=JobStatus.FAILED, message=str(exc))
 
-    def _write_demo_dump(self, job_dir: Path, material: Material) -> None:
+    def _write_demo_dump(
+        self, job_dir: Path, material: Material, *, dump_name: str = "dump.cascade.000000000.lammpstrj"
+    ) -> None:
         """Artificial multi-frame trajectory so structure viz works without LAMMPS."""
         a = material.lattice_constant_A
 
@@ -363,9 +405,7 @@ class JobManager:
             + frame(2000, 0.8, True)
             + frame(5000, 0.9, True)
         )
-        (job_dir / "dump.cascade.000000000.lammpstrj").write_text(
-            "\n".join(traj) + "\n", encoding="utf-8"
-        )
+        (job_dir / dump_name).write_text("\n".join(traj) + "\n", encoding="utf-8")
         (job_dir / "final.data").write_text("# demo\n", encoding="utf-8")
 
     def _write_demo_surface_dump(self, job_dir: Path, material: Material, params: dict) -> None:

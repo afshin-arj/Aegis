@@ -72,7 +72,18 @@ def analyze_job_dir(
         (job_dir / "defects.json").write_text(json.dumps(empty, indent=2), encoding="utf-8")
         return empty
 
-    sites = _bcc_sites(box, a_ref)
+    sites = _bcc_sites(box, a_ref, z_max=None)
+    run_mode = (mode or "").lower()
+    if run_mode == "surface":
+        # Vacuum slab must not be counted as vacancies — limit WS grid to substrate height.
+        # Heuristic: host atoms cluster below vacuum; use 75th percentile of z as slab top fallback
+        # via box fraction when params unknown. Prefer occupied z span of densest lower region.
+        zs = sorted(a["z"] for a in atoms)
+        if zs:
+            # Assume vacuum is the empty upper portion; use max occupied z + small pad as site limit
+            z_max = max(zs) + 0.25 * a_ref
+            sites = _bcc_sites(box, a_ref, z_max=z_max)
+
     occupied = [False] * len(sites)
     interstitial_pts: list[dict[str, Any]] = []
     for atom in atoms:
@@ -109,6 +120,7 @@ def analyze_job_dir(
             "ws_lattice_A": a_ref,
             "cluster_cutoff_A": cutoff,
             "method": "aegis-ws-proxy-v1",
+            "mode": run_mode or "cascade",
             "hardening_proxy": {
                 "dbh_Nd_sqrt": (len(interstitial_pts) * max(len(clusters), 1)) ** 0.5,
                 "note": "Placeholder DBH/FKH-style scalar — not calibrated.",
@@ -118,14 +130,14 @@ def analyze_job_dir(
         "points": points[:5000],
     }
 
-    surface = analyze_surface_metrics(job_dir, lattice_A=a_ref, ion_type_hint=None)
-    if surface:
-        summary["surface"] = surface
-        summary["summary"]["surface"] = surface.get("summary")
+    if run_mode == "surface":
+        surface = analyze_surface_metrics(job_dir, lattice_A=a_ref, ion_type_hint=None)
+        if surface:
+            summary["surface"] = surface
+            summary["summary"]["surface"] = surface.get("summary")
+            (job_dir / "surface_metrics.json").write_text(json.dumps(surface, indent=2), encoding="utf-8")
 
     (job_dir / "defects.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
-    if surface:
-        (job_dir / "surface_metrics.json").write_text(json.dumps(surface, indent=2), encoding="utf-8")
     return summary
 
 
@@ -232,22 +244,39 @@ def _read_last_frame(path: Path) -> tuple[list[dict[str, Any]], tuple[float, flo
         i += 1
     header = text[i].split()[2:]
     idx = {name: k for k, name in enumerate(header)}
+    # Prefer unwrapped/cartesian; fall back to scaled xs/ys/zs
+    x_key = "x" if "x" in idx else "xu" if "xu" in idx else "xs" if "xs" in idx else None
+    y_key = "y" if "y" in idx else "yu" if "yu" in idx else "ys" if "ys" in idx else None
+    z_key = "z" if "z" in idx else "zu" if "zu" in idx else "zs" if "zs" in idx else None
+    if x_key is None or y_key is None or z_key is None:
+        return [], (xhi - xlo, yhi - ylo, zhi - zlo)
+    lx, ly, lz = xhi - xlo, yhi - ylo, zhi - zlo
+    scaled = x_key == "xs"
     atoms = []
     for line in text[i + 1 : i + 1 + n]:
         parts = line.split()
+        x = float(parts[idx[x_key]])
+        y = float(parts[idx[y_key]])
+        z = float(parts[idx[z_key]])
+        if scaled:
+            x = xlo + x * lx
+            y = ylo + y * ly
+            z = zlo + z * lz
         atoms.append(
             {
                 "id": int(parts[idx.get("id", 0)]),
                 "type": int(parts[idx.get("type", 1)]),
-                "x": float(parts[idx["x"]]),
-                "y": float(parts[idx["y"]]),
-                "z": float(parts[idx["z"]]),
+                "x": x,
+                "y": y,
+                "z": z,
             }
         )
-    return atoms, (xhi - xlo, yhi - ylo, zhi - zlo)
+    return atoms, (lx, ly, lz)
 
 
-def _bcc_sites(box: tuple[float, float, float], a: float) -> list[tuple[float, float, float]]:
+def _bcc_sites(
+    box: tuple[float, float, float], a: float, *, z_max: float | None = None
+) -> list[tuple[float, float, float]]:
     lx, ly, lz = box
     nx = max(int(round(lx / a)), 1)
     ny = max(int(round(ly / a)), 1)
@@ -256,8 +285,11 @@ def _bcc_sites(box: tuple[float, float, float], a: float) -> list[tuple[float, f
     for i in range(nx):
         for j in range(ny):
             for k in range(nz):
-                sites.append((i * a, j * a, k * a))
-                sites.append((i * a + a / 2, j * a + a / 2, k * a + a / 2))
+                for sx, sy, sz in ((0.0, 0.0, 0.0), (a / 2, a / 2, a / 2)):
+                    x, y, z = i * a + sx, j * a + sy, k * a + sz
+                    if z_max is not None and z > z_max:
+                        continue
+                    sites.append((x, y, z))
     return sites
 
 

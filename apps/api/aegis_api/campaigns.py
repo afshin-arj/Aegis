@@ -33,8 +33,12 @@ def _param_field(axis: str) -> str:
 
 def expand_doe_matrix(body: DoeCampaignCreate) -> list[dict[str, Any]]:
     """Cartesian product of axis values, capped at max_jobs."""
-    xs = list(body.values_x) or [0.0]
+    if not body.values_x:
+        raise ValueError("values_x must not be empty")
+    xs = list(body.values_x)
     ys = list(body.values_y) if body.axis_y and body.values_y else [None]
+    if body.axis_y and not body.values_y:
+        raise ValueError("values_y must not be empty when axis_y is set")
     cases: list[dict[str, Any]] = []
     for x in xs:
         for y in ys:
@@ -94,10 +98,10 @@ class CampaignManager:
         for spec in matrix:
             params = body.base.run_params.model_dump()
             params.update(spec["overrides"])
-            # Keep confirm_large if any case is large
+            # Keep confirm_large only when the caller already set it (API enforces the gate)
             cells = int(params["nx"]) * int(params["ny"]) * int(params["nz"])
-            if cells > 20 * 20 * 20:
-                params["confirm_large"] = True
+            if cells > 20 * 20 * 20 and not params.get("confirm_large"):
+                raise ValueError("Large cell (>20³). Set confirm_large=true on the base recipe.")
             run_params = LammpsRunParams(**params)
             job_body = JobCreate(
                 project_name=f"{body.name}/{spec['label']}",
@@ -209,12 +213,24 @@ class CampaignManager:
                     cases.append(c)
             self._update(campaign_id, cases=cases, message=f"finished case {i + 1}/{len(camp.cases)}")
         self.refresh_summary(campaign_id)
-        self._update(campaign_id, status="completed", message="DOE campaign completed")
+        camp = self.get(campaign_id)
+        if not camp:
+            return
+        failed = sum(1 for c in camp.cases if c.status == "failed")
+        cancelled = sum(1 for c in camp.cases if c.status == "cancelled")
+        if failed and failed == len(camp.cases):
+            final_status, msg = "failed", "DOE campaign failed (all cases)"
+        elif failed or cancelled:
+            final_status, msg = "completed_with_errors", f"DOE campaign finished with {failed} failed / {cancelled} cancelled"
+        else:
+            final_status, msg = "completed", "DOE campaign completed"
+        self._update(campaign_id, status=final_status, message=msg)
 
     def refresh_summary(self, campaign_id: str) -> DoeCampaignInfo | None:
         info = self.get(campaign_id)
         if not info:
             return None
+        export_only = info.status == "export_only"
         rows: list[dict[str, Any]] = []
         cases: list[DoeCase] = []
         for c in info.cases:
@@ -223,7 +239,14 @@ class CampaignManager:
             if c.job_id:
                 job = self.jobs.get(c.job_id)
                 if job:
-                    status = job.status.value
+                    # Keep export_ready for HPC-only campaigns (jobs stay queued forever)
+                    if export_only or c.status == "export_ready":
+                        if job.status.value == "queued":
+                            status = "export_ready"
+                        else:
+                            status = job.status.value
+                    else:
+                        status = job.status.value
                     row["job_id"] = job.id
                     row["status"] = status
                     ds = job.defect_summary or {}
@@ -235,6 +258,7 @@ class CampaignManager:
                         row["fuzz_atom_count"] = job.surface_summary.get("fuzz_atom_count")
                 else:
                     row["status"] = "missing"
+                    status = "missing"
             else:
                 row["status"] = status
             rows.append(row)

@@ -92,7 +92,7 @@ function AtomCanvas({
     for (const [type, list] of byType) {
       const geo = new THREE.SphereGeometry(radius, 8, 8);
       const mat = new THREE.MeshStandardMaterial({
-        color: TYPE_COLORS[(type - 1) % TYPE_COLORS.length],
+        color: TYPE_COLORS[((Math.max(1, type) - 1) % TYPE_COLORS.length + TYPE_COLORS.length) % TYPE_COLORS.length],
         roughness: 0.42,
         metalness: 0.22,
       });
@@ -181,6 +181,7 @@ export default function StructureViewer({ jobId, refreshKey }: Props) {
   const [afterIdx, setAfterIdx] = useState(0);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const scrubReq = useRef(0);
 
   const afterFrames = useMemo(() => index?.after_indices ?? [], [index]);
 
@@ -200,14 +201,18 @@ export default function StructureViewer({ jobId, refreshKey }: Props) {
         if (cancelled) return;
         setIndex(traj);
         if (traj.before_index != null) {
-          setBefore(await api<TrajFrame>(`/api/jobs/${jobId}/trajectory/${traj.before_index}`));
+          const bf = await api<TrajFrame>(`/api/jobs/${jobId}/trajectory/${traj.before_index}`);
+          if (cancelled) return;
+          setBefore(bf);
         } else {
           setBefore(null);
         }
         const firstAfter = traj.after_indices[0] ?? traj.before_index;
         setAfterIdx(0);
         if (firstAfter != null) {
-          setAfter(await api<TrajFrame>(`/api/jobs/${jobId}/trajectory/${firstAfter}`));
+          const af = await api<TrajFrame>(`/api/jobs/${jobId}/trajectory/${firstAfter}`);
+          if (cancelled) return;
+          setAfter(af);
         } else {
           setAfter(null);
         }
@@ -225,14 +230,17 @@ export default function StructureViewer({ jobId, refreshKey }: Props) {
   async function scrub(i: number) {
     if (!jobId || !afterFrames.length) return;
     const clamped = Math.max(0, Math.min(i, afterFrames.length - 1));
+    const reqId = ++scrubReq.current;
     setAfterIdx(clamped);
     setBusy(true);
     try {
-      setAfter(await api<TrajFrame>(`/api/jobs/${jobId}/trajectory/${afterFrames[clamped]}`));
+      const frame = await api<TrajFrame>(`/api/jobs/${jobId}/trajectory/${afterFrames[clamped]}`);
+      if (reqId !== scrubReq.current) return;
+      setAfter(frame);
     } catch (e) {
-      setErr(String(e));
+      if (reqId === scrubReq.current) setErr(String(e));
     } finally {
-      setBusy(false);
+      if (reqId === scrubReq.current) setBusy(false);
     }
   }
 

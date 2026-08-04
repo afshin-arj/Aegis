@@ -117,12 +117,14 @@ def write_cascade_input(
     restart = _restart_block(params)
     crystal_note = _crystal_comment(material)
 
-    # Multi-PKA: repeat center-ish kick with optional delay between events
+    # Multi-PKA: kick distinct near-center atoms (mid-ID proxy for cubic BCC fill)
     pka_blocks: list[str] = []
     for i in range(n_pkas):
         s = seed + i * 9973
         dvx, dvy, dvz = _direction_unit(str(params.get("pka_direction", "random")), s)
         sp = speed
+        # Atom id 1 is a corner site; mid-box IDs are closer to the geometric center
+        # for sequential create_atoms on a cubic lattice. Offset for multi-PKA.
         pka_blocks.append(
             textwrap.dedent(
                 f"""\
@@ -130,8 +132,7 @@ def write_cascade_input(
                 variable cx equal lx/2
                 variable cy equal ly/2
                 variable cz equal lz/2
-                # Closest atom to geometric center (proxy for stated PKA site)
-                variable pkaid equal 1
+                variable pkaid equal min(atoms,max(1,(({i}+1)*floor(atoms/({n_pkas}+1)))+1))
                 group pka_{i} id ${{pkaid}}
                 velocity pka_{i} set {dvx * sp:.6f} {dvy * sp:.6f} {dvz * sp:.6f} units box
                 """
@@ -390,6 +391,7 @@ def write_surface_input(
     script = textwrap.dedent(
         f"""\
         # Aegis-generated low-E surface MD (Phase-3 fuzz / erosion proxy)
+        # Note: {n_impacts} ions are inserted together (simultaneous), not sequential fluence.
         # Fluence proxy: {n_impacts} × {ion} at {E} eV onto free surface (vacuum={vacuum} layers)
         {crystal_note}
         units metal

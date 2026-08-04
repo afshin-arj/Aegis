@@ -264,6 +264,13 @@ def create_campaign(body: DoeCampaignCreate) -> DoeCampaignInfo:
         raise HTTPException(400, "Selected potential has no file on disk.")
     if not potential.available and not potential.is_placeholder:
         raise HTTPException(400, "Selected potential is not runnable.")
+    # Large cell guard (same as single-job path; campaigns auto-confirm in create otherwise)
+    cells = body.base.run_params.nx * body.base.run_params.ny * body.base.run_params.nz
+    if cells > 20 * 20 * 20 and not body.base.run_params.confirm_large:
+        raise HTTPException(
+            400,
+            "Large cell (>20³ unit cells). Set confirm_large=true on the base recipe to proceed.",
+        )
     try:
         return campaigns.create(body, material, potential)
     except ValueError as exc:
@@ -361,7 +368,14 @@ def cancel_job(job_id: str) -> JobInfo:
 
 @app.get("/api/jobs/{job_id}/artifacts/{name}")
 def get_artifact(job_id: str, name: str) -> FileResponse:
-    path = RUNS_ROOT / job_id / name
+    if "/" in name or "\\" in name or ".." in name:
+        raise HTTPException(400, "invalid artifact name")
+    job_root = (RUNS_ROOT / job_id).resolve()
+    path = (job_root / name).resolve()
+    try:
+        path.relative_to(job_root)
+    except ValueError as exc:
+        raise HTTPException(400, "invalid artifact path") from exc
     if not path.exists() or not path.is_file():
         raise HTTPException(404, "artifact not found")
     return FileResponse(path)
@@ -418,7 +432,7 @@ def post_kart_anneal(job_id: str, body: KartAnnealRequest) -> dict[str, Any]:
         )
         return summary
     except Exception as exc:  # noqa: BLE001
-        jobs._update(job_id, status=JobStatus.COMPLETED, message=f"anneal failed: {exc}")
+        jobs._update(job_id, status=JobStatus.FAILED, message=f"anneal failed: {exc}")
         raise HTTPException(500, str(exc)) from exc
 
 
