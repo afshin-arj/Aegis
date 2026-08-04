@@ -293,6 +293,58 @@ function DefectViz({ points }: { points: Array<{ x: number; y: number; z: number
   return <div className="viz" ref={ref} role="img" aria-label="3D defect point cloud" />;
 }
 
+type KartEvent = { event: number; barrier_eV: number; time_s?: number; source?: string };
+type KartRun = {
+  temperature_K: number;
+  status: string;
+  message?: string;
+  events?: KartEvent[];
+  handoff?: string;
+};
+type KartSummary = {
+  status?: string;
+  message?: string;
+  doe?: boolean;
+  temperatures_K?: number[];
+  events?: KartEvent[];
+  runs?: KartRun[];
+  handoff?: string;
+};
+
+function KartTimeline({ events, label }: { events: KartEvent[]; label: string }) {
+  if (!events.length) {
+    return <p className="hint">No anneal events yet.</p>;
+  }
+  const maxB = Math.max(...events.map((e) => e.barrier_eV), 0.1);
+  return (
+    <div className="stack">
+      <p className="hint">{label}</p>
+      <div className="kart-timeline" role="img" aria-label="KART barrier timeline">
+        {events.slice(0, 60).map((e) => (
+          <div
+            key={e.event}
+            className="kart-bar"
+            style={{ height: `${(e.barrier_eV / maxB) * 100}%` }}
+            title={`#${e.event} · ${e.barrier_eV.toFixed(3)} eV · t=${e.time_s ?? "—"}`}
+          />
+        ))}
+      </div>
+      <div className="chip-row">
+        <span className="chip">
+          <span className="chip-k">events</span>
+          <span className="chip-v">{events.length}</span>
+        </span>
+        <span className="chip">
+          <span className="chip-k">Ē_bar</span>
+          <span className="chip-v">
+            {(events.reduce((s, e) => s + e.barrier_eV, 0) / events.length).toFixed(3)} eV
+          </span>
+        </span>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [tab, setTab] = useState<TabId>("projects");
   const [materials, setMaterials] = useState<Material[]>([]);
@@ -309,6 +361,10 @@ export default function App() {
   const [runKart, setRunKart] = useState(false);
   const [kartTemperatureK, setKartTemperatureK] = useState(600);
   const [kartMaxEvents, setKartMaxEvents] = useState(1000);
+  const [kartMaxWallS, setKartMaxWallS] = useState(600);
+  const [kartMaxKmcTimeS, setKartMaxKmcTimeS] = useState(1);
+  const [kartDoeTemps, setKartDoeTemps] = useState("");
+  const [kartSummary, setKartSummary] = useState<KartSummary | null>(null);
   const [job, setJob] = useState<JobInfo | null>(null);
   const [jobs, setJobs] = useState<JobInfo[]>([]);
   const [log, setLog] = useState("");
@@ -434,6 +490,11 @@ export default function App() {
           if (info.status === "completed") {
             const d = await api<typeof defects>(`/api/jobs/${job.id}/defects`);
             setDefects(d);
+            try {
+              setKartSummary(await api<KartSummary>(`/api/jobs/${job.id}/kart`));
+            } catch {
+              setKartSummary((info.kart_summary as KartSummary) || null);
+            }
             setTab("results");
           }
         }
@@ -453,11 +514,17 @@ export default function App() {
     setError("");
     setLog("");
     setDefects(null);
+    setKartSummary(null);
     try {
       const info = await api<JobInfo>(`/api/jobs/${jobId}`);
       setJob(info);
       if (info.status === "completed") {
         setDefects(await api<NonNullable<typeof defects>>(`/api/jobs/${jobId}/defects`));
+        try {
+          setKartSummary(await api<KartSummary>(`/api/jobs/${jobId}/kart`));
+        } catch {
+          setKartSummary((info.kart_summary as KartSummary) || null);
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -534,6 +601,7 @@ export default function App() {
     setError("");
     setLog("");
     setDefects(null);
+    setKartSummary(null);
     try {
       const normalized = normalizeComposition(composition);
       setComposition(normalized);
@@ -549,6 +617,15 @@ export default function App() {
         run_kart_anneal: runKart,
         kart_temperature_K: kartTemperatureK,
         kart_max_events: kartMaxEvents,
+        kart_max_wall_s: kartMaxWallS,
+        kart_max_kmc_time_s: kartMaxKmcTimeS,
+        kart_anneal_temperatures: (() => {
+          const doe = kartDoeTemps
+            .split(/[\s,]+/)
+            .map((x) => Number(x))
+            .filter((x) => Number.isFinite(x) && x > 0);
+          return doe.length ? doe : null;
+        })(),
       };
       const info = await api<JobInfo>("/api/jobs", {
         method: "POST",
@@ -589,6 +666,36 @@ export default function App() {
     link.download = `aegis-${job.id}-defects.json`;
     link.click();
     URL.revokeObjectURL(url);
+  }
+
+  async function reannealDoe() {
+    if (!job) return;
+    setBusy(true);
+    setError("");
+    try {
+      const doe = kartDoeTemps
+        .split(/[\s,]+/)
+        .map((x) => Number(x))
+        .filter((x) => Number.isFinite(x) && x > 0);
+      const summary = await api<KartSummary>(`/api/jobs/${job.id}/kart/anneal`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          temperature_K: kartTemperatureK,
+          max_events: kartMaxEvents,
+          max_wall_s: kartMaxWallS,
+          max_kmc_time_s: kartMaxKmcTimeS,
+          temperatures: doe.length ? doe : [kartTemperatureK],
+        }),
+      });
+      setKartSummary(summary);
+      const info = await api<JobInfo>(`/api/jobs/${job.id}`);
+      setJob(info);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
   }
 
   const clusterSizes = defects?.clusters?.map((c) => c.size) || [];
@@ -1302,7 +1409,7 @@ export default function App() {
             </label>
             {runKart && (
               <fieldset className="fieldset">
-                <legend>k-ART anneal</legend>
+                <legend>k-ART anneal (Phase-2)</legend>
                 <div className="row">
                   <Field label="Anneal temperature" unit="K" htmlFor="kart-temperature">
                     <input
@@ -1321,6 +1428,37 @@ export default function App() {
                     />
                   </Field>
                 </div>
+                <div className="row">
+                  <Field label="Wall-clock limit" unit="s" htmlFor="kart-wall">
+                    <input
+                      id="kart-wall"
+                      type="number"
+                      value={kartMaxWallS}
+                      onChange={(e) => setKartMaxWallS(Number(e.target.value))}
+                    />
+                  </Field>
+                  <Field label="Max KMC time" unit="s" htmlFor="kart-kmc-t">
+                    <input
+                      id="kart-kmc-t"
+                      type="number"
+                      step="0.001"
+                      value={kartMaxKmcTimeS}
+                      onChange={(e) => setKartMaxKmcTimeS(Number(e.target.value))}
+                    />
+                  </Field>
+                </div>
+                <Field label="DOE temperatures" unit="optional, comma-separated K" htmlFor="kart-doe">
+                  <input
+                    id="kart-doe"
+                    placeholder="e.g. 400, 600, 800"
+                    value={kartDoeTemps}
+                    onChange={(e) => setKartDoeTemps(e.target.value)}
+                  />
+                </Field>
+                <p className="hint">
+                  DOE runs multiple anneals on the same cascade. Aegis writes a kart_work/T* handoff package per
+                  temperature (initial.conf, conf.lammps, KMC.sh.aegis).
+                </p>
               </fieldset>
             )}
             <button type="button" disabled={busy || blockers.length > 0} onClick={runJob}>
@@ -1438,12 +1576,64 @@ export default function App() {
                   />
                 ))}
               </div>
-              {job?.kart_summary && (
+              {(kartSummary || job?.kart_summary) && (
                 <>
-                  <h3>KART</h3>
-                  <pre className="log" style={{ height: "auto", maxHeight: 200 }}>
-                    {JSON.stringify(job.kart_summary, null, 2)}
-                  </pre>
+                  <h3>KART anneal</h3>
+                  {(() => {
+                    const ks = kartSummary || (job?.kart_summary as KartSummary);
+                    const runs = ks?.runs?.length ? ks.runs : null;
+                    return (
+                      <div className="stack">
+                        <div className="chip-row">
+                          <span className="chip">
+                            <span className="chip-k">status</span>
+                            <span className="chip-v">{ks?.status || "—"}</span>
+                          </span>
+                          {ks?.doe && (
+                            <span className="chip">
+                              <span className="chip-k">DOE</span>
+                              <span className="chip-v">{ks.temperatures_K?.join(", ")} K</span>
+                            </span>
+                          )}
+                          {ks?.handoff && (
+                            <span className="chip">
+                              <span className="chip-k">handoff</span>
+                              <span className="chip-v">{ks.handoff}</span>
+                            </span>
+                          )}
+                        </div>
+                        <p className="hint">{ks?.message}</p>
+                        {runs ? (
+                          runs.map((r) => (
+                            <div key={r.temperature_K} className="stack">
+                              <h4>
+                                T = {r.temperature_K} K · {r.status}
+                              </h4>
+                              <KartTimeline
+                                events={r.events || []}
+                                label={`Barrier timeline (${r.events?.[0]?.source || "events"})`}
+                              />
+                            </div>
+                          ))
+                        ) : (
+                          <KartTimeline
+                            events={(ks?.events as KartEvent[]) || []}
+                            label="Barrier timeline"
+                          />
+                        )}
+                        {job?.status === "completed" && (
+                          <button
+                            type="button"
+                            className="secondary"
+                            disabled={busy}
+                            onClick={() => void reannealDoe()}
+                          >
+                            Re-anneal DOE on this cascade
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </>
               )}
             </section>
@@ -1489,6 +1679,11 @@ export default function App() {
                 </div>
                 <p className="hint">{engines?.kart_root || "third_party/kart not present"}</p>
                 <p className="hint">{engines?.kart_message}</p>
+                <p className="hint">
+                  Phase-2 writes <span className="mono">kart_work/T*/</span> handoff packages (initial.conf,
+                  conf.lammps, KMC.sh.aegis). Full catalogue anneals still launch via KART on WSL/Linux; Aegis
+                  stubs events until Energy.dat appears.
+                </p>
               </div>
             </div>
             <pre className="log" style={{ height: "auto" }}>
@@ -1499,7 +1694,8 @@ git clone git@gitlab.com:groupe_mousseau/kart.git third_party/kart
 cd third_party/kart
 git checkout 62d66adf
 # build per https://kart-doc.readthedocs.io/  (WSL recommended on Windows)
-# set AEGIS_KART_ROOT / AEGIS_KART_BIN`}
+# set AEGIS_KART_ROOT / AEGIS_KART_BIN
+# After a cascade, open runs/<job>/kart_work/T*/ and adapt KMC.sh.aegis`}
             </pre>
           </section>
         )}

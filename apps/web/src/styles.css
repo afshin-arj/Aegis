@@ -469,6 +469,22 @@ label .unit {
 .status-annealing,
 .status-queued { color: var(--warn); }
 
+.kart-timeline {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 88px;
+  padding: 0.35rem 0.25rem;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.kart-bar {
+  flex: 1;
+  min-width: 3px;
+  background: linear-gradient(180deg, var(--copper), color-mix(in srgb, var(--copper) 40%, #1a1f28));
+  border-radius: 2px 2px 0 0;
+}
+
 .recipe-note {
   margin: 0.85rem 0 0;
   color: var(--muted);

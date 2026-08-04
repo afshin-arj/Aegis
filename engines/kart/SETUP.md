@@ -115,3 +115,26 @@ curl http://127.0.0.1:8000/api/engines/status
 ```
 
 Expect `kart_found: true` when the binary exists; otherwise `kart_message` explains clone/build next steps.
+
+---
+
+## Phase-2 handoff (cascade → k-ART)
+
+After a cascade completes with anneal enabled, Aegis writes per-temperature packages under:
+
+```text
+runs/<job_id>/kart_work/T600/
+  initial.conf      # kART INI (box + type x y z)
+  conf.lammps       # LAMMPS data
+  in.lammps         # force helper (ENERGY_CALC=LAM)
+  KMC.sh.aegis      # setenv template (TEMPERATURE, NBRE_KMC_STEPS, TOTAL_TIME)
+  defects_*.xyz     # vacancy / SIA overlays
+  handoff.json      # aegis-kart-handoff-v2 metadata
+```
+
+1. Build KART (WSL/Linux recommended on Windows).
+2. Copy/adapt `KMC.sh.aegis` → `KMC.sh`, set `CRYST_TOPOID` after a scout run (see kart-doc Si vacancy tutorial).
+3. Launch KART in that directory; when `Energy.dat` appears, Aegis will parse it on the next anneal refresh.
+4. DOE: set comma-separated temperatures in the UI, or `POST /api/jobs/{id}/kart/anneal`.
+
+Until a real `Energy.dat` exists, Results shows an honest **stub** barrier timeline for UI wiring.

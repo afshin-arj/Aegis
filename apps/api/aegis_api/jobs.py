@@ -80,6 +80,9 @@ class JobManager:
                 {
                     "kart_temperature_K": body.kart_temperature_K,
                     "kart_max_events": body.kart_max_events,
+                    "kart_max_wall_s": body.kart_max_wall_s,
+                    "kart_max_kmc_time_s": body.kart_max_kmc_time_s,
+                    "kart_anneal_temperatures": body.kart_anneal_temperatures,
                 },
                 indent=2,
             ),
@@ -223,6 +226,11 @@ class JobManager:
                     job_dir,
                     temperature_K=float(req.get("kart_temperature_K", 600)),
                     max_events=int(req.get("kart_max_events", 1000)),
+                    max_wall_s=float(req.get("kart_max_wall_s", 600)),
+                    max_kmc_time_s=float(req.get("kart_max_kmc_time_s", 1.0)),
+                    temperatures=req.get("kart_anneal_temperatures"),
+                    material=material.model_dump(),
+                    potential=potential.model_dump(),
                 )
 
             self._update(

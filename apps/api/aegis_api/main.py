@@ -26,6 +26,7 @@ from aegis_schema import (  # noqa: E402
     JobCreate,
     JobInfo,
     JobStatus,
+    KartAnnealRequest,
     LammpsRunParams,
     Material,
     MaterialUpdate,
@@ -270,6 +271,53 @@ def get_defects(job_id: str) -> dict[str, Any]:
     if not path.exists():
         raise HTTPException(404, "defects not ready")
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+@app.get("/api/jobs/{job_id}/kart")
+def get_kart_summary(job_id: str) -> dict[str, Any]:
+    info = jobs.get(job_id)
+    if not info:
+        raise HTTPException(404, "job not found")
+    path = RUNS_ROOT / job_id / "kart_summary.json"
+    if path.exists():
+        return json.loads(path.read_text(encoding="utf-8"))
+    if info.kart_summary:
+        return info.kart_summary
+    raise HTTPException(404, "kart summary not ready")
+
+
+@app.post("/api/jobs/{job_id}/kart/anneal")
+def post_kart_anneal(job_id: str, body: KartAnnealRequest) -> dict[str, Any]:
+    """Phase-2 DOE: re-anneal an existing cascade at one or more temperatures."""
+    info = jobs.get(job_id)
+    if not info:
+        raise HTTPException(404, "job not found")
+    if info.status != JobStatus.COMPLETED:
+        raise HTTPException(400, f"job status {info.status} cannot anneal yet (need completed cascade)")
+    job_dir = RUNS_ROOT / job_id
+    if not (job_dir / "defects.json").exists() and not list(job_dir.glob("dump*.lammpstrj")):
+        raise HTTPException(400, "no cascade dumps/defects available for handoff")
+    jobs._update(job_id, status=JobStatus.ANNEALING, message="KART DOE anneal")
+    try:
+        summary = run_anneal_stub_or_real(
+            job_dir,
+            temperature_K=body.temperature_K,
+            max_events=body.max_events,
+            max_wall_s=body.max_wall_s,
+            max_kmc_time_s=body.max_kmc_time_s,
+            temperatures=body.temperatures,
+        )
+        jobs._update(
+            job_id,
+            status=JobStatus.COMPLETED,
+            message="completed",
+            kart_summary=summary,
+            defect_summary=info.defect_summary,
+        )
+        return summary
+    except Exception as exc:  # noqa: BLE001
+        jobs._update(job_id, status=JobStatus.COMPLETED, message=f"anneal failed: {exc}")
+        raise HTTPException(500, str(exc)) from exc
 
 
 @app.get("/api/jobs/{job_id}/trajectory")

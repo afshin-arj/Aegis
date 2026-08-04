@@ -143,6 +143,20 @@ class JobCreate(BaseModel):
     run_kart_anneal: bool = False
     kart_temperature_K: float = 600.0
     kart_max_events: int = 1000
+    kart_max_wall_s: float = Field(600.0, ge=1.0, le=86400.0)
+    kart_max_kmc_time_s: float = Field(1.0, ge=0.0)
+    # DOE: multiple anneal temperatures after the same cascade (overrides single T when set)
+    kart_anneal_temperatures: list[float] | None = None
+
+
+class KartAnnealRequest(BaseModel):
+    """Re-anneal an existing cascade at one or more temperatures (Phase-2 DOE)."""
+
+    temperature_K: float = 600.0
+    max_events: int = Field(1000, ge=1, le=1_000_000)
+    max_wall_s: float = Field(600.0, ge=1.0, le=86400.0)
+    max_kmc_time_s: float = Field(1.0, ge=0.0)
+    temperatures: list[float] | None = None
 
 
 class JobStatus(str, Enum):
