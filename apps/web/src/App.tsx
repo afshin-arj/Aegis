@@ -401,6 +401,7 @@ export default function App() {
   const [doeLocal, setDoeLocal] = useState(true);
   const [hpcScheduler, setHpcScheduler] = useState("slurm");
   const [hpcCores, setHpcCores] = useState(8);
+  const [hpcWalltime, setHpcWalltime] = useState("04:00:00");
   const [job, setJob] = useState<JobInfo | null>(null);
   const [jobs, setJobs] = useState<JobInfo[]>([]);
   const [log, setLog] = useState("");
@@ -545,6 +546,37 @@ export default function App() {
       clearInterval(timer);
     };
   }, [job?.id]);
+
+  useEffect(() => {
+    if (!campaign?.id) return;
+    if (!["queued", "running"].includes(campaign.status)) return;
+    const timer = setInterval(() => {
+      void refreshCampaign(campaign.id).catch(() => undefined);
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [campaign?.id, campaign?.status]);
+
+  const doePreview = useMemo(() => {
+    const xs = parseNumList(doeValuesX);
+    const ys = doeAxisY ? parseNumList(doeValuesY) : [null];
+    const raw = Math.max(0, xs.length) * Math.max(1, ys.length);
+    const capped = Math.min(raw, 12);
+    return { xs: xs.length, ys: doeAxisY ? ys.length : 0, raw, capped, truncated: raw > 12 };
+  }, [doeValuesX, doeValuesY, doeAxisY]);
+
+  const campaignProgress = useMemo(() => {
+    if (!campaign) return null;
+    const cases = campaign.cases;
+    const total = cases.length;
+    const done = cases.filter((c) =>
+      ["completed", "failed", "cancelled", "export_ready"].includes(c.status),
+    ).length;
+    const failed = cases.filter((c) => c.status === "failed").length;
+    const running = cases.filter((c) =>
+      ["running", "analyzing", "annealing", "queued"].includes(c.status),
+    ).length;
+    return { total, done, failed, running };
+  }, [campaign]);
 
   async function loadJob(jobId: string) {
     if (!jobId) return;
@@ -751,6 +783,20 @@ export default function App() {
       setError(blockers.join(" · "));
       return;
     }
+    const xs = parseNumList(doeValuesX);
+    const ys = doeAxisY ? parseNumList(doeValuesY) : [];
+    if (!xs.length) {
+      setError("Axis X needs at least one numeric value");
+      return;
+    }
+    if (doeAxisY && !ys.length) {
+      setError("Axis Y needs at least one numeric value (or choose 1D sweep)");
+      return;
+    }
+    if (doeAxisY && doeAxisX === doeAxisY) {
+      setError("Axis X and Axis Y must differ");
+      return;
+    }
     setBusy(true);
     setError("");
     try {
@@ -760,9 +806,9 @@ export default function App() {
         name: doeName || "doe-campaign",
         run_locally: doeLocal,
         axis_x: doeAxisX,
-        values_x: parseNumList(doeValuesX),
+        values_x: xs,
         axis_y: doeAxisY || null,
-        values_y: doeAxisY ? parseNumList(doeValuesY) : null,
+        values_y: doeAxisY ? ys : null,
         max_jobs: 12,
         base: {
           project_name: projectName,
@@ -807,7 +853,7 @@ export default function App() {
       const payload = {
         scheduler: hpcScheduler,
         cores: hpcCores,
-        walltime: "04:00:00",
+        walltime: hpcWalltime || "04:00:00",
         lammps_bin: "lmp",
       };
       const path =
@@ -834,6 +880,57 @@ export default function App() {
     } finally {
       setBusy(false);
     }
+  }
+
+  function campaignSummaryRows(c: DoeCampaign): Array<Record<string, unknown>> {
+    if (c.summary_rows.length) return c.summary_rows;
+    return c.cases.map((row) => ({ label: row.label, status: row.status, ...row.overrides, job_id: row.job_id }));
+  }
+
+  function summaryColumns(rows: Array<Record<string, unknown>>): string[] {
+    const preferred = [
+      "label",
+      "status",
+      "job_id",
+      "pka_energy_eV",
+      "ion_energy_eV",
+      "temperature_K",
+      "n_pkas",
+      "ion_count",
+      "surface_fluence_ions",
+      "vacancies",
+      "interstitials",
+      "clusters",
+      "mean_host_recession_A",
+      "fuzz_atom_count",
+    ];
+    const keys = new Set<string>();
+    for (const row of rows) {
+      for (const k of Object.keys(row)) keys.add(k);
+    }
+    const ordered = preferred.filter((k) => keys.has(k));
+    for (const k of keys) {
+      if (!ordered.includes(k)) ordered.push(k);
+    }
+    return ordered;
+  }
+
+  function exportCampaignCsv() {
+    if (!campaign) return;
+    const rows = campaignSummaryRows(campaign);
+    const cols = summaryColumns(rows);
+    const esc = (v: unknown) => {
+      const s = v == null ? "" : String(v);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const lines = [cols.join(","), ...rows.map((r) => cols.map((c) => esc(r[c])).join(","))];
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `aegis-${campaign.id}-doe.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   const clusterSizes = defects?.clusters?.map((c) => c.size) || [];
@@ -1026,6 +1123,13 @@ export default function App() {
                     onChange={(e) => setHpcCores(Number(e.target.value))}
                   />
                 </Field>
+                <Field label="Walltime" unit="HH:MM:SS" htmlFor="hpc-wall-proj">
+                  <input
+                    id="hpc-wall-proj"
+                    value={hpcWalltime}
+                    onChange={(e) => setHpcWalltime(e.target.value)}
+                  />
+                </Field>
                 <button type="button" className="secondary" disabled={busy} onClick={() => void exportHpc("job")}>
                   Export HPC pack
                 </button>
@@ -1044,8 +1148,8 @@ export default function App() {
               </span>
             </div>
             <p className="hint">
-              Phase-4 Cartesian sweeps (energy × T, etc.) using the current Material / Potential / LAMMPS recipe as the
-              base case. Local runs execute serially; uncheck local to prepare an HPC-oriented campaign record.
+              Cartesian sweeps (energy × T, etc.) using the current Material / Potential / LAMMPS recipe as the base
+              case. Local runs execute serially and auto-refresh; uncheck local to prepare inputs for an HPC zip.
             </p>
             <Field label="Campaign name" htmlFor="doe-name">
               <input id="doe-name" value={doeName} onChange={(e) => setDoeName(e.target.value)} />
@@ -1078,12 +1182,69 @@ export default function App() {
                 <input id="doe-vy" value={doeValuesY} onChange={(e) => setDoeValuesY(e.target.value)} disabled={!doeAxisY} />
               </Field>
             </div>
+            <div className="chip-row">
+              <span className="chip">
+                <span className="chip-k">matrix</span>
+                <span className="chip-v">
+                  {doePreview.xs}
+                  {doeAxisY ? ` × ${doePreview.ys}` : ""} → {doePreview.capped} case
+                  {doePreview.capped === 1 ? "" : "s"}
+                  {doePreview.truncated ? ` (capped from ${doePreview.raw})` : ""}
+                </span>
+              </span>
+              {campaignProgress && (
+                <>
+                  <span className="chip">
+                    <span className="chip-k">done</span>
+                    <span className="chip-v">
+                      {campaignProgress.done}/{campaignProgress.total}
+                    </span>
+                  </span>
+                  {campaignProgress.running > 0 && (
+                    <span className="chip">
+                      <span className="chip-k">active</span>
+                      <span className="chip-v">{campaignProgress.running}</span>
+                    </span>
+                  )}
+                  {campaignProgress.failed > 0 && (
+                    <span className="chip">
+                      <span className="chip-k">failed</span>
+                      <span className="chip-v">{campaignProgress.failed}</span>
+                    </span>
+                  )}
+                </>
+              )}
+            </div>
             <label className="check-row">
               <input type="checkbox" checked={doeLocal} onChange={(e) => setDoeLocal(e.target.checked)} />
               Run locally (serial queue)
             </label>
             <div className="row">
-              <button type="button" disabled={busy || blockers.length > 0} onClick={() => void launchCampaign()}>
+              <Field label="HPC scheduler" htmlFor="hpc-sched-doe">
+                <select id="hpc-sched-doe" value={hpcScheduler} onChange={(e) => setHpcScheduler(e.target.value)}>
+                  <option value="slurm">Slurm</option>
+                  <option value="pbs">PBS</option>
+                  <option value="none">files only</option>
+                </select>
+              </Field>
+              <Field label="Cores" htmlFor="hpc-cores-doe">
+                <input
+                  id="hpc-cores-doe"
+                  type="number"
+                  value={hpcCores}
+                  onChange={(e) => setHpcCores(Number(e.target.value))}
+                />
+              </Field>
+              <Field label="Walltime" unit="HH:MM:SS" htmlFor="hpc-wall-doe">
+                <input id="hpc-wall-doe" value={hpcWalltime} onChange={(e) => setHpcWalltime(e.target.value)} />
+              </Field>
+            </div>
+            <div className="row">
+              <button
+                type="button"
+                disabled={busy || blockers.length > 0 || doePreview.capped < 1}
+                onClick={() => void launchCampaign()}
+              >
                 Launch DOE campaign
               </button>
               <button
@@ -1102,9 +1263,23 @@ export default function App() {
               >
                 Export campaign HPC zip
               </button>
+              <button
+                type="button"
+                className="secondary"
+                disabled={!campaign || campaignSummaryRows(campaign).length === 0}
+                onClick={exportCampaignCsv}
+              >
+                Export CSV
+              </button>
             </div>
             {blockers.length > 0 && (
               <div className="alert alert-warn">Fix readiness blockers before launching: {blockers[0]}</div>
+            )}
+            {!doeLocal && (
+              <div className="alert alert-warn">
+                Export-only mode prepares <code>in.aegis</code> for each case without running LAMMPS locally — download
+                the HPC zip when ready.
+              </div>
             )}
             <h3>Campaign history</h3>
             <div className="stack">
@@ -1129,33 +1304,51 @@ export default function App() {
                 <p className="hint">
                   {campaign.axis_x}
                   {campaign.axis_y ? ` × ${campaign.axis_y}` : ""} · {campaign.status}
+                  {["queued", "running"].includes(campaign.status) ? " · auto-refreshing" : ""}
                 </p>
-                <div className="table-wrap">
-                  <table className="table">
-                    <thead>
-                      <tr>
-                        {(campaign.summary_rows[0]
-                          ? Object.keys(campaign.summary_rows[0])
-                          : ["label", "status"]
-                        ).map((k) => (
-                          <th key={k}>{k}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(campaign.summary_rows.length
-                        ? campaign.summary_rows
-                        : campaign.cases.map((c) => ({ label: c.label, status: c.status, ...c.overrides }))
-                      ).map((row, i) => (
-                        <tr key={i}>
-                          {Object.values(row).map((v, j) => (
-                            <td key={j}>{v == null ? "—" : String(v)}</td>
+                {(() => {
+                  const rows = campaignSummaryRows(campaign);
+                  const cols = summaryColumns(rows);
+                  return (
+                    <div className="table-wrap">
+                      <table className="table">
+                        <thead>
+                          <tr>
+                            {cols.map((k) => (
+                              <th key={k}>{k}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {rows.map((row, i) => (
+                            <tr key={i}>
+                              {cols.map((k) => {
+                                const v = row[k];
+                                if (k === "job_id" && typeof v === "string" && v) {
+                                  return (
+                                    <td key={k}>
+                                      <button
+                                        type="button"
+                                        className="linkish"
+                                        onClick={() => {
+                                          void loadJob(v);
+                                          setTab("run");
+                                        }}
+                                      >
+                                        {v}
+                                      </button>
+                                    </td>
+                                  );
+                                }
+                                return <td key={k}>{v == null ? "—" : String(v)}</td>;
+                              })}
+                            </tr>
                           ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })()}
               </>
             )}
           </section>
@@ -1842,6 +2035,9 @@ export default function App() {
                       value={hpcCores}
                       onChange={(e) => setHpcCores(Number(e.target.value))}
                     />
+                  </Field>
+                  <Field label="Walltime" unit="HH:MM:SS" htmlFor="hpc-wall-run">
+                    <input id="hpc-wall-run" value={hpcWalltime} onChange={(e) => setHpcWalltime(e.target.value)} />
                   </Field>
                   <button type="button" className="secondary" disabled={busy} onClick={() => void exportHpc("job")}>
                     Export HPC pack

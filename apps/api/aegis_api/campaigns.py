@@ -85,6 +85,9 @@ class CampaignManager:
         matrix = expand_doe_matrix(body)
         if not matrix:
             raise ValueError("DOE matrix is empty")
+        xs = list(body.values_x) or [0.0]
+        ys = list(body.values_y) if body.axis_y and body.values_y else [None]
+        full_count = len(xs) * len(ys)
         cid = uuid4().hex[:12]
         cases: list[DoeCase] = []
         job_ids: list[str] = []
@@ -134,7 +137,10 @@ class CampaignManager:
             created_at=_now(),
             updated_at=_now(),
             status="queued" if body.run_locally else "export_only",
-            message=f"{len(cases)} cases",
+            message=(
+                f"{len(cases)} cases"
+                + (f" (capped from {full_count})" if full_count > len(cases) else "")
+            ),
             axis_x=body.axis_x.value,
             values_x=list(body.values_x),
             axis_y=body.axis_y.value if body.axis_y else None,
@@ -233,7 +239,12 @@ class CampaignManager:
                 row["status"] = status
             rows.append(row)
             cases.append(DoeCase(job_id=c.job_id, label=c.label, overrides=c.overrides, status=status))
-        return self._update(campaign_id, cases=cases, summary_rows=rows)
+        done = sum(1 for c in cases if c.status in {"completed", "failed", "cancelled", "export_ready"})
+        failed = sum(1 for c in cases if c.status == "failed")
+        msg = f"{done}/{len(cases)} cases finished"
+        if failed:
+            msg += f" ({failed} failed)"
+        return self._update(campaign_id, cases=cases, summary_rows=rows, message=msg)
 
 
 def write_hpc_pack(
