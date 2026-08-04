@@ -14,6 +14,8 @@ def _read_last_dump_atoms(
     patterns = (
         "dump.cascade.*.lammpstrj",
         "dump.implant.*.lammpstrj",
+        "dump.interstitial.*.lammpstrj",
+        "dump.surface.*.lammpstrj",
         "dump.*.lammpstrj",
     )
     files: list[Path] = []

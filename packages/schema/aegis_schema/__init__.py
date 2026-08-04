@@ -21,6 +21,7 @@ class RunMode(str, Enum):
     CASCADE = "cascade"
     IMPLANT = "implant"
     SURFACE = "surface"  # low-E He/D free-surface MD (Phase-3)
+    INTERSTITIAL = "interstitial"  # insert impurities/SIAs along lattice directions
 
 
 class ElementFraction(BaseModel):
@@ -160,6 +161,15 @@ class LammpsRunParams(BaseModel):
     # Phase-3 surface MD
     vacuum_layers: int = Field(4, ge=1, le=32)
     surface_fluence_ions: int = Field(1, ge=1, le=500)
+    # Interstitial insertion (not substitutional composition)
+    interstitial_species: str = "He"
+    interstitial_count: int = Field(1, ge=1, le=64)
+    # Pre-defined BCC directions: 100 | 110 | 111 | random | "h k l"
+    interstitial_direction: str = "111"
+    # octahedral | tetrahedral | dumbbell | crowdion
+    interstitial_geometry: str = "octahedral"
+    interstitial_offset_A: float | None = None  # dumbbell/crowdion half-separation; default ~0.25 a
+    interstitial_energy_eV: float = 0.0  # optional kick along the lattice direction after insert
     timestep_fs: float = 0.001
     max_steps: int = 20000
     neighbor_skin: float = 2.0
@@ -251,6 +261,7 @@ class DoeAxis(str, Enum):
     N_PKAS = "n_pkas"
     ION_COUNT = "ion_count"
     SURFACE_FLUENCE = "surface_fluence_ions"
+    INTERSTITIAL_COUNT = "interstitial_count"
 
 
 class DoeCampaignCreate(BaseModel):

@@ -14,7 +14,12 @@ from uuid import uuid4
 from aegis_schema import JobCreate, JobInfo, JobStatus, Material, Potential
 
 from aegis_api.analysis import analyze_job_dir
-from lammps.templates import write_cascade_input, write_implant_input, write_surface_input
+from lammps.templates import (
+    write_cascade_input,
+    write_implant_input,
+    write_interstitial_input,
+    write_surface_input,
+)
 from kart.adapter import run_anneal_stub_or_real
 from mmonca.adapter import run_okmc_stub_or_real
 
@@ -146,6 +151,14 @@ class JobManager:
                 params=params,
                 potential_file=local_pot.name,
             )
+        elif mode == "interstitial":
+            write_interstitial_input(
+                in_path,
+                material=mat_dict,
+                potential=pot_dict,
+                params=params,
+                potential_file=local_pot.name,
+            )
         else:
             write_cascade_input(
                 in_path,
@@ -233,6 +246,14 @@ class JobManager:
                     params=params,
                     potential_file=local_pot.name,
                 )
+            elif mode == "interstitial":
+                write_interstitial_input(
+                    in_path,
+                    material=mat_dict,
+                    potential=pot_dict,
+                    params=params,
+                    potential_file=local_pot.name,
+                )
             else:
                 write_cascade_input(
                     in_path,
@@ -268,6 +289,10 @@ class JobManager:
                         self._write_demo_surface_dump(job_dir, material, params)
                     elif mode == "implant":
                         self._write_demo_dump(job_dir, material, dump_name="dump.implant.000000000.lammpstrj")
+                    elif mode == "interstitial":
+                        self._write_demo_dump(
+                            job_dir, material, dump_name="dump.interstitial.000000000.lammpstrj"
+                        )
                     else:
                         self._write_demo_dump(job_dir, material)
                     log.write("[Aegis] demo dump written for analysis.\n")

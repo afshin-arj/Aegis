@@ -446,6 +446,237 @@ def write_surface_input(
     return path
 
 
+def _lattice_direction_unit(direction: str, seed: int) -> tuple[float, float, float]:
+    """Unit vector for pre-defined BCC lattice directions."""
+    key = direction.strip().lower().replace(",", " ")
+    presets = {
+        "100": (1.0, 0.0, 0.0),
+        "010": (0.0, 1.0, 0.0),
+        "001": (0.0, 0.0, 1.0),
+        "110": (1.0, 1.0, 0.0),
+        "101": (1.0, 0.0, 1.0),
+        "011": (0.0, 1.0, 1.0),
+        "111": (1.0, 1.0, 1.0),
+        "<100>": (1.0, 0.0, 0.0),
+        "<110>": (1.0, 1.0, 0.0),
+        "<111>": (1.0, 1.0, 1.0),
+        "[100]": (1.0, 0.0, 0.0),
+        "[110]": (1.0, 1.0, 0.0),
+        "[111]": (1.0, 1.0, 1.0),
+    }
+    if key in presets:
+        vx, vy, vz = presets[key]
+    elif key == "random":
+        return _direction_unit("random", seed)
+    else:
+        return _direction_unit(direction, seed)
+    norm = math.sqrt(vx * vx + vy * vy + vz * vz) or 1.0
+    return vx / norm, vy / norm, vz / norm
+
+
+def _interstitial_sites_lattice(
+    *,
+    geometry: str,
+    count: int,
+    nx: int,
+    ny: int,
+    nz: int,
+    direction: tuple[float, float, float],
+    a: float,
+    offset_A: float,
+) -> list[tuple[float, float, float, str]]:
+    """Return list of (x,y,z in lattice units, kind) for interstitial inserts.
+
+    kind is 'single' (one atom) or 'pair' markers handled by caller via paired sites.
+    For dumbbell/crowdion we return pairs of positions as consecutive singles with kind 'sia'.
+    """
+    geom = geometry.strip().lower()
+    ux, uy, uz = direction
+    # Anchor near geometric center of the box (lattice units)
+    cx, cy, cz = nx * 0.5, ny * 0.5, nz * 0.5
+    # Perpendicular spread basis
+    if abs(ux) < 0.9:
+        px, py, pz = 0.0, -uz, uy
+    else:
+        px, py, pz = -uy, ux, 0.0
+    pn = math.sqrt(px * px + py * py + pz * pz) or 1.0
+    px, py, pz = px / pn, py / pn, pz / pn
+    qx, qy, qz = uy * pz - uz * py, uz * px - ux * pz, ux * py - uy * px
+
+    half = (offset_A / a) if a > 0 else 0.25
+    sites: list[tuple[float, float, float, str]] = []
+
+    for i in range(count):
+        # Spread along a small grid in the plane ⊥ direction
+        sx = ((i % 3) - 1) * 0.35
+        sy = (((i // 3) % 3) - 1) * 0.35
+        sz = ((i // 9) % 3) * 0.2
+        base_x = cx + sx * px + sy * qx + sz * ux
+        base_y = cy + sx * py + sy * qy + sz * uy
+        base_z = cz + sx * pz + sy * qz + sz * uz
+        # Clamp into box with small margin
+        base_x = min(max(base_x, 0.25), nx - 0.25)
+        base_y = min(max(base_y, 0.25), ny - 0.25)
+        base_z = min(max(base_z, 0.25), nz - 0.25)
+
+        if geom in {"dumbbell", "crowdion"}:
+            # Pair of atoms along the lattice direction (SIA dumbbell / crowdion seed)
+            sep = half if geom == "dumbbell" else half * 1.6
+            sites.append((base_x + sep * ux, base_y + sep * uy, base_z + sep * uz, "pair"))
+            sites.append((base_x - sep * ux, base_y - sep * uy, base_z - sep * uz, "pair"))
+        elif geom == "tetrahedral":
+            # BCC tetrahedral offset ~ (0.5, 0.25, 0) in a unit cell, oriented with direction
+            ox, oy, oz = 0.5 * ux + 0.25 * px, 0.5 * uy + 0.25 * py, 0.5 * uz + 0.25 * pz
+            sites.append((base_x + ox * 0.5, base_y + oy * 0.5, base_z + oz * 0.5, "single"))
+        else:
+            # Default octahedral: midway along the chosen lattice direction from a lattice point
+            sites.append(
+                (
+                    base_x + 0.5 * ux,
+                    base_y + 0.5 * uy,
+                    base_z + 0.5 * uz,
+                    "single",
+                )
+            )
+    return sites
+
+
+def write_interstitial_input(
+    path: Path,
+    *,
+    material: dict[str, Any],
+    potential: dict[str, Any],
+    params: dict[str, Any],
+    potential_file: str,
+) -> Path:
+    """Insert interstitial impurities / SIA seeds along pre-defined BCC lattice directions.
+
+    Material composition remains substitutional on the host lattice. Interstitials are
+    extra atoms (octahedral / tetrahedral / dumbbell / crowdion) oriented along
+    <100>, <110>, <111>, or a custom Miller vector.
+    """
+    host_elems = _elements_line(material["composition"])
+    if not host_elems:
+        host_elems = ["W"]
+    species = str(params.get("interstitial_species") or "He")
+    elems = list(host_elems)
+    if species not in elems:
+        elems.append(species)
+
+    a = float(material.get("lattice_constant_A", 3.165))
+    nx, ny, nz = int(params["nx"]), int(params["ny"]), int(params["nz"])
+    seed = int(params["seed"])
+    dt = float(params["timestep_fs"])
+    steps = int(params["max_steps"])
+    T = float(params["temperature_K"])
+    count = max(1, int(params.get("interstitial_count", 1)))
+    direction_s = str(params.get("interstitial_direction", "111"))
+    geometry = str(params.get("interstitial_geometry", "octahedral"))
+    offset = params.get("interstitial_offset_A")
+    offset_A = float(offset) if offset not in (None, "") else 0.25 * a
+    E_kick = float(params.get("interstitial_energy_eV", 0.0) or 0.0)
+
+    pair_style = potential["lammps_pair_style"]
+    pair_coeff = render_pair_coeff(
+        potential.get("pair_coeff_template", "pair_coeff * * {file} {elements}"),
+        potential_file,
+        elems,
+    )
+    masses = "\n".join(f"mass {i+1} {_approx_mass(sym)}" for i, sym in enumerate(elems))
+    create = _create_atoms_block(material, host_elems)
+    ensemble = _ensemble_fix(params)
+    dump, dump_mod = _dump_command(params, "dump.interstitial.*.lammpstrj")
+    restart = _restart_block(params)
+    crystal_note = _crystal_comment(material)
+
+    ux, uy, uz = _lattice_direction_unit(direction_s, seed)
+    sites = _interstitial_sites_lattice(
+        geometry=geometry,
+        count=count,
+        nx=nx,
+        ny=ny,
+        nz=nz,
+        direction=(ux, uy, uz),
+        a=a,
+        offset_A=offset_A,
+    )
+    ityp = elems.index(species) + 1
+    insert_lines = [
+        f"create_atoms {ityp} single {x:.6f} {y:.6f} {z:.6f} units lattice"
+        for x, y, z, _kind in sites
+    ]
+    insert_block = "\n".join(insert_lines)
+
+    kick_block = ""
+    if E_kick > 0:
+        mass_i = _approx_mass(species)
+        speed = math.sqrt(2.0 * E_kick / mass_i) * 98.226947
+        kick_block = textwrap.dedent(
+            f"""\
+            group interstitial_atoms type {ityp}
+            velocity interstitial_atoms set {ux * speed:.6f} {uy * speed:.6f} {uz * speed:.6f} units box
+            """
+        )
+
+    n_atoms_inserted = len(sites)
+    script = textwrap.dedent(
+        f"""\
+        # Aegis-generated interstitial insertion along lattice direction
+        # species={species} count≈{count} geometry={geometry} direction={direction_s}
+        # atoms_created={n_atoms_inserted} (dumbbell/crowdion create a pair per count)
+        # Host composition is SUBSTITUTIONAL; these inserts are EXTRA interstitial atoms.
+        {crystal_note}
+        units metal
+        dimension 3
+        boundary {params.get("boundary", "p p p")}
+        atom_style atomic
+
+        lattice bcc {a}
+        region box block 0 {nx} 0 {ny} 0 {nz} units lattice
+        create_box {len(elems)} box
+        {create}
+        {masses}
+
+        pair_style {pair_style}
+        {pair_coeff}
+
+        neighbor {params.get("neighbor_skin", 2.0)} bin
+        neigh_modify delay 0 every 1 check yes
+
+        velocity all create {T} {seed} mom yes rot yes
+        {ensemble}
+        run 500
+
+        # Reference BEFORE interstitial insertion
+        write_dump all custom dump.initial.lammpstrj id type x y z modify sort id
+
+        # Insert interstitials oriented along the chosen lattice direction
+        {insert_block}
+        {kick_block}
+
+        reset_timestep 0
+        thermo {int(params.get("thermo_every", 100))}
+        thermo_style custom step temp pe ke etotal
+        {dump}
+        {dump_mod}
+        {restart}
+        run 0
+        timestep {dt}
+        run {steps}
+
+        write_data final.data
+        print "Aegis interstitial insertion finished"
+        """
+    )
+    script = script.replace(
+        f"lattice bcc {a}\n",
+        f"{_lattice_line(a, params)}\n",
+        1,
+    )
+    path.write_text(script, encoding="utf-8")
+    return path
+
+
 def _create_atoms_block(material: dict[str, Any], elems: list[str]) -> str:
     """Random substitutional alloy on BCC lattice for multi-element materials."""
     if len(elems) == 1:

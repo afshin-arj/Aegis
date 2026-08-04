@@ -108,6 +108,12 @@ type RunParams = {
   ion_angle_deg: number;
   vacuum_layers: number;
   surface_fluence_ions: number;
+  interstitial_species: string;
+  interstitial_count: number;
+  interstitial_direction: string;
+  interstitial_geometry: string;
+  interstitial_offset_A: number | null;
+  interstitial_energy_eV: number;
   timestep_fs: number;
   max_steps: number;
   neighbor_skin: number;
@@ -167,6 +173,12 @@ const defaultParams: RunParams = {
   ion_angle_deg: 0,
   vacuum_layers: 4,
   surface_fluence_ions: 1,
+  interstitial_species: "He",
+  interstitial_count: 1,
+  interstitial_direction: "111",
+  interstitial_geometry: "octahedral",
+  interstitial_offset_A: null,
+  interstitial_energy_eV: 0,
   timestep_fs: 0.001,
   max_steps: 20000,
   neighbor_skin: 2,
@@ -481,8 +493,31 @@ export default function App() {
     if (compositionTotal <= 0) list.push("Composition requires a positive atomic fraction");
     if (largeCell && !params.confirm_large) list.push("Large cell (>20³) — confirm in LAMMPS tab");
     if (material?.metadata_only) list.push("Material is metadata-only (no runnable lattice recipe)");
+    if (params.mode === "interstitial" && selectedPot) {
+      const need = new Set(
+        [
+          ...composition.filter((e) => e.atomic_percent > 0).map((e) => e.symbol),
+          params.interstitial_species,
+        ].filter(Boolean),
+      );
+      if (![...need].every((s) => selectedPot.elements.includes(s))) {
+        list.push(
+          `Potential must cover host + interstitial species (${[...need].join(", ")}); current covers ${selectedPot.elements.join(" ")}`,
+        );
+      }
+    }
     return list;
-  }, [potentialId, selectedPot, compositionTotal, largeCell, params.confirm_large, material]);
+  }, [
+    potentialId,
+    selectedPot,
+    compositionTotal,
+    largeCell,
+    params.confirm_large,
+    params.mode,
+    params.interstitial_species,
+    composition,
+    material,
+  ]);
 
   const verdict = blockers.length
     ? { tone: "blocked" as const, label: "Blocked", msg: blockers[0] }
@@ -1316,6 +1351,7 @@ export default function App() {
                   <option value="n_pkas">n PKAs</option>
                   <option value="ion_count">Ion count</option>
                   <option value="surface_fluence_ions">Surface fluence</option>
+                  <option value="interstitial_count">Interstitial count</option>
                 </select>
               </Field>
               <Field label="Values X" unit="comma-separated" htmlFor="doe-vx">
@@ -1562,6 +1598,10 @@ export default function App() {
             </Field>
             <div className="row">
               <h3>Composition</h3>
+              <p className="hint">
+                Fractions are <strong>substitutional</strong> on BCC lattice sites. To place impurities as interstitials
+                along &lt;100&gt;/&lt;110&gt;/&lt;111&gt;, use LAMMPS mode <em>interstitial insert</em>.
+              </p>
               <Field label="Units" htmlFor="comp-unit">
                 <select
                   id="comp-unit"
@@ -1971,6 +2011,7 @@ export default function App() {
                     <option value="cascade">cascade / PKA</option>
                     <option value="implant">ion implant (bulk)</option>
                     <option value="surface">low-E surface (fuzz proxy)</option>
+                    <option value="interstitial">interstitial insert (lattice dirs)</option>
                   </select>
                 </Field>
                 <Field label="Temperature" unit="K" htmlFor="T">
@@ -2150,6 +2191,103 @@ export default function App() {
                       type="number"
                       value={params.surface_fluence_ions}
                       onChange={(e) => setParam("surface_fluence_ions", Number(e.target.value))}
+                    />
+                  </Field>
+                </div>
+              </fieldset>
+            )}
+            {params.mode === "interstitial" && (
+              <fieldset className="fieldset">
+                <legend>Interstitial insertion</legend>
+                <p className="hint">
+                  Material composition stays substitutional on BCC sites. This mode adds extra interstitial atoms
+                  (or SIA dumbbell/crowdion pairs) oriented along a lattice direction — not random alloy swaps.
+                </p>
+                <div className="row">
+                  <Field label="Species" htmlFor="int-sp">
+                    <input
+                      id="int-sp"
+                      value={params.interstitial_species}
+                      onChange={(e) => setParam("interstitial_species", e.target.value)}
+                    />
+                  </Field>
+                  <Field label="Count" unit="sites / dumbbells" htmlFor="int-n">
+                    <input
+                      id="int-n"
+                      type="number"
+                      min={1}
+                      max={64}
+                      value={params.interstitial_count}
+                      onChange={(e) => setParam("interstitial_count", Number(e.target.value))}
+                    />
+                  </Field>
+                  <Field label="Lattice direction" htmlFor="int-dir">
+                    <select
+                      id="int-dir"
+                      value={
+                        ["100", "110", "111", "random"].includes(params.interstitial_direction)
+                          ? params.interstitial_direction
+                          : "custom"
+                      }
+                      onChange={(e) => {
+                        if (e.target.value === "custom") {
+                          setParam("interstitial_direction", "1 0 0");
+                        } else {
+                          setParam("interstitial_direction", e.target.value);
+                        }
+                      }}
+                    >
+                      <option value="100">&lt;100&gt;</option>
+                      <option value="110">&lt;110&gt;</option>
+                      <option value="111">&lt;111&gt;</option>
+                      <option value="random">random</option>
+                      <option value="custom">custom Miller…</option>
+                    </select>
+                  </Field>
+                  {!["100", "110", "111", "random"].includes(params.interstitial_direction) && (
+                    <Field label="Miller indices" unit="h k l" htmlFor="int-miller">
+                      <input
+                        id="int-miller"
+                        value={params.interstitial_direction}
+                        onChange={(e) => setParam("interstitial_direction", e.target.value)}
+                      />
+                    </Field>
+                  )}
+                </div>
+                <div className="row">
+                  <Field label="Geometry" htmlFor="int-geom">
+                    <select
+                      id="int-geom"
+                      value={params.interstitial_geometry}
+                      onChange={(e) => setParam("interstitial_geometry", e.target.value)}
+                    >
+                      <option value="octahedral">octahedral site</option>
+                      <option value="tetrahedral">tetrahedral site</option>
+                      <option value="dumbbell">dumbbell (pair ±dir)</option>
+                      <option value="crowdion">crowdion seed (pair along dir)</option>
+                    </select>
+                  </Field>
+                  <Field label="Pair offset" unit="Å · blank = 0.25 a" htmlFor="int-off">
+                    <input
+                      id="int-off"
+                      type="number"
+                      step="0.01"
+                      value={params.interstitial_offset_A ?? ""}
+                      onChange={(e) =>
+                        setParam(
+                          "interstitial_offset_A",
+                          e.target.value === "" ? null : Number(e.target.value),
+                        )
+                      }
+                    />
+                  </Field>
+                  <Field label="Kick energy" unit="eV · 0 = static insert" htmlFor="int-e">
+                    <input
+                      id="int-e"
+                      type="number"
+                      step="0.1"
+                      value={params.interstitial_energy_eV}
+                      onChange={(e) => setParam("interstitial_energy_eV", Number(e.target.value))}
                     />
                   </Field>
                 </div>

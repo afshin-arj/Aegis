@@ -10,6 +10,7 @@ def _prefer_analysis_dumps(job_dir: Path) -> list[Path]:
     candidates: list[Path] = []
     for pattern in (
         "dump.surface.*.lammpstrj",
+        "dump.interstitial.*.lammpstrj",
         "dump.cascade.*.lammpstrj",
         "dump.implant.*.lammpstrj",
         "dump.*.lammpstrj",
