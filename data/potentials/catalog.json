@@ -16,7 +16,8 @@
     "pair_coeff_template": "pair_coeff * * {file} W",
     "file_path": "potentials/curated/w_eam_demo.placeholder",
     "source": "curated",
-    "available": true
+    "available": false,
+    "is_placeholder": true
   },
   {
     "id": "w-fs-cascade",

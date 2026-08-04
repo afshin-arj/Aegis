@@ -430,6 +430,45 @@ label .unit {
   color: var(--fail);
 }
 
+.recipe dd.tone-warn {
+  color: var(--warn);
+}
+
+.job-row {
+  display: grid;
+  grid-template-columns: 7rem 1fr auto auto;
+  gap: 0.65rem;
+  align-items: center;
+  width: 100%;
+  text-align: left;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--line-soft);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+
+.job-row:hover,
+.job-row.active {
+  border-color: var(--copper);
+  background: color-mix(in srgb, var(--copper) 8%, transparent);
+}
+
+.job-row .mono {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.status-completed { color: var(--ok); }
+.status-failed,
+.status-cancelled { color: var(--fail); }
+.status-running,
+.status-analyzing,
+.status-annealing,
+.status-queued { color: var(--warn); }
+
 .recipe-note {
   margin: 0.85rem 0 0;
   color: var(--muted);
@@ -676,6 +715,51 @@ details.advanced[open] summary::before {
   border: 1px solid var(--line);
   background: #07090d;
   overflow: hidden;
+  touch-action: none;
+}
+
+.structure-viz {
+  height: 320px;
+  cursor: grab;
+}
+
+.structure-viz:active {
+  cursor: grabbing;
+}
+
+.structure-compare {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--gap);
+}
+
+.empty-viz {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 0.8rem;
+}
+
+.scrubber {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.scrubber input[type="range"] {
+  width: 100%;
+  min-height: 28px;
+  accent-color: var(--copper);
+}
+
+@media (max-width: 960px) {
+  .structure-compare {
+    grid-template-columns: 1fr;
+  }
 }
 
 .chart {

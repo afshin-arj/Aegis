@@ -15,15 +15,18 @@ description: LAMMPS cascade/implant conventions for Aegis — run parameters, du
 
 - Units: `metal`
 - Persist `run_params.json` + `in.aegis` per job under `runs/<id>/`
-- Dump interval/style from UI; analysis reads `dump.*.lammpstrj`
-- If LAMMPS missing: dry-run demo dump so analysis/UI still work
+- Wire UI params: ensemble/NVT damp, dump style, restart, multi-PKA delay, implant count/angle
+- Write `dump.initial.lammpstrj` before damage; cascade/implant dumps for analysis
+- Prefer cascade/implant dumps over initial for defect analysis
+- If LAMMPS missing or placeholder potential: dry-run demo dump so analysis/UI still work
 
 ## Parameter groups
 
-System (nx/ny/nz, boundary, seed), thermostat, PKA/cascade, implant, dynamics, output, analysis hooks (`cluster_cutoff_A`).
+System (nx/ny/nz, boundary, seed), thermostat, PKA/cascade, implant, dynamics, output, analysis hooks (`ws_lattice_A`, `cluster_cutoff_A`).
 
 ## Rules
 
-- Refuse run without a selected potential file on disk.
+- Refuse real MD without a non-placeholder potential file.
 - Large cells (>20³): require `confirm_large`.
 - Do not invent pair_style / coefficients; use catalog or user upload.
+- Non-BCC materials: warn — templates still build BCC in Phase-1.

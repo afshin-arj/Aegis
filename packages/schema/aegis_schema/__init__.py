@@ -80,6 +80,7 @@ class Potential(BaseModel):
     file_path: str | None = None
     source: str = "curated"  # curated | user
     available: bool = False
+    is_placeholder: bool = False
 
 
 class PotentialUploadMeta(BaseModel):
@@ -106,6 +107,7 @@ class LammpsRunParams(BaseModel):
     ny: int = Field(8, ge=2, le=64)
     nz: int = Field(8, ge=2, le=64)
     boundary: str = "p p p"
+    crystal_orient: str = "100"  # box x-axis: 100 | 110 | 111
     seed: int = 592856
     ensemble: Ensemble = Ensemble.NVE
     temperature_K: float = 300.0

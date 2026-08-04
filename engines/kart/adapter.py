@@ -28,7 +28,6 @@ def discover_kart() -> dict[str, Any]:
                 r / "kart.exe",
             ]
         )
-    # Default third_party location relative to repo
     repo = Path(__file__).resolve().parents[2]
     tp = repo / "third_party" / "kart"
     if not root:
@@ -45,7 +44,6 @@ def discover_kart() -> dict[str, Any]:
         if c and c.exists() and c.is_file():
             binary = str(c.resolve())
             break
-    # Also accept any executable named kart on PATH
     which = shutil.which("kart")
     if not binary and which:
         binary = which
@@ -54,12 +52,12 @@ def discover_kart() -> dict[str, Any]:
     if root_path is None:
         msg.append(
             "KART root not found. Clone groupe_mousseau/kart into third_party/kart "
-            f"and checkout {EXPECTED_COMMIT}, then build."
+            f"and checkout {EXPECTED_COMMIT}, then build. See engines/kart/SETUP.md."
         )
     elif binary is None:
         msg.append(
             f"KART sources may be present at {root_path}, but no binary was found. "
-            "Build per kart-doc; set AEGIS_KART_BIN."
+            "Build per kart-doc / SETUP.md; set AEGIS_KART_BIN."
         )
     else:
         msg.append("KART binary discovered.")
@@ -73,30 +71,62 @@ def discover_kart() -> dict[str, Any]:
     }
 
 
+def _write_cascade_handoff(job_dir: Path, temperature_K: float, max_events: int) -> Path:
+    """Write Phase-1 cascade→KART handoff package (defects + request).
+
+    Full k-ART catalog coupling is Phase-2; this artifact documents the contract.
+    """
+    defects_path = job_dir / "defects.json"
+    defects: dict[str, Any] = {}
+    if defects_path.exists():
+        try:
+            defects = json.loads(defects_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            defects = {}
+    summary = defects.get("summary") or {}
+    handoff = {
+        "format": "aegis-kart-handoff-v1",
+        "temperature_K": temperature_K,
+        "max_events": max_events,
+        "source_defects": str(defects_path.name),
+        "n_vacancies": summary.get("vacancies"),
+        "n_interstitials": summary.get("interstitials"),
+        "n_clusters": summary.get("clusters"),
+        "dump": summary.get("dump"),
+        "notes": [
+            "Phase-1 adapter writes this handoff for reproducibility.",
+            "Phase-2 will convert defect geometry into a KART restart/event catalog.",
+        ],
+    }
+    out = job_dir / "kart_handoff.json"
+    out.write_text(json.dumps(handoff, indent=2), encoding="utf-8")
+    return out
+
+
 def run_anneal_stub_or_real(
     job_dir: Path,
     *,
     temperature_K: float,
     max_events: int,
 ) -> dict[str, Any]:
-    """If KART binary exists, attempt a dry invocation; else write stub results."""
+    """If KART binary exists, probe it and record handoff; else write stub results."""
     info = discover_kart()
-    out = {
+    handoff = _write_cascade_handoff(job_dir, temperature_K, max_events)
+    out: dict[str, Any] = {
         "engine": "kart",
         "temperature_K": temperature_K,
         "max_events": max_events,
         "status": "stub",
         "message": "",
         "events": [],
+        "handoff": handoff.name,
     }
     summary_path = job_dir / "kart_summary.json"
 
     if not info["kart_found"]:
         out["message"] = (
-            "KART binary not available — anneal stubbed. "
-            + info["kart_message"]
+            "KART binary not available — anneal stubbed. " + info["kart_message"]
         )
-        # Synthetic anneal curve for UI wiring
         out["events"] = [
             {"event": i, "barrier_eV": 0.4 + 0.01 * (i % 7), "time_s": 1e-9 * i}
             for i in range(min(20, max_events))
@@ -105,7 +135,7 @@ def run_anneal_stub_or_real(
         summary_path.write_text(json.dumps(out, indent=2), encoding="utf-8")
         return out
 
-    # Real binary present: record attempt. Full input coupling is Phase-2.
+    # Binary present: Phase-1 probes the executable and persists handoff for Phase-2 coupling.
     cmd = [info["kart_binary"], "--help"]
     try:
         proc = subprocess.run(
@@ -118,7 +148,8 @@ def run_anneal_stub_or_real(
         )
         out["status"] = "binary_present"
         out["message"] = (
-            "KART binary responded. Full cascade→k-ART catalog handoff is Phase-2; "
+            "KART binary responded; cascade handoff written. "
+            "Full cascade→k-ART catalog anneal is Phase-2; "
             f"exit={proc.returncode}."
         )
         out["stdout_tail"] = (proc.stdout or proc.stderr or "")[-2000:]

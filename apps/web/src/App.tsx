@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as THREE from "three";
+import StructureViewer from "./StructureViewer";
 
 type ElementFraction = { symbol: string; atomic_percent: number };
 type Material = {
@@ -19,6 +20,7 @@ type Potential = {
   recommended_for: string[];
   warnings: string[];
   available: boolean;
+  is_placeholder?: boolean;
   source: string;
   lammps_pair_style: string;
 };
@@ -60,6 +62,7 @@ type RunParams = {
   ny: number;
   nz: number;
   boundary: string;
+  crystal_orient: string;
   seed: number;
   ensemble: string;
   temperature_K: number;
@@ -85,16 +88,28 @@ type RunParams = {
   confirm_large: boolean;
 };
 
-type TabId = "material" | "potential" | "scenario" | "params" | "run" | "results" | "engines";
+type TabId = "projects" | "material" | "potential" | "scenario" | "params" | "run" | "results" | "engines";
 
 const TABS: { id: TabId; step: string; label: string }[] = [
-  { id: "material", step: "01", label: "Material" },
-  { id: "potential", step: "02", label: "Potential" },
-  { id: "scenario", step: "03", label: "Scenario" },
-  { id: "params", step: "04", label: "LAMMPS" },
-  { id: "run", step: "05", label: "Run" },
-  { id: "results", step: "06", label: "Results" },
-  { id: "engines", step: "07", label: "Engines" },
+  { id: "projects", step: "01", label: "Projects" },
+  { id: "material", step: "02", label: "Material" },
+  { id: "potential", step: "03", label: "Potential" },
+  { id: "scenario", step: "04", label: "Scenario" },
+  { id: "params", step: "05", label: "LAMMPS" },
+  { id: "run", step: "06", label: "Run" },
+  { id: "results", step: "07", label: "Results" },
+  { id: "engines", step: "08", label: "Engines" },
+];
+
+const PAIR_STYLE_WHITELIST = [
+  "eam",
+  "eam/alloy",
+  "eam/fs",
+  "meam",
+  "snap",
+  "table",
+  "hybrid",
+  "hybrid/overlay",
 ];
 
 const defaultParams: RunParams = {
@@ -103,6 +118,7 @@ const defaultParams: RunParams = {
   ny: 8,
   nz: 8,
   boundary: "p p p",
+  crystal_orient: "100",
   seed: 592856,
   ensemble: "nve",
   temperature_K: 300,
@@ -167,6 +183,43 @@ function normalizeComposition(rows: ElementFraction[]): ElementFraction[] {
   return rows.map((row) => ({
     symbol: row.symbol.trim(),
     atomic_percent: (Math.max(0, Number(row.atomic_percent) || 0) / total) * 100,
+  }));
+}
+
+const ATOMIC_MASS: Record<string, number> = {
+  H: 1.008,
+  D: 2.014,
+  He: 4.0026,
+  C: 12.011,
+  V: 50.942,
+  Cr: 51.996,
+  Fe: 55.845,
+  Mo: 95.95,
+  Ta: 180.95,
+  W: 183.84,
+  Re: 186.21,
+};
+
+function massOf(symbol: string): number {
+  return ATOMIC_MASS[symbol.trim()] || 1;
+}
+
+/** Convert stored at% rows into editable wt% display values. */
+function atToWt(rows: ElementFraction[]): number[] {
+  const masses = rows.map((r) => (Number(r.atomic_percent) || 0) * massOf(r.symbol));
+  const total = masses.reduce((s, m) => s + m, 0) || 1;
+  return masses.map((m) => (m / total) * 100);
+}
+
+/** Apply an edited wt% value at index and return new at% composition. */
+function wtEditToAt(rows: ElementFraction[], idx: number, wtValue: number): ElementFraction[] {
+  const wts = atToWt(rows);
+  wts[idx] = Math.max(0, wtValue);
+  const moles = rows.map((r, i) => wts[i] / massOf(r.symbol));
+  const total = moles.reduce((s, m) => s + m, 0) || 1;
+  return rows.map((r, i) => ({
+    symbol: r.symbol,
+    atomic_percent: (moles[i] / total) * 100,
   }));
 }
 
@@ -241,7 +294,7 @@ function DefectViz({ points }: { points: Array<{ x: number; y: number; z: number
 }
 
 export default function App() {
-  const [tab, setTab] = useState<TabId>("material");
+  const [tab, setTab] = useState<TabId>("projects");
   const [materials, setMaterials] = useState<Material[]>([]);
   const [potentials, setPotentials] = useState<Potential[]>([]);
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
@@ -268,20 +321,39 @@ export default function App() {
   const [uploadName, setUploadName] = useState("");
   const [uploadElements, setUploadElements] = useState("W");
   const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploadPairStyle, setUploadPairStyle] = useState("eam/alloy");
   const [busy, setBusy] = useState(false);
+  const [compUnit, setCompUnit] = useState<"at%" | "wt%">("at%");
+  const [projectFilter, setProjectFilter] = useState<string>("");
 
   const material = useMemo(() => materials.find((m) => m.id === materialId), [materials, materialId]);
   const selectedPot = useMemo(() => potentials.find((p) => p.id === potentialId), [potentials, potentialId]);
   const scenario = useMemo(() => scenarios.find((s) => s.id === scenarioId), [scenarios, scenarioId]);
+  const projectNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const j of jobs) {
+      if (j.project_name) names.add(j.project_name);
+    }
+    if (projectName) names.add(projectName);
+    return Array.from(names).sort((a, b) => a.localeCompare(b));
+  }, [jobs, projectName]);
+  const projectJobs = useMemo(() => {
+    const key = projectFilter || projectName;
+    if (!key) return jobs;
+    return jobs.filter((j) => j.project_name === key);
+  }, [jobs, projectFilter, projectName]);
 
   const compositionTotal = composition.reduce((s, e) => s + Number(e.atomic_percent || 0), 0);
   const cellVolume = params.nx * params.ny * params.nz;
   const largeCell = cellVolume > 20 * 20 * 20;
+  const potIsDemo = Boolean(selectedPot?.is_placeholder);
 
   const blockers = useMemo(() => {
     const list: string[] = [];
     if (!potentialId) list.push("Select a potential");
-    if (selectedPot && !selectedPot.available) list.push("Potential file missing — upload or place under data/potentials/curated/");
+    if (selectedPot && !selectedPot.available && !selectedPot.is_placeholder) {
+      list.push("Potential file missing — upload or place under data/potentials/curated/");
+    }
     if (compositionTotal <= 0) list.push("Composition requires a positive atomic fraction");
     if (largeCell && !params.confirm_large) list.push("Large cell (>20³) — confirm in LAMMPS tab");
     if (material?.metadata_only) list.push("Material is metadata-only (no runnable lattice recipe)");
@@ -290,8 +362,14 @@ export default function App() {
 
   const verdict = blockers.length
     ? { tone: "blocked" as const, label: "Blocked", msg: blockers[0] }
-    : !engines?.lammps_found
-      ? { tone: "warn" as const, label: "Ready · dry-run", msg: "LAMMPS not on PATH — job will write demo dumps for pipeline testing." }
+    : potIsDemo || !engines?.lammps_found
+      ? {
+          tone: "warn" as const,
+          label: "Ready · dry-run",
+          msg: potIsDemo
+            ? "Placeholder potential — demo dumps only. Upload a published potential for real MD."
+            : "LAMMPS not on PATH — job will write demo dumps for pipeline testing.",
+        }
       : { tone: "ready" as const, label: "Ready", msg: "Material, potential, and parameters look runnable." };
 
   useEffect(() => {
@@ -322,7 +400,7 @@ export default function App() {
     api<Potential[]>(`/api/potentials?material_id=${materialId}`)
       .then((p) => {
         setPotentials(p);
-        const avail = p.find((x) => x.available) || p[0];
+        const avail = p.find((x) => x.available) || p.find((x) => x.is_placeholder) || p[0];
         setPotentialId(avail?.id || "");
       })
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));
@@ -419,9 +497,17 @@ export default function App() {
     try {
       const meta = {
         name: uploadName || uploadFile.name,
-        formalism: "eam/alloy",
+        formalism: uploadPairStyle.startsWith("eam")
+          ? uploadPairStyle
+          : uploadPairStyle === "meam"
+            ? "meam"
+            : uploadPairStyle === "snap"
+              ? "snap"
+              : uploadPairStyle === "table"
+                ? "table"
+                : "other",
         elements: uploadElements.split(/[\s,]+/).filter(Boolean),
-        lammps_pair_style: "eam/alloy",
+        lammps_pair_style: uploadPairStyle,
         pair_coeff_template: "pair_coeff * * {file} {elements}",
         notes: "Uploaded via Aegis UI",
         recommended_for: ["cascade"],
@@ -592,6 +678,92 @@ export default function App() {
           </div>
         )}
 
+        {tab === "projects" && (
+          <section className="panel stack">
+            <div className="panel-head">
+              <h2>Projects</h2>
+              <span className="chip">
+                <span className="chip-k">jobs</span>
+                <span className="chip-v">{jobs.length}</span>
+              </span>
+            </div>
+            <p className="hint">
+              Group runs by study name. Opening a job loads its status, log, and results without changing the current recipe
+              until you re-run.
+            </p>
+            <div className="row">
+              <Field label="Active project" htmlFor="proj-active">
+                <input
+                  id="proj-active"
+                  value={projectName}
+                  onChange={(e) => setProjectName(e.target.value)}
+                  placeholder="e.g. W-He divertor study"
+                />
+              </Field>
+              <Field label="Filter history" htmlFor="proj-filter">
+                <select
+                  id="proj-filter"
+                  value={projectFilter}
+                  onChange={(e) => setProjectFilter(e.target.value)}
+                >
+                  <option value="">All projects</option>
+                  {projectNames.map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            </div>
+            <div className="row">
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => {
+                  setProjectName("untitled");
+                  setProjectFilter("");
+                  setJob(null);
+                  setLog("");
+                  setDefects(null);
+                }}
+              >
+                New study
+              </button>
+              <button type="button" className="secondary" onClick={() => setTab("material")}>
+                Continue to Material
+              </button>
+            </div>
+            <h3>Job history</h3>
+            {projectJobs.length === 0 ? (
+              <div className="empty">
+                <div className="empty-kicker">No runs yet</div>
+                <h3>Start a cascade</h3>
+                <p className="hint">Configure material → potential → scenario → LAMMPS, then Run.</p>
+              </div>
+            ) : (
+              <div className="stack">
+                {projectJobs.slice(0, 40).map((j) => (
+                  <button
+                    key={j.id}
+                    type="button"
+                    className={`job-row ${job?.id === j.id ? "active" : ""}`}
+                    onClick={() => {
+                      void loadJob(j.id);
+                      setProjectName(j.project_name);
+                      setTab(j.status === "completed" || j.status === "failed" ? "results" : "run");
+                    }}
+                  >
+                    <span className="mono">{j.id}</span>
+                    <span>{j.project_name}</span>
+                    <span className={`chip-v status-${j.status}`}>{j.status}</span>
+                    <span className="hint">{j.created_at?.slice(0, 19)?.replace("T", " ")}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+
         {tab === "material" && (
           <section className="panel stack">
             <div className="panel-head">
@@ -610,6 +782,11 @@ export default function App() {
               </div>
             </div>
             <p className="hint">{material?.description}</p>
+            {material && material.crystal.toLowerCase() !== "bcc" && (
+              <div className="alert alert-warn" role="status">
+                Crystal is {material.crystal}. Phase-1 LAMMPS templates always build BCC cells — results are not representative for this lattice.
+              </div>
+            )}
             {Math.abs(compositionTotal - 100) > 0.05 && compositionTotal > 0 && (
               <div className="alert alert-warn" role="status">
                 Composition is {compositionTotal.toFixed(2)} at%. Aegis will proportionally normalize it to 100% before save or run.
@@ -637,8 +814,25 @@ export default function App() {
                 ))}
               </select>
             </Field>
-            <h3>Composition</h3>
-            {composition.map((row, idx) => (
+            <div className="row">
+              <h3>Composition</h3>
+              <Field label="Units" htmlFor="comp-unit">
+                <select
+                  id="comp-unit"
+                  value={compUnit}
+                  onChange={(e) => setCompUnit(e.target.value as "at%" | "wt%")}
+                >
+                  <option value="at%">Atomic % (at%)</option>
+                  <option value="wt%">Weight % (wt%)</option>
+                </select>
+              </Field>
+            </div>
+            {compUnit === "wt%" && (
+              <p className="hint">Edits in wt% convert to at% using standard atomic masses; recipes always store at%.</p>
+            )}
+            {composition.map((row, idx) => {
+              const wtValues = atToWt(composition);
+              return (
               <div className="comp-row" key={idx}>
                 <Field label="Element">
                   <input
@@ -650,15 +844,20 @@ export default function App() {
                     }}
                   />
                 </Field>
-                <Field label="Atomic fraction" unit="at%">
+                <Field label={compUnit === "at%" ? "Atomic fraction" : "Weight fraction"} unit={compUnit}>
                   <input
                     type="number"
                     inputMode="decimal"
-                    value={row.atomic_percent}
+                    value={compUnit === "at%" ? row.atomic_percent : Number(wtValues[idx].toFixed(4))}
                     onChange={(e) => {
-                      const next = [...composition];
-                      next[idx] = { ...row, atomic_percent: Number(e.target.value) };
-                      setComposition(next);
+                      const v = Number(e.target.value);
+                      if (compUnit === "at%") {
+                        const next = [...composition];
+                        next[idx] = { ...row, atomic_percent: v };
+                        setComposition(next);
+                      } else {
+                        setComposition(wtEditToAt(composition, idx, v));
+                      }
                     }}
                   />
                 </Field>
@@ -671,7 +870,7 @@ export default function App() {
                   Remove
                 </button>
               </div>
-            ))}
+            );})}
             <div className="row">
               <button
                 className="secondary"
@@ -708,7 +907,7 @@ export default function App() {
                 <select id="pot-select" value={potentialId} onChange={(e) => setPotentialId(e.target.value)}>
                   {potentials.map((p) => (
                     <option key={p.id} value={p.id}>
-                      {p.available ? "●" : "○"} {p.name} [{p.source}]
+                      {p.available ? "●" : p.is_placeholder ? "◇" : "○"} {p.name} [{p.source}]
                     </option>
                   ))}
                 </select>
@@ -726,8 +925,16 @@ export default function App() {
                     </span>
                     <span className="chip">
                       <span className="chip-k">file</span>
-                      <span className={`chip-v ${selectedPot.available ? "tone-ok" : "tone-fail"}`}>
-                        {selectedPot.available ? "on disk" : "missing"}
+                      <span
+                        className={`chip-v ${
+                          selectedPot.available ? "tone-ok" : selectedPot.is_placeholder ? "tone-warn" : "tone-fail"
+                        }`}
+                      >
+                        {selectedPot.available
+                          ? "on disk"
+                          : selectedPot.is_placeholder
+                            ? "placeholder"
+                            : "missing"}
                       </span>
                     </span>
                   </div>
@@ -739,9 +946,14 @@ export default function App() {
                       {w}
                     </div>
                   ))}
-                  {!selectedPot.available && (
+                  {selectedPot.is_placeholder && (
+                    <div className="alert alert-warn" role="status">
+                      Demo placeholder — jobs use dry-run dumps. Upload a published potential for real LAMMPS MD.
+                    </div>
+                  )}
+                  {!selectedPot.available && !selectedPot.is_placeholder && (
                     <div className="alert alert-fail" role="alert">
-                      Unavailable for real MD: this catalog record is a placeholder until its potential file is present on disk.
+                      Unavailable for MD: place the potential file on disk or upload one.
                     </div>
                   )}
                 </div>
@@ -755,10 +967,24 @@ export default function App() {
               <Field label="Elements" unit="space-separated" htmlFor="up-el">
                 <input id="up-el" value={uploadElements} onChange={(e) => setUploadElements(e.target.value)} />
               </Field>
+              <Field label="LAMMPS pair_style" htmlFor="up-style">
+                <select
+                  id="up-style"
+                  value={uploadPairStyle}
+                  onChange={(e) => setUploadPairStyle(e.target.value)}
+                >
+                  {PAIR_STYLE_WHITELIST.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
+              </Field>
               <Field label="Potential file" htmlFor="up-file">
                 <input
                   id="up-file"
                   type="file"
+                  accept=".eam,.alloy,.fs,.meam,.snap,.table,.dat,.txt"
                   onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
                 />
               </Field>
@@ -882,6 +1108,17 @@ export default function App() {
                     value={params.boundary}
                     onChange={(e) => setParam("boundary", e.target.value)}
                   />
+                </Field>
+                <Field label="Crystal orientation" unit="x-axis" htmlFor="orient">
+                  <select
+                    id="orient"
+                    value={params.crystal_orient}
+                    onChange={(e) => setParam("crystal_orient", e.target.value)}
+                  >
+                    <option value="100">[100]</option>
+                    <option value="110">[110]</option>
+                    <option value="111">[111]</option>
+                  </select>
                 </Field>
               </div>
             </fieldset>
@@ -1155,6 +1392,10 @@ export default function App() {
         )}
 
         {tab === "results" && (
+          <div className="stack">
+            <section className="panel">
+              <StructureViewer jobId={job?.id || null} refreshKey={job?.updated_at || job?.status} />
+            </section>
           <div className="grid-2">
             <section className="panel stack">
               <div className="panel-head">
@@ -1207,10 +1448,11 @@ export default function App() {
               )}
             </section>
             <section className="panel stack">
-              <h2>3D defect points</h2>
+              <h2>Defect markers</h2>
               <DefectViz points={defects?.points || []} />
-              <p className="hint">Vacancy = red · interstitial = copper · other = green. Proxy viz, not OVITO.</p>
+              <p className="hint">Vacancy = red · interstitial = copper · other = green. WS proxy markers (not full atoms).</p>
             </section>
+          </div>
           </div>
         )}
 
@@ -1272,7 +1514,9 @@ git checkout 62d66adf
           </div>
           <div>
             <dt>Potential</dt>
-            <dd className={!selectedPot?.available ? "tone-fail" : ""}>{selectedPot?.name || "Not selected"}</dd>
+            <dd className={!selectedPot?.available && !selectedPot?.is_placeholder ? "tone-fail" : selectedPot?.is_placeholder ? "tone-warn" : ""}>
+              {selectedPot?.name || "Not selected"}
+            </dd>
           </div>
           <div>
             <dt>Scenario</dt>

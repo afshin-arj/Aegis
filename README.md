@@ -16,11 +16,12 @@ Configure material and composition → select a published interatomic potential 
 
 | Step | What you do | What Aegis produces |
 |------|-------------|---------------------|
-| 1 | Choose PFM preset; edit composition (at%) | `material.json` |
-| 2 | Pick curated or uploaded potential | Validated `pair_style` / file path |
-| 3 | Select D–D / D–T / He scenario; override any field | `run_params.json` |
-| 4 | Queue LAMMPS job | Live log, dumps, restart artifacts |
-| 5 | Review defects; optional k-ART | Vacancy / SIA proxy metrics, clusters, 3D points |
+| 1 | Choose or name a project; browse prior jobs | Job history under `runs/` |
+| 2 | Choose PFM preset; edit composition (at%/wt%) | `material.json` |
+| 3 | Pick curated or uploaded potential | Validated `pair_style` / file path |
+| 4 | Select D–D / D–T / He scenario; override any field | `run_params.json` |
+| 5 | Queue LAMMPS job | Live log, dumps, restart artifacts |
+| 6 | Review structure + defects; optional k-ART | Trajectory frames, vacancy / SIA proxy, clusters |
 
 ---
 
@@ -108,6 +109,22 @@ runs/                 Job artifacts (gitignored)
 - **Potentials:** Aegis never invents coefficients. Upload a published file or place one under `data/potentials/curated/`. The bundled placeholder is for pipeline wiring only—real MD requires a valid EAM/FS/MEAM file.
 - **Defect analysis:** Phase-1 Wigner–Seitz-style proxy for engineering inspection—not a replacement for OVITO production analysis.
 - **Large cells:** runs with &gt;20³ unit cells require explicit confirmation.
+
+---
+
+## First tutorial: W cascade (then He)
+
+1. Run `setup_and_run.cmd` and open the UI.
+2. **Projects** — name the study (e.g. `W-cascade-demo`).
+3. **Material** — preset *Tungsten (pure)*; optionally toggle wt%/at%.
+4. **Potential** — for a real run, upload a published W EAM/FS file (NIST potentials). The demo placeholder only exercises dry-run dumps.
+5. **Scenario** — start with *D–T divertor-like defaults*, or switch to *D–D* / *He implantation*.
+6. **LAMMPS** — keep a small cell (≤10³) for the first job; confirm if you go larger.
+7. **Run** — start the job; watch the live log. Without LAMMPS or with the placeholder, Aegis writes demo dumps so Results still work.
+8. **Results** — scrub before/after structure frames; inspect vacancy/SIA proxy and clusters.
+9. Optional: enable **Queue KART anneal** on the LAMMPS tab. If the binary is missing, Engines explains clone/build (`engines/kart/SETUP.md`); anneal stubs honestly.
+
+For **W–He**, upload a W–He potential, pick the *He implantation* scenario (or set mode=implant), and ensure the potential’s element list includes `W` and `He`.
 
 ---
 

@@ -5,16 +5,37 @@ from pathlib import Path
 from typing import Any
 
 
-def analyze_job_dir(job_dir: Path, lattice_A: float = 3.165) -> dict[str, Any]:
-    """Lightweight defect proxy analysis from the last dump frame.
+def _prefer_analysis_dumps(job_dir: Path) -> list[Path]:
+    """Prefer cascade/implant trajectory dumps over the pre-damage initial dump."""
+    candidates: list[Path] = []
+    for pattern in (
+        "dump.cascade.*.lammpstrj",
+        "dump.implant.*.lammpstrj",
+        "dump.*.lammpstrj",
+    ):
+        candidates.extend(job_dir.glob(pattern))
+    # Unique, exclude initial reference unless it is the only file
+    uniq = sorted({p.resolve(): p for p in candidates}.values(), key=lambda p: p.name)
+    non_initial = [p for p in uniq if "initial" not in p.name.lower()]
+    return non_initial or uniq
+
+
+def analyze_job_dir(
+    job_dir: Path,
+    lattice_A: float = 3.165,
+    *,
+    cluster_cutoff_A: float | None = None,
+    ws_lattice_A: float | None = None,
+) -> dict[str, Any]:
+    """Lightweight defect proxy analysis from the last cascade/implant dump frame.
 
     Uses a simple Wigner–Seitz style occupancy on an ideal BCC grid built from
-    the dump box. This is a teaching/engineering proxy — not a replacement for
-    OVITO/Wigner-Seitz production analysis.
+    the dump box. Teaching/engineering proxy — not a replacement for OVITO.
     """
-    dumps = sorted(job_dir.glob("dump.*.lammpstrj")) + sorted(job_dir.glob("dump.*.*.lammpstrj"))
-    # Prefer highest padded dump
-    dumps = sorted(set(dumps), key=lambda p: p.name)
+    a_ref = float(ws_lattice_A) if ws_lattice_A else float(lattice_A)
+    cutoff = float(cluster_cutoff_A) if cluster_cutoff_A is not None else 0.9 * a_ref
+
+    dumps = _prefer_analysis_dumps(job_dir)
     if not dumps:
         summary = {
             "summary": {
@@ -23,25 +44,35 @@ def analyze_job_dir(job_dir: Path, lattice_A: float = 3.165) -> dict[str, Any]:
                 "interstitials": 0,
                 "clusters": 0,
                 "note": "no dump files found",
+                "method": "aegis-ws-proxy-v1",
             },
             "clusters": [],
             "points": [],
         }
+        (job_dir / "defects.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
         return summary
 
-    atoms, box = _read_last_frame(dumps[-1])
+    dump_path = dumps[-1]
+    atoms, box = _read_last_frame(dump_path)
     if not atoms:
-        return {
-            "summary": {"n_atoms": 0, "vacancies": 0, "interstitials": 0, "clusters": 0},
+        empty = {
+            "summary": {
+                "n_atoms": 0,
+                "vacancies": 0,
+                "interstitials": 0,
+                "clusters": 0,
+                "dump": dump_path.name,
+                "method": "aegis-ws-proxy-v1",
+            },
             "clusters": [],
             "points": [],
         }
+        (job_dir / "defects.json").write_text(json.dumps(empty, indent=2), encoding="utf-8")
+        return empty
 
-    sites = _bcc_sites(box, lattice_A)
+    sites = _bcc_sites(box, a_ref)
     occupied = [False] * len(sites)
     interstitial_pts: list[dict[str, Any]] = []
-    # Assign each atom to nearest site
-    site_of_atom: list[int] = []
     for atom in atoms:
         best_i = 0
         best_d2 = 1e99
@@ -50,13 +81,11 @@ def analyze_job_dir(job_dir: Path, lattice_A: float = 3.165) -> dict[str, Any]:
             if d2 < best_d2:
                 best_d2 = d2
                 best_i = i
-        site_of_atom.append(best_i)
         if occupied[best_i]:
             interstitial_pts.append({**atom, "kind": "interstitial"})
         else:
             occupied[best_i] = True
-            # if far from site, mark interstitial
-            if best_d2 > (0.3 * lattice_A) ** 2:
+            if best_d2 > (0.3 * a_ref) ** 2:
                 interstitial_pts.append({**atom, "kind": "displaced"})
 
     vacancies = [
@@ -65,10 +94,7 @@ def analyze_job_dir(job_dir: Path, lattice_A: float = 3.165) -> dict[str, Any]:
         if not occ
     ]
 
-    # Cluster interstitials by distance
-    cutoff = 0.9 * lattice_A
     clusters = _cluster_points(interstitial_pts, cutoff)
-
     points = vacancies + interstitial_pts
     summary = {
         "summary": {
@@ -77,7 +103,10 @@ def analyze_job_dir(job_dir: Path, lattice_A: float = 3.165) -> dict[str, Any]:
             "vacancies": len(vacancies),
             "interstitials": len(interstitial_pts),
             "clusters": len(clusters),
-            "dump": dumps[-1].name,
+            "dump": dump_path.name,
+            "ws_lattice_A": a_ref,
+            "cluster_cutoff_A": cutoff,
+            "method": "aegis-ws-proxy-v1",
             "hardening_proxy": {
                 "dbh_Nd_sqrt": (len(interstitial_pts) * max(len(clusters), 1)) ** 0.5,
                 "note": "Placeholder DBH/FKH-style scalar — not calibrated.",
@@ -92,12 +121,10 @@ def analyze_job_dir(job_dir: Path, lattice_A: float = 3.165) -> dict[str, Any]:
 
 def _read_last_frame(path: Path) -> tuple[list[dict[str, Any]], tuple[float, float, float]]:
     text = path.read_text(encoding="utf-8", errors="replace").strip().splitlines()
-    # Find last TIMESTEP block
     starts = [i for i, line in enumerate(text) if line.startswith("ITEM: TIMESTEP")]
     if not starts:
         return [], (0, 0, 0)
     i = starts[-1]
-    # NUMBER OF ATOMS
     while i < len(text) and not text[i].startswith("ITEM: NUMBER OF ATOMS"):
         i += 1
     n = int(text[i + 1])
@@ -165,7 +192,4 @@ def _cluster_points(points: list[dict[str, Any]], cutoff: float) -> list[dict[st
     groups: dict[int, list[int]] = {}
     for i in range(n):
         groups.setdefault(find(i), []).append(i)
-    clusters = []
-    for gid, idxs in groups.items():
-        clusters.append({"id": gid, "size": len(idxs), "member_indices": idxs})
-    return clusters
+    return [{"id": gid, "size": len(idxs), "member_indices": idxs} for gid, idxs in groups.items()]

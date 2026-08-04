@@ -7,7 +7,7 @@ description: Aegis potential catalog, upload validation, damage-suitable tagging
 
 ## Catalog
 
-`data/potentials/catalog.json` entries include: id, name, formalism, elements, recommended_for, citation/DOI, warnings, lammps_pair_style, pair_coeff_template, file_path, source, available.
+`data/potentials/catalog.json` entries include: id, name, formalism, elements, recommended_for, citation/DOI, warnings, lammps_pair_style, pair_coeff_template, file_path, source, available, is_placeholder.
 
 ## Upload
 
@@ -18,7 +18,7 @@ description: Aegis potential catalog, upload validation, damage-suitable tagging
 ## Rules
 
 - **Never invent potential coefficients.**
-- Refuse job start if potential has no file (`available` / `file_path`).
+- Placeholder files: `is_placeholder=true`, `available=false` — allow dry-run jobs only.
+- Refuse real MD if potential has no non-placeholder file.
 - Prefer links + user download; only vendor redistributable files.
 - Filter picker by material composition ⊆ potential elements.
-- Curated entries may point at placeholder files for dry-run only — warn clearly.

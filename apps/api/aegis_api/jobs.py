@@ -129,16 +129,18 @@ class JobManager:
             params = json.loads((job_dir / "run_params.json").read_text(encoding="utf-8"))
             pot_file = self.store.resolve_potential_file(potential)
             if not pot_file:
-                raise FileNotFoundError("potential file missing")
+                raise FileNotFoundError("potential file missing — upload a published file or place under data/potentials/curated/")
 
             # Copy potential into job dir for portability
             local_pot = job_dir / pot_file.name
             shutil.copy2(pot_file, local_pot)
 
+            is_placeholder = bool(getattr(potential, "is_placeholder", False)) or "placeholder" in pot_file.name.lower()
+
             in_path = job_dir / "in.aegis"
             mat_dict = material.model_dump()
             pot_dict = potential.model_dump()
-            if params.get("mode") == "implant":
+            if params.get("mode") == "implant" or str(getattr(params.get("mode"), "value", params.get("mode"))) == "implant":
                 write_implant_input(
                     in_path,
                     material=mat_dict,
@@ -161,12 +163,22 @@ class JobManager:
             with log_path.open("w", encoding="utf-8") as log:
                 log.write(f"[Aegis] job {job_id}\n")
                 log.write(f"[Aegis] material={material.id} potential={potential.id}\n")
-                if not lmp_path:
+                if material.crystal.lower() != "bcc":
                     log.write(
-                        "[Aegis] LAMMPS not found on PATH. Writing dry-run artifacts only.\n"
-                        "Set AEGIS_LAMMPS_BIN or install LAMMPS to execute MD.\n"
+                        f"[Aegis] WARNING: material crystal={material.crystal}; "
+                        "Phase-1 templates build BCC cells only.\n"
                     )
-                    # Dry-run: synthesize a small dump for analysis pipeline testing
+                if not lmp_path or is_placeholder:
+                    if is_placeholder:
+                        log.write(
+                            "[Aegis] Placeholder potential — dry-run demo dumps only "
+                            "(not valid pair coefficients). Upload a published potential for real MD.\n"
+                        )
+                    if not lmp_path:
+                        log.write(
+                            "[Aegis] LAMMPS not found on PATH. Writing dry-run artifacts only.\n"
+                            "Set AEGIS_LAMMPS_BIN or install LAMMPS to execute MD.\n"
+                        )
                     self._write_demo_dump(job_dir, material)
                     log.write("[Aegis] demo dump written for analysis.\n")
                 else:
@@ -192,7 +204,12 @@ class JobManager:
                 return
 
             self._update(job_id, status=JobStatus.ANALYZING, message="defect analysis")
-            summary = analyze_job_dir(job_dir, lattice_A=material.lattice_constant_A)
+            summary = analyze_job_dir(
+                job_dir,
+                lattice_A=material.lattice_constant_A,
+                cluster_cutoff_A=float(params.get("cluster_cutoff_A") or 3.5),
+                ws_lattice_A=params.get("ws_lattice_A") or material.lattice_constant_A,
+            )
             (job_dir / "defects.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
             kart_summary = None
@@ -222,36 +239,48 @@ class JobManager:
             self._update(job_id, status=JobStatus.FAILED, message=str(exc))
 
     def _write_demo_dump(self, job_dir: Path, material: Material) -> None:
-        """Minimal artificial trajectory so analysis/UI work without LAMMPS installed."""
+        """Artificial multi-frame trajectory so structure viz works without LAMMPS."""
         a = material.lattice_constant_A
-        lines = [
-            "ITEM: TIMESTEP",
-            "0",
-            "ITEM: NUMBER OF ATOMS",
-            "16",
-            "ITEM: BOX BOUNDS pp pp pp",
-            f"0 {2*a}",
-            f"0 {2*a}",
-            f"0 {2*a}",
-            "ITEM: ATOMS id type x y z",
-        ]
-        # Perfect BCC-like points + two displaced "interstitials"
-        n = 0
-        for i in range(2):
-            for j in range(2):
-                for k in range(2):
-                    n += 1
-                    lines.append(f"{n} 1 {i*a} {j*a} {k*a}")
-                    n += 1
-                    lines.append(f"{n} 1 {i*a+a/2} {j*a+a/2} {k*a+a/2}")
-        # displace last atom
-        parts = lines[-1].split()
-        parts[2] = str(float(parts[2]) + 0.8)
-        lines[-1] = " ".join(parts)
-        # add interstitial
-        lines[3] = "17"
-        lines.append(f"17 1 {a*0.25} {a*0.25} {a*0.25}")
+
+        def frame(timestep: int, displace: float = 0.0, extra: bool = False) -> list[str]:
+            atoms: list[str] = []
+            n = 0
+            for i in range(2):
+                for j in range(2):
+                    for k in range(2):
+                        n += 1
+                        atoms.append(f"{n} 1 {i*a} {j*a} {k*a}")
+                        n += 1
+                        dx = displace if (i, j, k) == (1, 1, 1) else 0.0
+                        atoms.append(f"{n} 1 {i*a+a/2+dx} {j*a+a/2} {k*a+a/2}")
+            if extra:
+                n += 1
+                atoms.append(f"{n} 1 {a*0.25} {a*0.25} {a*0.25}")
+            lines = [
+                "ITEM: TIMESTEP",
+                str(timestep),
+                "ITEM: NUMBER OF ATOMS",
+                str(n),
+                "ITEM: BOX BOUNDS pp pp pp",
+                f"0 {2*a}",
+                f"0 {2*a}",
+                f"0 {2*a}",
+                "ITEM: ATOMS id type x y z",
+                *atoms,
+            ]
+            return lines
+
+        (job_dir / "dump.initial.lammpstrj").write_text(
+            "\n".join(frame(0, 0.0, False)) + "\n", encoding="utf-8"
+        )
+        # Multi-timestep "after" trajectory in one file
+        traj = (
+            frame(0, 0.2, False)
+            + frame(1000, 0.5, True)
+            + frame(2000, 0.8, True)
+            + frame(5000, 0.9, True)
+        )
         (job_dir / "dump.cascade.000000000.lammpstrj").write_text(
-            "\n".join(lines) + "\n", encoding="utf-8"
+            "\n".join(traj) + "\n", encoding="utf-8"
         )
         (job_dir / "final.data").write_text("# demo\n", encoding="utf-8")

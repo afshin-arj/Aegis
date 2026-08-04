@@ -159,12 +159,32 @@ async def upload_potential(
         meta_obj = PotentialUploadMeta.model_validate_json(meta)
     except ValidationError as exc:
         raise HTTPException(400, f"invalid meta: {exc}") from exc
+    allowed_styles = {
+        "eam",
+        "eam/alloy",
+        "eam/fs",
+        "meam",
+        "snap",
+        "table",
+        "hybrid",
+        "hybrid/overlay",
+    }
+    style = meta_obj.lammps_pair_style.strip().lower()
+    if style not in allowed_styles:
+        raise HTTPException(
+            400,
+            f"pair_style '{meta_obj.lammps_pair_style}' not in whitelist: {sorted(allowed_styles)}",
+        )
+    if not meta_obj.elements:
+        raise HTTPException(400, "upload must declare at least one element")
     pot_id = f"user-{uuid.uuid4().hex[:10]}"
     dest_dir = DATA_ROOT / "potentials" / "user" / pot_id
     dest_dir.mkdir(parents=True, exist_ok=True)
     suffix = Path(file.filename or "potential.dat").name
     dest = dest_dir / suffix
     content = await file.read()
+    if not content:
+        raise HTTPException(400, "empty potential file")
     dest.write_bytes(content)
     pot = Potential(
         id=pot_id,
@@ -174,7 +194,7 @@ async def upload_potential(
         recommended_for=meta_obj.recommended_for,
         citation=meta_obj.notes,
         warnings=["User-uploaded potential — unvalidated by Aegis."],
-        lammps_pair_style=meta_obj.lammps_pair_style,
+        lammps_pair_style=style,
         pair_coeff_template=meta_obj.pair_coeff_template,
         file_path=str(dest.relative_to(DATA_ROOT)).replace("\\", "/"),
         source="user",
@@ -192,10 +212,16 @@ def create_job(body: JobCreate) -> JobInfo:
     potential = store.get_potential(body.potential_id)
     if not potential:
         raise HTTPException(404, "potential not found")
-    if not potential.available or not potential.file_path:
+    resolved = store.resolve_potential_file(potential)
+    if not resolved:
         raise HTTPException(
             400,
             "Selected potential has no file on disk. Upload a potential file or place one under data/potentials/curated/.",
+        )
+    if not potential.available and not potential.is_placeholder:
+        raise HTTPException(
+            400,
+            "Selected potential is not runnable. Upload a published potential file.",
         )
     # Large cell guard
     cells = body.run_params.nx * body.run_params.ny * body.run_params.nz
@@ -244,6 +270,38 @@ def get_defects(job_id: str) -> dict[str, Any]:
     if not path.exists():
         raise HTTPException(404, "defects not ready")
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+@app.get("/api/jobs/{job_id}/trajectory")
+def get_trajectory_index(job_id: str) -> dict[str, Any]:
+    job_dir = RUNS_ROOT / job_id
+    if not job_dir.exists():
+        raise HTTPException(404, "job not found")
+    from aegis_api.trajectory import list_trajectory_frames
+
+    frames = list_trajectory_frames(job_dir)
+    return {
+        "job_id": job_id,
+        "n_frames": len(frames),
+        "frames": frames,
+        "before_index": next((f["index"] for f in frames if f.get("role") == "before"), 0 if frames else None),
+        "after_indices": [f["index"] for f in frames if f.get("role") != "before"],
+    }
+
+
+@app.get("/api/jobs/{job_id}/trajectory/{frame_index}")
+def get_trajectory_frame(job_id: str, frame_index: int, max_atoms: int = 12000) -> dict[str, Any]:
+    job_dir = RUNS_ROOT / job_id
+    if not job_dir.exists():
+        raise HTTPException(404, "job not found")
+    from aegis_api.trajectory import get_trajectory_frame as _get_frame
+
+    try:
+        return _get_frame(job_dir, frame_index, max_atoms=max(100, min(max_atoms, 50000)))
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except IndexError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.websocket("/api/jobs/{job_id}/log")

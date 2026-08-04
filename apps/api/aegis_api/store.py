@@ -49,11 +49,23 @@ class DataStore:
 
     def _refresh_available(self, pot: Potential) -> Potential:
         data = pot.model_dump()
+        is_placeholder = bool(data.get("is_placeholder"))
         if pot.file_path:
             full = self.data_root / pot.file_path
-            data["available"] = full.exists()
+            name = full.name.lower()
+            if "placeholder" in name or full.suffix.lower() == ".placeholder":
+                is_placeholder = True
+            exists = full.exists()
+            # Placeholder files exist for pipeline wiring but are not production-ready MD.
+            data["available"] = exists and not is_placeholder
+            data["is_placeholder"] = is_placeholder
+            if is_placeholder and exists and "placeholder" not in " ".join(data.get("warnings") or []).lower():
+                data.setdefault("warnings", []).append(
+                    "Placeholder coefficients only — dry-run / demo path; upload a published potential for real MD."
+                )
         else:
             data["available"] = False
+            data["is_placeholder"] = is_placeholder
         return Potential(**data)
 
     def list_potentials(self) -> list[Potential]:
@@ -74,6 +86,7 @@ class DataStore:
         return pot
 
     def resolve_potential_file(self, pot: Potential) -> Path | None:
+        """Return on-disk potential path even for placeholders (dry-run wiring)."""
         if not pot.file_path:
             return None
         path = self.data_root / pot.file_path
