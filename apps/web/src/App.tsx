@@ -23,6 +23,30 @@ type Potential = {
   is_placeholder?: boolean;
   source: string;
   lammps_pair_style: string;
+  citation?: string;
+  doi?: string;
+  source_url?: string;
+  formalism?: string;
+  file_path?: string | null;
+  library_id?: string | null;
+};
+type PotentialLibraryEntry = {
+  id: string;
+  name: string;
+  elements: string[];
+  pair_style: string;
+  formalism: string;
+  source: string;
+  entry_url: string;
+  download_url?: string | null;
+  filename?: string | null;
+  citation: string;
+  doi: string;
+  recommended_for: string[];
+  warnings: string[];
+  maps_to_catalog_id?: string | null;
+  downloadable: boolean;
+  installed: boolean;
 };
 type Scenario = {
   id: string;
@@ -415,6 +439,13 @@ export default function App() {
   const [uploadElements, setUploadElements] = useState("W");
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploadPairStyle, setUploadPairStyle] = useState("eam/alloy");
+  const [uploadAttachTo, setUploadAttachTo] = useState(true);
+  const [library, setLibrary] = useState<PotentialLibraryEntry[]>([]);
+  const [libQuery, setLibQuery] = useState("");
+  const [libSource, setLibSource] = useState("");
+  const [importUrl, setImportUrl] = useState("");
+  const [entryUrl, setEntryUrl] = useState("");
+  const [entryFiles, setEntryFiles] = useState<Array<{ filename: string; download_url: string }>>([]);
   const [busy, setBusy] = useState(false);
   const [compUnit, setCompUnit] = useState<"at%" | "wt%">("at%");
   const [projectFilter, setProjectFilter] = useState<string>("");
@@ -501,7 +532,26 @@ export default function App() {
         setPotentialId(avail?.id || "");
       })
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+    const qs = new URLSearchParams({ material_id: materialId });
+    if (libQuery) qs.set("q", libQuery);
+    if (libSource) qs.set("source", libSource);
+    api<PotentialLibraryEntry[]>(`/api/potentials/library?${qs}`)
+      .then(setLibrary)
+      .catch(() => setLibrary([]));
   }, [materialId]);
+
+  useEffect(() => {
+    if (tab !== "potential" || !materialId) return;
+    const handle = window.setTimeout(() => {
+      const qs = new URLSearchParams({ material_id: materialId });
+      if (libQuery) qs.set("q", libQuery);
+      if (libSource) qs.set("source", libSource);
+      api<PotentialLibraryEntry[]>(`/api/potentials/library?${qs}`)
+        .then(setLibrary)
+        .catch(() => setLibrary([]));
+    }, 200);
+    return () => window.clearTimeout(handle);
+  }, [tab, materialId, libQuery, libSource]);
 
   useEffect(() => {
     const sc = scenarios.find((s) => s.id === scenarioId);
@@ -645,11 +695,25 @@ export default function App() {
     }
   }
 
+  async function refreshPotentials(selectId?: string) {
+    const p = await api<Potential[]>(`/api/potentials?material_id=${materialId}`);
+    setPotentials(p);
+    if (selectId) setPotentialId(selectId);
+    const qs = new URLSearchParams({ material_id: materialId });
+    if (libQuery) qs.set("q", libQuery);
+    if (libSource) qs.set("source", libSource);
+    setLibrary(await api<PotentialLibraryEntry[]>(`/api/potentials/library?${qs}`).catch(() => []));
+  }
+
   async function uploadPotential() {
     if (!uploadFile) return;
     setBusy(true);
     setError("");
     try {
+      const elems = uploadElements.split(/[\s,]+/).filter(Boolean);
+      const shouldAttach = Boolean(
+        uploadAttachTo && selectedPot && (!selectedPot.available || selectedPot.is_placeholder),
+      );
       const meta = {
         name: uploadName || uploadFile.name,
         formalism: uploadPairStyle.startsWith("eam")
@@ -661,18 +725,88 @@ export default function App() {
               : uploadPairStyle === "table"
                 ? "table"
                 : "other",
-        elements: uploadElements.split(/[\s,]+/).filter(Boolean),
+        elements: elems,
         lammps_pair_style: uploadPairStyle,
-        pair_coeff_template: "pair_coeff * * {file} {elements}",
+        pair_coeff_template: `pair_coeff * * {file} ${elems.join(" ")}`,
         notes: "Uploaded via Aegis UI",
         recommended_for: ["cascade"],
+        attach_to_id: shouldAttach ? selectedPot!.id : null,
       };
       const fd = new FormData();
       fd.append("file", uploadFile);
       fd.append("meta", JSON.stringify(meta));
       const pot = await api<Potential>("/api/potentials/upload", { method: "POST", body: fd });
-      setPotentials((p) => [...p, pot]);
-      setPotentialId(pot.id);
+      await refreshPotentials(pot.id);
+      setUploadFile(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function downloadLibraryEntry(entry: PotentialLibraryEntry) {
+    if (!entry.downloadable) return;
+    setBusy(true);
+    setError("");
+    try {
+      const pot = await api<Potential>("/api/potentials/library/download", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          library_id: entry.id,
+          attach_to_id: entry.maps_to_catalog_id || undefined,
+        }),
+      });
+      await refreshPotentials(pot.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function importDownloadUrl() {
+    if (!importUrl.trim()) return;
+    setBusy(true);
+    setError("");
+    try {
+      const pot = await api<Potential>("/api/potentials/library/download", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url: importUrl.trim(),
+          attach_to_id:
+            selectedPot && (!selectedPot.available || selectedPot.is_placeholder) ? selectedPot.id : undefined,
+          elements: uploadElements.split(/[\s,]+/).filter(Boolean),
+          lammps_pair_style: uploadPairStyle,
+          name: uploadName || undefined,
+        }),
+      });
+      await refreshPotentials(pot.id);
+      setImportUrl("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function scrapeNistEntry() {
+    if (!entryUrl.trim()) return;
+    setBusy(true);
+    setError("");
+    try {
+      const res = await api<{ files: Array<{ filename: string; download_url: string }> }>(
+        "/api/potentials/library/import-entry",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ entry_url: entryUrl.trim() }),
+        },
+      );
+      setEntryFiles(res.files || []);
+      if (!res.files?.length) setError("No parameter files found on that NIST entry page.");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -1509,11 +1643,18 @@ export default function App() {
         )}
 
         {tab === "potential" && (
-          <div className="grid-2">
+          <div className="stack">
             <section className="panel stack">
-              <h2>Potential library</h2>
+              <div className="panel-head">
+                <h2>Local potential library</h2>
+                <span className="chip">
+                  <span className="chip-k">ready</span>
+                  <span className="chip-v">{potentials.filter((p) => p.available).length}</span>
+                </span>
+              </div>
               <p className="hint">
-                Aegis never invents coefficients. Curated entries need a redistributable file on disk or an upload.
+                Select a potential that is on disk (●). Missing curated slots (○) and placeholders (◇) need a NIST
+                download or manual upload — Aegis never invents coefficients.
               </p>
               <Field label="Compatible potentials" htmlFor="pot-select">
                 <select id="pot-select" value={potentialId} onChange={(e) => setPotentialId(e.target.value)}>
@@ -1539,7 +1680,11 @@ export default function App() {
                       <span className="chip-k">file</span>
                       <span
                         className={`chip-v ${
-                          selectedPot.available ? "tone-ok" : selectedPot.is_placeholder ? "tone-warn" : "tone-fail"
+                          selectedPot.available
+                            ? "tone-ok"
+                            : selectedPot.is_placeholder
+                              ? "tone-warn"
+                              : "tone-fail"
                         }`}
                       >
                         {selectedPot.available
@@ -1549,6 +1694,24 @@ export default function App() {
                             : "missing"}
                       </span>
                     </span>
+                  </div>
+                  {selectedPot.citation && <p className="hint">{selectedPot.citation}</p>}
+                  <div className="row">
+                    {selectedPot.source_url && (
+                      <a className="linkish" href={selectedPot.source_url} target="_blank" rel="noreferrer">
+                        Open source page
+                      </a>
+                    )}
+                    {selectedPot.doi && (
+                      <a
+                        className="linkish"
+                        href={`https://doi.org/${selectedPot.doi}`}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        DOI {selectedPot.doi}
+                      </a>
+                    )}
                   </div>
                   {selectedPot.recommended_for?.length > 0 && (
                     <p className="hint">Tags: {selectedPot.recommended_for.join(", ")}</p>
@@ -1560,50 +1723,198 @@ export default function App() {
                   ))}
                   {selectedPot.is_placeholder && (
                     <div className="alert alert-warn" role="status">
-                      Demo placeholder — jobs use dry-run dumps. Upload a published potential for real LAMMPS MD.
+                      Demo placeholder — jobs use dry-run dumps. Download Zhou04 W from NIST below or upload a published
+                      file.
                     </div>
                   )}
                   {!selectedPot.available && !selectedPot.is_placeholder && (
                     <div className="alert alert-fail" role="alert">
-                      Unavailable for MD: place the potential file on disk or upload one.
+                      Unavailable for MD: download from NIST / libraries or upload a file and attach it to this entry.
                     </div>
                   )}
                 </div>
               )}
             </section>
-            <section className="panel stack">
-              <h2>Upload local potential</h2>
-              <Field label="Display name" htmlFor="up-name">
-                <input id="up-name" value={uploadName} onChange={(e) => setUploadName(e.target.value)} />
-              </Field>
-              <Field label="Elements" unit="space-separated" htmlFor="up-el">
-                <input id="up-el" value={uploadElements} onChange={(e) => setUploadElements(e.target.value)} />
-              </Field>
-              <Field label="LAMMPS pair_style" htmlFor="up-style">
-                <select
-                  id="up-style"
-                  value={uploadPairStyle}
-                  onChange={(e) => setUploadPairStyle(e.target.value)}
-                >
-                  {PAIR_STYLE_WHITELIST.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
+
+            <div className="grid-2">
+              <section className="panel stack">
+                <h2>NIST / OpenKIM libraries</h2>
+                <p className="hint">
+                  Curated PFM-relevant downloads from{" "}
+                  <a href="https://www.ctcms.nist.gov/potentials/" target="_blank" rel="noreferrer">
+                    NIST IPR
+                  </a>
+                  . Browse-only rows open the repository; downloadable rows fetch the published file into Aegis.
+                </p>
+                <div className="row">
+                  <Field label="Filter" htmlFor="lib-q">
+                    <input
+                      id="lib-q"
+                      value={libQuery}
+                      onChange={(e) => setLibQuery(e.target.value)}
+                      placeholder="W, Zhou, eam…"
+                    />
+                  </Field>
+                  <Field label="Source" htmlFor="lib-src">
+                    <select id="lib-src" value={libSource} onChange={(e) => setLibSource(e.target.value)}>
+                      <option value="">all</option>
+                      <option value="nist">nist</option>
+                      <option value="openkim">openkim</option>
+                    </select>
+                  </Field>
+                </div>
+                <div className="stack lib-list">
+                  {library.length === 0 && <p className="hint">No library rows for this material/filter.</p>}
+                  {library.map((entry) => (
+                    <div key={entry.id} className="lib-row">
+                      <div>
+                        <strong>{entry.name}</strong>
+                        <p className="hint">
+                          {entry.elements.join("-")}
+                          {entry.pair_style ? ` · ${entry.pair_style}` : ""}
+                          {entry.installed ? " · installed" : ""}
+                        </p>
+                      </div>
+                      <div className="row">
+                        {entry.entry_url && (
+                          <a className="linkish" href={entry.entry_url} target="_blank" rel="noreferrer">
+                            Open
+                          </a>
+                        )}
+                        {entry.downloadable ? (
+                          <button
+                            type="button"
+                            className="secondary"
+                            disabled={busy || entry.installed}
+                            onClick={() => void downloadLibraryEntry(entry)}
+                          >
+                            {entry.installed ? "Installed" : "Download"}
+                          </button>
+                        ) : (
+                          <span className="hint">browse</span>
+                        )}
+                      </div>
+                    </div>
                   ))}
-                </select>
-              </Field>
-              <Field label="Potential file" htmlFor="up-file">
-                <input
-                  id="up-file"
-                  type="file"
-                  accept=".eam,.alloy,.fs,.meam,.snap,.table,.dat,.txt"
-                  onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
-                />
-              </Field>
-              <button type="button" disabled={busy || !uploadFile} onClick={uploadPotential}>
-                Upload potential
-              </button>
-            </section>
+                </div>
+                <h3>Import NIST Download URL</h3>
+                <Field label="Direct file URL" unit="ctcms.nist.gov/potentials/Download/…" htmlFor="imp-url">
+                  <input
+                    id="imp-url"
+                    value={importUrl}
+                    onChange={(e) => setImportUrl(e.target.value)}
+                    placeholder="https://www.ctcms.nist.gov/potentials/Download/…"
+                  />
+                </Field>
+                <button type="button" className="secondary" disabled={busy || !importUrl.trim()} onClick={() => void importDownloadUrl()}>
+                  Import URL
+                </button>
+                <h3>Parse NIST entry page</h3>
+                <Field label="Entry URL" unit="/potentials/entry/…" htmlFor="entry-url">
+                  <input
+                    id="entry-url"
+                    value={entryUrl}
+                    onChange={(e) => setEntryUrl(e.target.value)}
+                    placeholder="https://www.ctcms.nist.gov/potentials/entry/…"
+                  />
+                </Field>
+                <button type="button" className="secondary" disabled={busy || !entryUrl.trim()} onClick={() => void scrapeNistEntry()}>
+                  List files on entry
+                </button>
+                {entryFiles.length > 0 && (
+                  <div className="stack">
+                    {entryFiles.map((f) => (
+                      <button
+                        key={f.download_url}
+                        type="button"
+                        className="job-row"
+                        disabled={busy}
+                        onClick={() => {
+                          setImportUrl(f.download_url);
+                          void (async () => {
+                            setImportUrl(f.download_url);
+                            setBusy(true);
+                            setError("");
+                            try {
+                              const pot = await api<Potential>("/api/potentials/library/download", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({
+                                  url: f.download_url,
+                                  attach_to_id:
+                                    selectedPot && (!selectedPot.available || selectedPot.is_placeholder)
+                                      ? selectedPot.id
+                                      : undefined,
+                                  elements: uploadElements.split(/[\s,]+/).filter(Boolean),
+                                  lammps_pair_style: uploadPairStyle,
+                                  name: f.filename,
+                                }),
+                              });
+                              await refreshPotentials(pot.id);
+                            } catch (err) {
+                              setError(err instanceof Error ? err.message : String(err));
+                            } finally {
+                              setBusy(false);
+                            }
+                          })();
+                        }}
+                      >
+                        <span>{f.filename}</span>
+                        <span className="hint">download</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </section>
+
+              <section className="panel stack">
+                <h2>Upload / attach file</h2>
+                <p className="hint">
+                  Manual fallback when the potential is not in the library index (or for proprietary files you already
+                  have).
+                </p>
+                <Field label="Display name" htmlFor="up-name">
+                  <input id="up-name" value={uploadName} onChange={(e) => setUploadName(e.target.value)} />
+                </Field>
+                <Field label="Elements" unit="space-separated" htmlFor="up-el">
+                  <input id="up-el" value={uploadElements} onChange={(e) => setUploadElements(e.target.value)} />
+                </Field>
+                <Field label="LAMMPS pair_style" htmlFor="up-style">
+                  <select
+                    id="up-style"
+                    value={uploadPairStyle}
+                    onChange={(e) => setUploadPairStyle(e.target.value)}
+                  >
+                    {PAIR_STYLE_WHITELIST.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="Potential file" htmlFor="up-file">
+                  <input
+                    id="up-file"
+                    type="file"
+                    accept=".eam,.alloy,.fs,.meam,.snap,.table,.dat,.txt"
+                    onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
+                  />
+                </Field>
+                <label className="check-row">
+                  <input
+                    type="checkbox"
+                    checked={uploadAttachTo}
+                    onChange={(e) => setUploadAttachTo(e.target.checked)}
+                  />
+                  Attach to selected catalog entry when it is missing/placeholder
+                </label>
+                <button type="button" disabled={busy || !uploadFile} onClick={() => void uploadPotential()}>
+                  {uploadAttachTo && selectedPot && (!selectedPot.available || selectedPot.is_placeholder)
+                    ? `Attach to ${selectedPot.id}`
+                    : "Upload as new potential"}
+                </button>
+              </section>
+            </div>
           </div>
         )}
 

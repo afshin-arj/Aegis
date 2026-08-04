@@ -79,9 +79,10 @@ class Potential(BaseModel):
     lammps_pair_style: str
     pair_coeff_template: str
     file_path: str | None = None
-    source: str = "curated"  # curated | user
+    source: str = "curated"  # curated | user | nist
     available: bool = False
     is_placeholder: bool = False
+    library_id: str | None = None
 
 
 class PotentialUploadMeta(BaseModel):
@@ -92,6 +93,40 @@ class PotentialUploadMeta(BaseModel):
     pair_coeff_template: str = "pair_coeff * * {file} {elements}"
     notes: str = ""
     recommended_for: list[str] = Field(default_factory=lambda: ["cascade"])
+    attach_to_id: str | None = None
+
+
+class PotentialLibraryEntry(BaseModel):
+    id: str
+    name: str
+    elements: list[str] = Field(default_factory=list)
+    pair_style: str = ""
+    formalism: str = "other"
+    source: str = "nist"
+    entry_url: str = ""
+    download_url: str | None = None
+    filename: str | None = None
+    citation: str = ""
+    doi: str = ""
+    recommended_for: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    pair_coeff_template: str = "pair_coeff * * {file} {elements}"
+    maps_to_catalog_id: str | None = None
+    downloadable: bool = False
+    installed: bool = False
+
+
+class PotentialDownloadRequest(BaseModel):
+    library_id: str | None = None
+    url: str | None = None
+    attach_to_id: str | None = None
+    name: str | None = None
+    elements: list[str] | None = None
+    lammps_pair_style: str | None = None
+
+
+class PotentialImportEntryRequest(BaseModel):
+    entry_url: str
 
 
 class Scenario(BaseModel):

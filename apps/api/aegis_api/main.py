@@ -34,6 +34,10 @@ from aegis_schema import (  # noqa: E402
     Material,
     MaterialUpdate,
     Potential,
+    PotentialDownloadRequest,
+    PotentialFormalism,
+    PotentialImportEntryRequest,
+    PotentialLibraryEntry,
     PotentialUploadMeta,
     Scenario,
 )
@@ -44,6 +48,13 @@ from lammps.templates import write_cascade_input, write_implant_input  # noqa: E
 from aegis_api.analysis import analyze_job_dir  # noqa: E402
 from aegis_api.campaigns import CampaignManager, write_campaign_submit_helper, write_hpc_pack  # noqa: E402
 from aegis_api.jobs import JobManager  # noqa: E402
+from aegis_api.nist_potentials import (  # noqa: E402
+    download_bytes,
+    filter_library,
+    guess_formalism,
+    load_library_index,
+    parse_nist_entry_downloads,
+)
 from aegis_api.store import DataStore  # noqa: E402
 
 DATA_ROOT = Path(os.environ.get("AEGIS_DATA_ROOT") or (REPO_ROOT / "data"))
@@ -161,6 +172,178 @@ def list_potentials(material_id: str | None = None) -> list[Potential]:
     return pots
 
 
+@app.get("/api/potentials/library", response_model=list[PotentialLibraryEntry])
+def list_potential_library(
+    material_id: str | None = None,
+    elements: str | None = None,
+    q: str = "",
+    source: str | None = None,
+) -> list[PotentialLibraryEntry]:
+    raw = load_library_index(DATA_ROOT / "potentials" / "library_index.json")
+    el_list: list[str] | None = None
+    if elements:
+        el_list = [x for x in elements.replace(",", " ").split() if x]
+    elif material_id:
+        m = store.get_material(material_id)
+        if not m:
+            raise HTTPException(404, "material not found")
+        el_list = [e.symbol for e in m.composition if e.atomic_percent > 0]
+    filtered = filter_library(raw, elements=el_list, q=q, source=source)
+    installed = store.installed_library_ids()
+    out: list[PotentialLibraryEntry] = []
+    for e in filtered:
+        downloadable = bool(e.get("download_url"))
+        fname = (e.get("filename") or "").lower()
+        installed_flag = e.get("id") in installed or (fname and fname in installed)
+        # Also mark installed if mapped catalog entry is available
+        mapped = e.get("maps_to_catalog_id")
+        if mapped:
+            pot = store.get_potential(mapped)
+            if pot and pot.available:
+                installed_flag = True
+        out.append(
+            PotentialLibraryEntry(
+                **{k: v for k, v in e.items() if k in PotentialLibraryEntry.model_fields},
+                downloadable=downloadable,
+                installed=bool(installed_flag),
+            )
+        )
+    return out
+
+
+@app.post("/api/potentials/library/download", response_model=Potential)
+def download_library_potential(body: PotentialDownloadRequest) -> Potential:
+    """Download a published file from NIST IPR (allowlisted) or register from URL."""
+    lib_entry = None
+    url = body.url
+    name = body.name
+    elements = body.elements
+    style = body.lammps_pair_style
+    attach_to = body.attach_to_id
+    library_id = body.library_id
+    pair_coeff = "pair_coeff * * {file} {elements}"
+    citation = ""
+    doi = ""
+    source_url = ""
+    warnings: list[str] = []
+
+    if library_id:
+        raw = load_library_index(DATA_ROOT / "potentials" / "library_index.json")
+        lib_entry = next((e for e in raw if e.get("id") == library_id), None)
+        if not lib_entry:
+            raise HTTPException(404, "library entry not found")
+        url = lib_entry.get("download_url")
+        if not url:
+            raise HTTPException(
+                400,
+                "This library entry is browse-only. Open the NIST/OpenKIM link, then Import URL or Upload.",
+            )
+        name = name or lib_entry.get("name")
+        elements = elements or list(lib_entry.get("elements") or [])
+        style = style or lib_entry.get("pair_style") or "eam/alloy"
+        pair_coeff = lib_entry.get("pair_coeff_template") or pair_coeff
+        citation = lib_entry.get("citation") or ""
+        doi = lib_entry.get("doi") or ""
+        source_url = lib_entry.get("entry_url") or ""
+        warnings = list(lib_entry.get("warnings") or [])
+        attach_to = attach_to or lib_entry.get("maps_to_catalog_id")
+
+    if not url:
+        raise HTTPException(400, "library_id or url required")
+    try:
+        content, filename = download_bytes(url)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not content:
+        raise HTTPException(400, "empty download")
+
+    elements = elements or ["W"]
+    style = (style or guess_formalism("", filename)).strip().lower()
+    allowed_styles = {
+        "eam",
+        "eam/alloy",
+        "eam/fs",
+        "meam",
+        "snap",
+        "table",
+        "hybrid",
+        "hybrid/overlay",
+    }
+    if style not in allowed_styles:
+        # Still store file but mark pair style cautiously
+        if style in {"", "other"}:
+            style = guess_formalism("", filename)
+        if style not in allowed_styles:
+            raise HTTPException(400, f"pair_style '{style}' not supported for auto-download")
+
+    pot_id = attach_to or f"nist-{uuid.uuid4().hex[:10]}"
+    dest_dir = DATA_ROOT / "potentials" / "user" / pot_id
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / (lib_entry.get("filename") if lib_entry and lib_entry.get("filename") else filename)
+    dest.write_bytes(content)
+    rel = str(dest.relative_to(DATA_ROOT)).replace("\\", "/")
+
+    if attach_to and store.get_potential(attach_to):
+        pot = store.attach_file(attach_to, rel)
+        if not pot:
+            raise HTTPException(404, "attach target not found")
+        # Enrich metadata on a user shadow
+        enriched = pot.model_dump()
+        enriched["citation"] = citation or enriched.get("citation") or ""
+        enriched["doi"] = doi or enriched.get("doi") or ""
+        enriched["source_url"] = source_url or enriched.get("source_url") or url
+        enriched["library_id"] = library_id
+        enriched["lammps_pair_style"] = style
+        if pair_coeff:
+            enriched["pair_coeff_template"] = pair_coeff.replace(
+                "{elements}", " ".join(elements)
+            )
+        warnings = list(enriched.get("warnings") or [])
+        for w in ["Downloaded from NIST IPR — verify citation before publication."]:
+            if w not in warnings:
+                warnings.append(w)
+        enriched["warnings"] = warnings
+        enriched["source"] = "nist"
+        return store.add_user_potential(Potential(**enriched))
+
+    try:
+        formalism = PotentialFormalism(style if style != "eam" else "eam")
+    except ValueError:
+        formalism = PotentialFormalism.OTHER
+
+    pot = Potential(
+        id=pot_id,
+        name=name or filename,
+        formalism=formalism,
+        elements=elements,
+        recommended_for=["cascade"],
+        citation=citation,
+        doi=doi,
+        source_url=source_url or url,
+        warnings=warnings
+        + ["Downloaded from NIST IPR — verify citation before publication."],
+        lammps_pair_style=style,
+        pair_coeff_template=pair_coeff.replace("{elements}", " ".join(elements)),
+        file_path=rel,
+        source="nist",
+        available=True,
+        library_id=library_id,
+    )
+    return store.add_user_potential(pot)
+
+
+@app.post("/api/potentials/library/import-entry")
+def import_nist_entry(body: PotentialImportEntryRequest) -> dict[str, Any]:
+    """Parse a NIST entry page for downloadable parameter files."""
+    try:
+        files = parse_nist_entry_downloads(body.entry_url)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"could not fetch NIST entry: {exc}") from exc
+    return {"entry_url": body.entry_url, "files": files}
+
+
 @app.post("/api/potentials/upload", response_model=Potential)
 async def upload_potential(
     file: UploadFile = File(...),
@@ -188,14 +371,37 @@ async def upload_potential(
         )
     if not meta_obj.elements:
         raise HTTPException(400, "upload must declare at least one element")
-    pot_id = f"user-{uuid.uuid4().hex[:10]}"
-    dest_dir = DATA_ROOT / "potentials" / "user" / pot_id
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    suffix = Path(file.filename or "potential.dat").name
-    dest = dest_dir / suffix
     content = await file.read()
     if not content:
         raise HTTPException(400, "empty potential file")
+    suffix = Path(file.filename or "potential.dat").name
+
+    if meta_obj.attach_to_id:
+        if not store.get_potential(meta_obj.attach_to_id):
+            raise HTTPException(404, "attach_to_id not found")
+        pot_id = meta_obj.attach_to_id
+        dest_dir = DATA_ROOT / "potentials" / "user" / pot_id
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / suffix
+        dest.write_bytes(content)
+        rel = str(dest.relative_to(DATA_ROOT)).replace("\\", "/")
+        pot = store.attach_file(pot_id, rel)
+        if not pot:
+            raise HTTPException(404, "attach target missing")
+        # Refresh pair style from upload meta when attaching
+        data = pot.model_dump()
+        data["lammps_pair_style"] = style
+        data["formalism"] = meta_obj.formalism
+        data["pair_coeff_template"] = meta_obj.pair_coeff_template
+        data["elements"] = meta_obj.elements
+        if meta_obj.name:
+            data["name"] = meta_obj.name
+        return store.add_user_potential(Potential(**data))
+
+    pot_id = f"user-{uuid.uuid4().hex[:10]}"
+    dest_dir = DATA_ROOT / "potentials" / "user" / pot_id
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / suffix
     dest.write_bytes(content)
     pot = Potential(
         id=pot_id,

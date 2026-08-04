@@ -37,4 +37,6 @@ data/potentials/curated/*.alloy
 data/potentials/curated/*.fs
 data/potentials/curated/*.meam
 data/potentials/curated/*.snap
+data/potentials/user_index.json
+data/potentials/attachments.json
 !data/potentials/curated/.gitkeep

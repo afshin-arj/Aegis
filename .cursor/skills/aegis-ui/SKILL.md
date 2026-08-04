@@ -10,7 +10,7 @@ description: Aegis workbench UI information architecture and visual design rules
 1. Projects — name study + job history + per-job HPC export
 2. DOE — DEMO Cartesian sweeps + campaign summary table + HPC zip
 3. Material — presets + composition (Σ at% KPI; at%/wt% toggle)
-4. Potential — curated filter + upload + file/placeholder status
+3. Potential — local library + NIST/OpenKIM download + upload/attach
 5. Scenario — D–D / D–T + project name + default chips
 6. LAMMPS — fieldsets + advanced expander
 7. Run — console log / empty state / HPC pack download

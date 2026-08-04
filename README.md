@@ -69,6 +69,7 @@ npm run dev
 | UI | React + Vite — expert console for nuclear materials workflows |
 | API | FastAPI job orchestrator + WebSocket logs |
 | MD | LAMMPS (out-of-process) |
+| Potentials | Local catalog + NIST IPR download (allowlisted) / manual upload |
 | KMC | KART / k-ART (optional; stubs if binary missing) |
 | Data | JSON materials, scenarios, potential catalog |
 

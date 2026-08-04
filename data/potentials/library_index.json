@@ -1,0 +1,148 @@
+[
+  {
+    "id": "nist-zhou04-w",
+    "name": "Zhou04 W EAM/alloy (NIST)",
+    "elements": ["W"],
+    "pair_style": "eam/alloy",
+    "formalism": "eam/alloy",
+    "source": "nist",
+    "entry_url": "https://www.ctcms.nist.gov/potentials/entry/2004--Zhou-X-W-Johnson-R-A-Wadley-H-N-G--W/",
+    "download_url": "https://www.ctcms.nist.gov/potentials/Download/2004--Zhou-X-W-Johnson-R-A-Wadley-H-N-G--W/4/W_Zhou04.eam.alloy",
+    "filename": "W_Zhou04.eam.alloy",
+    "citation": "Zhou, Johnson, Wadley, Phys. Rev. B 69, 144113 (2004).",
+    "doi": "10.1103/PhysRevB.69.144113",
+    "recommended_for": ["cascade", "pure_w"],
+    "warnings": [
+      "Published NIST file — cite the DOI. Review short-range repulsion for high-energy PKAs."
+    ],
+    "pair_coeff_template": "pair_coeff * * {file} W",
+    "maps_to_catalog_id": "w-fs-cascade"
+  },
+  {
+    "id": "nist-zhou04-mo",
+    "name": "Zhou04 Mo EAM/alloy (NIST)",
+    "elements": ["Mo"],
+    "pair_style": "eam/alloy",
+    "formalism": "eam/alloy",
+    "source": "nist",
+    "entry_url": "https://www.ctcms.nist.gov/potentials/entry/2004--Zhou-X-W-Johnson-R-A-Wadley-H-N-G--Mo/",
+    "download_url": "https://www.ctcms.nist.gov/potentials/Download/2004--Zhou-X-W-Johnson-R-A-Wadley-H-N-G--Mo/4/Mo_Zhou04.eam.alloy",
+    "filename": "Mo_Zhou04.eam.alloy",
+    "citation": "Zhou, Johnson, Wadley, Phys. Rev. B 69, 144113 (2004).",
+    "doi": "10.1103/PhysRevB.69.144113",
+    "recommended_for": ["cascade", "pure_mo"],
+    "warnings": ["Published NIST file — cite the DOI."],
+    "pair_coeff_template": "pair_coeff * * {file} Mo",
+    "maps_to_catalog_id": "mo-eam"
+  },
+  {
+    "id": "nist-zhou04-ta",
+    "name": "Zhou04 Ta EAM/alloy (NIST)",
+    "elements": ["Ta"],
+    "pair_style": "eam/alloy",
+    "formalism": "eam/alloy",
+    "source": "nist",
+    "entry_url": "https://www.ctcms.nist.gov/potentials/entry/2004--Zhou-X-W-Johnson-R-A-Wadley-H-N-G--Ta/",
+    "download_url": "https://www.ctcms.nist.gov/potentials/Download/2004--Zhou-X-W-Johnson-R-A-Wadley-H-N-G--Ta/4/Ta_Zhou04.eam.alloy",
+    "filename": "Ta_Zhou04.eam.alloy",
+    "citation": "Zhou, Johnson, Wadley, Phys. Rev. B 69, 144113 (2004).",
+    "doi": "10.1103/PhysRevB.69.144113",
+    "recommended_for": ["cascade", "pure_ta"],
+    "warnings": ["Published NIST file — cite the DOI."],
+    "pair_coeff_template": "pair_coeff * * {file} Ta",
+    "maps_to_catalog_id": "ta-eam"
+  },
+  {
+    "id": "nist-zhou04-fe",
+    "name": "Zhou04 Fe EAM/alloy (NIST)",
+    "elements": ["Fe"],
+    "pair_style": "eam/alloy",
+    "formalism": "eam/alloy",
+    "source": "nist",
+    "entry_url": "https://www.ctcms.nist.gov/potentials/entry/2004--Zhou-X-W-Johnson-R-A-Wadley-H-N-G--Fe/",
+    "download_url": "https://www.ctcms.nist.gov/potentials/Download/2004--Zhou-X-W-Johnson-R-A-Wadley-H-N-G--Fe/4/Fe_Zhou04.eam.alloy",
+    "filename": "Fe_Zhou04.eam.alloy",
+    "citation": "Zhou, Johnson, Wadley, Phys. Rev. B 69, 144113 (2004).",
+    "doi": "10.1103/PhysRevB.69.144113",
+    "recommended_for": ["cascade"],
+    "warnings": ["Published NIST file — cite the DOI. BCC Fe cascade suitability depends on your study."],
+    "pair_coeff_template": "pair_coeff * * {file} Fe",
+    "maps_to_catalog_id": null
+  },
+  {
+    "id": "nist-browse-w",
+    "name": "Browse all W potentials on NIST IPR",
+    "elements": ["W"],
+    "pair_style": "",
+    "formalism": "other",
+    "source": "nist",
+    "entry_url": "https://www.ctcms.nist.gov/potentials/system/W/",
+    "download_url": null,
+    "filename": null,
+    "citation": "NIST Interatomic Potentials Repository — tungsten system page.",
+    "doi": "10.18434/m37",
+    "recommended_for": ["cascade", "browse"],
+    "warnings": [
+      "Browse-only entry. Download a published file from NIST, then Attach / Upload in Aegis."
+    ],
+    "pair_coeff_template": "pair_coeff * * {file} W",
+    "maps_to_catalog_id": "w-fs-cascade"
+  },
+  {
+    "id": "nist-browse-w-he",
+    "name": "Browse W–He potentials on NIST IPR",
+    "elements": ["W", "He"],
+    "pair_style": "",
+    "formalism": "other",
+    "source": "nist",
+    "entry_url": "https://www.ctcms.nist.gov/potentials/",
+    "download_url": null,
+    "filename": null,
+    "citation": "Search NIST IPR for W–He (e.g. Juslin–Wirth / Bonny families).",
+    "doi": "10.18434/m37",
+    "recommended_for": ["he_implantation", "browse"],
+    "warnings": [
+      "No single auto-download — locate the parameterization you cite, then Attach to W–He catalog entry."
+    ],
+    "pair_coeff_template": "pair_coeff * * {file} W He",
+    "maps_to_catalog_id": "w-he-eam"
+  },
+  {
+    "id": "openkim-browse",
+    "name": "OpenKIM models (external)",
+    "elements": ["W", "Mo", "Ta", "Fe", "He"],
+    "pair_style": "kim",
+    "formalism": "other",
+    "source": "openkim",
+    "entry_url": "https://openkim.org/",
+    "download_url": null,
+    "filename": null,
+    "citation": "Open Knowledgebase of Interatomic Models (OpenKIM).",
+    "doi": "",
+    "recommended_for": ["browse"],
+    "warnings": [
+      "KIM models need kim-api / pair_style kim. Prefer NIST EAM/FS files for Aegis Phase-1 LAMMPS templates, or upload a compatible file."
+    ],
+    "pair_coeff_template": "pair_coeff * * {file} {elements}",
+    "maps_to_catalog_id": null
+  },
+  {
+    "id": "nist-colab-search",
+    "name": "NIST Colab: Search LAMMPS Potentials",
+    "elements": ["W", "Mo", "Ta", "Fe", "He"],
+    "pair_style": "",
+    "formalism": "other",
+    "source": "nist",
+    "entry_url": "https://colab.research.google.com/github/usnistgov/potentials/blob/master/doc/0.%20Search%20LAMMPS%20Potentials.ipynb",
+    "download_url": null,
+    "filename": null,
+    "citation": "usnistgov/potentials interactive search notebook.",
+    "doi": "10.18434/m37",
+    "recommended_for": ["browse"],
+    "warnings": [
+      "Use the notebook to find pair_style and download URLs, then Import URL or Upload here."
+    ],
+    "pair_coeff_template": "pair_coeff * * {file} {elements}",
+    "maps_to_catalog_id": null
+  }
+]
