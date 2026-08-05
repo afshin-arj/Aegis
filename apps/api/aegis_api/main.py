@@ -189,7 +189,7 @@ async def lattice_from_poscar(material_id: str, file: UploadFile = File(...)) ->
         lat = parse_lattice_from_poscar(raw)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    data = m.model_dump()
+    data = m.model_dump(mode="json")
     data["lattice_constant_A"] = lat["lattice_constant_A"]
     if lat.get("lattice_c_A"):
         data["lattice_c_A"] = lat["lattice_c_A"]
@@ -219,7 +219,7 @@ def update_material(material_id: str, patch: MaterialUpdate) -> Material:
     m = store.get_material(material_id)
     if not m:
         raise HTTPException(404, "material not found")
-    data = m.model_dump()
+    data = m.model_dump(mode="json")
     for k, v in patch.model_dump(exclude_unset=True).items():
         if v is not None:
             data[k] = v
@@ -730,12 +730,13 @@ def get_cascade_timeline(job_id: str) -> dict[str, Any]:
 
 @app.get("/api/jobs/{job_id}/dxa")
 def get_job_dxa(job_id: str, refresh: bool = False) -> dict[str, Any]:
+    """Return cached DXA summary. Only run OVITO when ``refresh=true`` (explicit UI action)."""
     job_dir = RUNS_ROOT / job_id
     if not job_dir.exists():
         raise HTTPException(404, "job not found")
     from aegis_api.dxa import load_dxa_summary, run_dxa_on_job
 
-    if refresh or not (job_dir / "dxa_summary.json").exists():
+    if refresh:
         return run_dxa_on_job(job_dir)
     data = load_dxa_summary(job_dir)
     if not data:

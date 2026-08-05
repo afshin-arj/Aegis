@@ -331,30 +331,37 @@ def ideal_sites(
     c: float | None = None,
     z_max: float | None = None,
 ) -> list[tuple[float, float, float]]:
-    """Ideal lattice sites in Å for Wigner–Seitz proxy analysis."""
+    """Ideal lattice sites in Å for Wigner–Seitz proxy analysis.
+
+    For HCP/hex, sites are built from the same lattice vectors as ``lattice_line``
+    (a1, a2, a3 with fractional basis), using an orthogonal bounding-box estimate
+    of nx,ny,nz from dump extents.
+    """
     lx, ly, lz = box
     cry = normalize_crystal(crystal)
     a = max(float(a), 1e-6)
-    if cry == "hcp" or cry == "hex":
+    if cry in {"hcp", "hex"}:
         c_len = float(c) if c and c > 0 else a * (1.633 if cry == "hcp" else 0.976)
-        # Approximate orthorhombic supercell mapping of hex basis
-        a1 = a
-        a2 = a * math.sqrt(3)
-        nx = max(int(round(lx / a1)), 1)
-        ny = max(int(round(ly / a2)), 1)
+        # Match LAMMPS custom lattice: a1=(a,0,0), a2=(-a/2, a*√3/2, 0), a3=(0,0,c)
+        a1x, a1y = a, 0.0
+        a2x, a2y = -0.5 * a, a * math.sqrt(3) / 2.0
+        # Orthogonal span of one cell for counting
+        cell_x = a
+        cell_y = a * math.sqrt(3) / 2.0
+        nx = max(int(round(lx / cell_x)), 1)
+        ny = max(int(round(ly / cell_y)), 1)
         nz = max(int(round(lz / c_len)), 1)
         sites: list[tuple[float, float, float]] = []
         for i in range(nx):
             for j in range(ny):
                 for k in range(nz):
-                    # two basis: (0,0,0) and (0.5*a, a2/3, c/2) in cartesian-ish grid
-                    for ox, oy, oz in ((0.0, 0.0, 0.0), (0.5 * a1, a2 / 3.0, 0.5 * c_len)):
-                        x = i * a1 + ox
-                        y = j * a2 + oy
-                        z = k * c_len + oz
+                    for fx, fy, fz in basis_offsets(cry):
+                        x = (i + fx) * a1x + (j + fy) * a2x
+                        y = (i + fx) * a1y + (j + fy) * a2y
+                        z = (k + fz) * c_len
                         if z_max is not None and z > z_max:
                             continue
-                        if x <= lx + 1e-6 and y <= ly + 1e-6 and z <= lz + 1e-6:
+                        if -1e-6 <= x <= lx + 1e-6 and -1e-6 <= y <= ly + 1e-6 and z <= lz + 1e-6:
                             sites.append((x, y, z))
         return sites
 
@@ -388,25 +395,25 @@ def ideal_sites_sublattice(
     lx, ly, lz = box
     a = max(float(a), 1e-6)
     c_len = float(c) if c and c > 0 else a * 0.976
-    a1, a2 = a, a * math.sqrt(3)
-    nx = max(int(round(lx / a1)), 1)
-    ny = max(int(round(ly / a2)), 1)
+    a1x, a1y = a, 0.0
+    a2x, a2y = -0.5 * a, a * math.sqrt(3) / 2.0
+    cell_x, cell_y = a, a * math.sqrt(3) / 2.0
+    nx = max(int(round(lx / cell_x)), 1)
+    ny = max(int(round(ly / cell_y)), 1)
     nz = max(int(round(lz / c_len)), 1)
     w_sites: list[tuple[float, float, float]] = []
     c_sites: list[tuple[float, float, float]] = []
+    bases = basis_offsets(cry)
     for i in range(nx):
         for j in range(ny):
             for k in range(nz):
-                for label, (ox, oy, oz) in (
-                    ("W", (0.0, 0.0, 0.0)),
-                    ("C", (0.5 * a1, a2 / 3.0, 0.5 * c_len)),
-                ):
-                    x = i * a1 + ox
-                    y = j * a2 + oy
-                    z = k * c_len + oz
+                for label, (fx, fy, fz) in (("W", bases[0]), ("C", bases[1] if len(bases) > 1 else bases[0])):
+                    x = (i + fx) * a1x + (j + fy) * a2x
+                    y = (i + fx) * a1y + (j + fy) * a2y
+                    z = (k + fz) * c_len
                     if z_max is not None and z > z_max:
                         continue
-                    if x <= lx + 1e-6 and y <= ly + 1e-6 and z <= lz + 1e-6:
+                    if -1e-6 <= x <= lx + 1e-6 and -1e-6 <= y <= ly + 1e-6 and z <= lz + 1e-6:
                         (w_sites if label == "W" else c_sites).append((x, y, z))
     return {"W": w_sites, "C": c_sites}
 

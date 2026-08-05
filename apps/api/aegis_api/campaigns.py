@@ -96,7 +96,7 @@ class CampaignManager:
         cases: list[DoeCase] = []
         job_ids: list[str] = []
         for spec in matrix:
-            params = body.base.run_params.model_dump()
+            params = body.base.run_params.model_dump(mode="json")
             params.update(spec["overrides"])
             # Keep confirm_large only when the caller already set it (API enforces the gate)
             cells = int(params["nx"]) * int(params["ny"]) * int(params["nz"])
@@ -167,7 +167,7 @@ class CampaignManager:
     def _update(self, campaign_id: str, **kwargs: Any) -> DoeCampaignInfo:
         with self._lock:
             info = self._campaigns[campaign_id]
-            data = info.model_dump()
+            data = info.model_dump(mode="json")
             data.update(kwargs)
             data["updated_at"] = _now()
             info = DoeCampaignInfo(**data)

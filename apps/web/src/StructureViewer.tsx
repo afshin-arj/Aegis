@@ -195,6 +195,9 @@ export default function StructureViewer({ jobId, refreshKey }: Props) {
       return;
     }
     let cancelled = false;
+    setIndex(null);
+    setBefore(null);
+    setAfter(null);
     (async () => {
       setBusy(true);
       setErr("");

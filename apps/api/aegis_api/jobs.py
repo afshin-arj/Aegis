@@ -132,8 +132,8 @@ class JobManager:
         local_pot = job_dir / pot_file.name
         shutil.copy2(pot_file, local_pot)
         in_path = job_dir / "in.aegis"
-        mat_dict = material.model_dump()
-        pot_dict = potential.model_dump()
+        mat_dict = material.model_dump(mode="json")
+        pot_dict = potential.model_dump(mode="json")
         mode = str(getattr(params.get("mode"), "value", params.get("mode")) or "cascade")
         if mode == "surface":
             write_surface_input(
@@ -193,14 +193,10 @@ class JobManager:
     def _update(self, job_id: str, **kwargs: Any) -> JobInfo:
         with self._lock:
             info = self._jobs[job_id]
-            # Do not clobber a user cancel with later pipeline statuses
+            # Cancelled jobs are frozen — do not apply later pipeline updates
             if info.status == JobStatus.CANCELLED:
-                new_status = kwargs.get("status")
-                if new_status is not None and new_status != JobStatus.CANCELLED:
-                    kwargs = {k: v for k, v in kwargs.items() if k != "status"}
-                    if not kwargs:
-                        return info
-            data = info.model_dump()
+                return info
+            data = info.model_dump(mode="json")
             data.update(kwargs)
             data["updated_at"] = _now()
             info = JobInfo(**data)
@@ -212,7 +208,11 @@ class JobManager:
         job_dir = self.runs_root / job_id
         log_path = job_dir / "run.log"
         try:
+            if self._is_cancelled(job_id):
+                return
             self._update(job_id, status=JobStatus.RUNNING, message="preparing LAMMPS input")
+            if self._is_cancelled(job_id):
+                return
             material = Material(**json.loads((job_dir / "material.json").read_text(encoding="utf-8")))
             potential = Potential(**json.loads((job_dir / "potential.json").read_text(encoding="utf-8")))
             params = json.loads((job_dir / "run_params.json").read_text(encoding="utf-8"))
@@ -274,6 +274,20 @@ class JobManager:
                         log.write(
                             "[Aegis] LAMMPS not found on PATH. Writing dry-run artifacts only.\n"
                             "Set AEGIS_LAMMPS_BIN or install LAMMPS to execute MD.\n"
+                        )
+                    # Cascade timeline so UI Results wiring works without write_cascade_input
+                    if mode == "cascade":
+                        from lammps.templates import plan_cascade_stages
+
+                        schedule = plan_cascade_stages(
+                            energy_eV=float(params.get("pka_energy_eV") or 5000),
+                            timestep_fs=float(params.get("timestep_fs") or 0.001),
+                            max_steps=int(params.get("max_steps") or 1000),
+                            dump_every=int(params.get("dump_every") or 100),
+                            auto=bool(params.get("cascade_auto_stages", True)),
+                        )
+                        (job_dir / "cascade_timeline.json").write_text(
+                            json.dumps(schedule, indent=2), encoding="utf-8"
                         )
                     if mode == "surface":
                         self._write_demo_surface_dump(job_dir, material, params)
@@ -400,8 +414,8 @@ class JobManager:
                     max_wall_s=float(req.get("kart_max_wall_s", 600)),
                     max_kmc_time_s=float(req.get("kart_max_kmc_time_s", 1.0)),
                     temperatures=req.get("kart_anneal_temperatures"),
-                    material=material.model_dump(),
-                    potential=potential.model_dump(),
+                    material=material.model_dump(mode="json"),
+                    potential=potential.model_dump(mode="json"),
                 )
 
             if self._is_cancelled(job_id):
@@ -441,7 +455,10 @@ class JobManager:
     def _write_demo_dump(
         self, job_dir: Path, material: Material, *, dump_name: str = "dump.cascade.000000000.lammpstrj"
     ) -> None:
-        """Artificial multi-frame trajectory so structure viz works without LAMMPS."""
+        """Artificial multi-frame trajectory so structure viz works without LAMMPS.
+
+        Atom positions match ``crystal.ideal_sites`` so dry-run WS analysis stays consistent.
+        """
         from lammps import crystal as crystal_reg
         import math
 
@@ -449,30 +466,25 @@ class JobManager:
         cry = crystal_reg.normalize_crystal(str(getattr(material.crystal, "value", material.crystal)))
         mat = material.model_dump(mode="json")
         c = crystal_reg.resolve_c_A(mat, cry) or a
-        offsets = crystal_reg.basis_offsets(cry)
         n_cells = 2
-        # Orthorhombic-ish mapping for hex/hcp; cubic for others
         if cry in {"hcp", "hex"}:
-            sx, sy, sz = a, a * math.sqrt(3), c
+            # Match ideal_sites / lattice_line bounding box
+            Lx = n_cells * a
+            Ly = n_cells * (a * math.sqrt(3) / 2.0)
+            Lz = n_cells * c
         else:
-            sx = sy = sz = a
+            Lx = Ly = Lz = n_cells * a
+        sites = crystal_reg.ideal_sites((Lx, Ly, Lz), cry, a, c=c)
 
         def frame(timestep: int, displace: float = 0.0, extra: bool = False) -> list[str]:
             atoms: list[str] = []
-            n = 0
-            for i in range(n_cells):
-                for j in range(n_cells):
-                    for k in range(n_cells):
-                        for bi, (ox, oy, oz) in enumerate(offsets):
-                            n += 1
-                            dx = displace if (i, j, k, bi) == (1, 1, 1, 0) else 0.0
-                            atoms.append(
-                                f"{n} 1 {i*sx + ox*sx + dx:.6f} {j*sy + oy*sy:.6f} {k*sz + oz*sz:.6f}"
-                            )
+            for n, (x, y, z) in enumerate(sites, start=1):
+                dx = displace if n == 1 else 0.0
+                atoms.append(f"{n} 1 {x + dx:.6f} {y:.6f} {z:.6f}")
+            n = len(atoms)
             if extra:
                 n += 1
-                atoms.append(f"{n} 1 {sx*0.25:.6f} {sy*0.25:.6f} {sz*0.25:.6f}")
-            Lx, Ly, Lz = n_cells * sx, n_cells * sy, n_cells * sz
+                atoms.append(f"{n} 1 {Lx * 0.25:.6f} {Ly * 0.25:.6f} {Lz * 0.25:.6f}")
             lines = [
                 "ITEM: TIMESTEP",
                 str(timestep),
@@ -501,26 +513,38 @@ class JobManager:
 
     def _write_demo_surface_dump(self, job_dir: Path, material: Material, params: dict) -> None:
         """Demo free-surface trajectory with fuzz / implant proxies for dry-run."""
-        a = material.lattice_constant_A
+        from lammps import crystal as crystal_reg
+        import math
+
+        a = float(material.lattice_constant_A)
+        cry = crystal_reg.normalize_crystal(str(getattr(material.crystal, "value", material.crystal)))
+        mat = material.model_dump(mode="json")
+        c = crystal_reg.resolve_c_A(mat, cry) or a
         nz = int(params.get("nz", 4))
         vacuum = int(params.get("vacuum_layers", 4))
-        lz = (nz + vacuum) * a
-        ly = lx = 4 * a
+        nx = ny = 4
+        if cry in {"hcp", "hex"}:
+            lx = nx * a
+            ly = ny * (a * math.sqrt(3) / 2.0)
+            z_pitch = c
+        else:
+            lx = nx * a
+            ly = ny * a
+            z_pitch = a
+        lz = (nz + vacuum) * z_pitch
+        sites = crystal_reg.ideal_sites((lx, ly, nz * z_pitch), cry, a, c=c, z_max=nz * z_pitch)
 
         def frame(timestep: int, fuzz: float = 0.0, he_depth: float = 0.0) -> list[str]:
             atoms: list[str] = []
-            n = 0
-            for i in range(4):
-                for j in range(4):
-                    for k in range(max(2, nz)):
-                        n += 1
-                        z = k * a
-                        if k == max(2, nz) - 1:
-                            z += fuzz
-                        atoms.append(f"{n} 1 {i*a} {j*a} {z}")
+            z_top = max((s[2] for s in sites), default=0.0)
+            for n, (x, y, z) in enumerate(sites, start=1):
+                if abs(z - z_top) < 1e-6:
+                    z = z + fuzz
+                atoms.append(f"{n} 1 {x:.6f} {y:.6f} {z:.6f}")
+            n = len(atoms)
             if he_depth > 0:
                 n += 1
-                atoms.append(f"{n} 2 {2*a} {2*a} {max(0.0, (nz * a) - he_depth)}")
+                atoms.append(f"{n} 2 {lx * 0.5:.6f} {ly * 0.5:.6f} {max(0.0, z_top - he_depth):.6f}")
             lines = [
                 "ITEM: TIMESTEP",
                 str(timestep),
@@ -542,4 +566,4 @@ class JobManager:
         (job_dir / "dump.surface.000000000.lammpstrj").write_text(
             "\n".join(traj) + "\n", encoding="utf-8"
         )
-        (job_dir / "final.data").write_text("# demo surface\n", encoding="utf-8")
+        (job_dir / "final.data").write_text(f"# demo surface crystal={cry}\n", encoding="utf-8")

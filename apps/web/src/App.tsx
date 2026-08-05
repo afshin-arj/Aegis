@@ -275,6 +275,15 @@ function normalizeComposition(rows: ElementFraction[]): ElementFraction[] {
   }));
 }
 
+/** Prefer UI override, then catalog c, then a × c/a — never wipe a good catalog c with null. */
+function resolveLatticeC(m: Material | null | undefined, override: number | null, a?: number): number | null {
+  if (override != null && Number.isFinite(override) && override > 0) return override;
+  if (m?.lattice_c_A != null && m.lattice_c_A > 0) return m.lattice_c_A;
+  const a0 = a ?? m?.lattice_constant_A;
+  if (m?.c_over_a != null && m.c_over_a > 0 && a0 != null && a0 > 0) return a0 * m.c_over_a;
+  return null;
+}
+
 const ATOMIC_MASS: Record<string, number> = {
   H: 1.008,
   D: 2.014,
@@ -520,6 +529,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [compUnit, setCompUnit] = useState<"at%" | "wt%">("at%");
   const [projectFilter, setProjectFilter] = useState<string>("");
+  const loadJobReq = useRef(0);
 
   const material = useMemo(() => materials.find((m) => m.id === materialId), [materials, materialId]);
   const selectedPot = useMemo(() => potentials.find((p) => p.id === potentialId), [potentials, potentialId]);
@@ -556,6 +566,20 @@ export default function App() {
     ? crystalInfo.supported
     : RUNNABLE_CRYSTALS.has((material?.crystal || "bcc").toLowerCase());
 
+  const intDirectionOptions = useMemo(() => {
+    const orients = (crystalInfo?.orients || []).map((o) => o.id);
+    const fallback = ["100", "110", "111"];
+    const base = orients.length ? orients : fallback;
+    const d = crystalInfo?.default_interstitial_direction;
+    const ids = [...new Set([...base, ...(d ? [d] : []), "random"])];
+    return ids;
+  }, [crystalInfo]);
+
+  const effectiveLatticeC = useMemo(
+    () => resolveLatticeC(material, latticeC, lattice),
+    [material, latticeC, lattice],
+  );
+
   const blockers = useMemo(() => {
     const list: string[] = [];
     if (!potentialId) list.push("Select a potential");
@@ -571,7 +595,7 @@ export default function App() {
     const needsC =
       crystalInfo?.needs_c ||
       ["hcp", "hex"].includes((material?.crystal || "").toLowerCase());
-    if (needsC && !(latticeC != null && latticeC > 0)) {
+    if (needsC && !(effectiveLatticeC != null && effectiveLatticeC > 0)) {
       list.push("HCP/hex materials need a positive lattice c");
     }
     if (params.mode === "interstitial" && selectedPot) {
@@ -601,6 +625,7 @@ export default function App() {
     crystalSupported,
     crystalInfo,
     latticeC,
+    effectiveLatticeC,
   ]);
 
   const verdict = blockers.length
@@ -641,11 +666,38 @@ export default function App() {
           setMaterialId(first.id);
           setComposition(first.composition);
           setLattice(first.lattice_constant_A);
-          setLatticeC(first.lattice_c_A ?? null);
+          setLatticeC(resolveLatticeC(first, null));
         }
       })
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));
   }, []);
+
+  // Keep crystal-dependent selects in sync with the active crystal registry entry
+  useEffect(() => {
+    if (!crystalInfo) return;
+    setParams((p) => {
+      let next = p;
+      const orientOk = crystalInfo.orients.some((o) => o.id === p.crystal_orient);
+      if (!orientOk) {
+        next = { ...next, crystal_orient: crystalInfo.orients[0]?.id || "100" };
+      }
+      const geomOk = crystalInfo.interstitial_geometries.includes(p.interstitial_geometry);
+      if (!geomOk) {
+        next = { ...next, interstitial_geometry: crystalInfo.default_interstitial_geometry };
+      }
+      const allowedDirs = new Set([
+        ...crystalInfo.orients.map((o) => o.id),
+        crystalInfo.default_interstitial_direction,
+        "random",
+      ]);
+      const isNamed =
+        ["100", "110", "111", "basal", "c", "prism", "random"].includes(p.interstitial_direction);
+      if (isNamed && !allowedDirs.has(p.interstitial_direction)) {
+        next = { ...next, interstitial_direction: crystalInfo.default_interstitial_direction };
+      }
+      return next;
+    });
+  }, [crystalInfo]);
 
   useEffect(() => {
     if (!materialId) return;
@@ -792,6 +844,7 @@ export default function App() {
 
   async function loadJob(jobId: string) {
     if (!jobId) return;
+    const reqId = ++loadJobReq.current;
     setBusy(true);
     setError("");
     setLog("");
@@ -801,33 +854,38 @@ export default function App() {
     setDxaSummary(null);
     try {
       const info = await api<JobInfo>(`/api/jobs/${jobId}`);
+      if (reqId !== loadJobReq.current) return;
       setJob(info);
       if (info.status === "completed" || info.status === "failed") {
         try {
-          setDefects(await api<NonNullable<typeof defects>>(`/api/jobs/${jobId}/defects`));
+          const d = await api<NonNullable<typeof defects>>(`/api/jobs/${jobId}/defects`);
+          if (reqId === loadJobReq.current) setDefects(d);
         } catch {
           /* defects may be missing */
         }
         try {
-          setKartSummary(await api<KartSummary>(`/api/jobs/${jobId}/kart`));
+          const ks = await api<KartSummary>(`/api/jobs/${jobId}/kart`);
+          if (reqId === loadJobReq.current) setKartSummary(ks);
         } catch {
-          setKartSummary((info.kart_summary as KartSummary) || null);
+          if (reqId === loadJobReq.current) setKartSummary((info.kart_summary as KartSummary) || null);
         }
         try {
-          setCascadeTimeline(await api(`/api/jobs/${jobId}/cascade-timeline`));
+          const tl = await api(`/api/jobs/${jobId}/cascade-timeline`);
+          if (reqId === loadJobReq.current) setCascadeTimeline(tl);
         } catch {
-          setCascadeTimeline(null);
+          if (reqId === loadJobReq.current) setCascadeTimeline(null);
         }
         try {
-          setDxaSummary(await api(`/api/jobs/${jobId}/dxa`));
+          const dxa = await api(`/api/jobs/${jobId}/dxa`);
+          if (reqId === loadJobReq.current) setDxaSummary(dxa);
         } catch {
-          setDxaSummary(null);
+          if (reqId === loadJobReq.current) setDxaSummary(null);
         }
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (reqId === loadJobReq.current) setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBusy(false);
+      if (reqId === loadJobReq.current) setBusy(false);
     }
   }
 
@@ -847,7 +905,7 @@ export default function App() {
         body: JSON.stringify({
           composition: normalized,
           lattice_constant_A: lattice,
-          lattice_c_A: latticeC,
+          lattice_c_A: resolveLatticeC(material, latticeC, lattice),
           crystal: material.crystal,
         }),
       });
@@ -998,7 +1056,12 @@ export default function App() {
         project_name: projectName,
         material_id: materialId,
         material_override: material
-          ? { ...material, composition: normalized, lattice_constant_A: lattice, lattice_c_A: latticeC }
+          ? {
+              ...material,
+              composition: normalized,
+              lattice_constant_A: lattice,
+              lattice_c_A: resolveLatticeC(material, latticeC, lattice),
+            }
           : undefined,
         potential_id: potentialId,
         scenario_id: scenarioId,
@@ -1133,7 +1196,12 @@ export default function App() {
           project_name: projectName,
           material_id: materialId,
           material_override: material
-            ? { ...material, composition: normalized, lattice_constant_A: lattice, lattice_c_A: latticeC }
+            ? {
+                ...material,
+                composition: normalized,
+                lattice_constant_A: lattice,
+                lattice_c_A: resolveLatticeC(material, latticeC, lattice),
+              }
             : undefined,
           potential_id: potentialId,
           scenario_id: scenarioId,
@@ -1720,7 +1788,7 @@ export default function App() {
                   if (m) {
                     setComposition(m.composition);
                     setLattice(m.lattice_constant_A);
-                    setLatticeC(m.lattice_c_A ?? null);
+                    setLatticeC(resolveLatticeC(m, null));
                     const info = crystals.find((c) => c.id === m.crystal.toLowerCase());
                     if (info) {
                       setParam("interstitial_geometry", info.default_interstitial_geometry);
@@ -1826,7 +1894,7 @@ export default function App() {
                     type="number"
                     step="0.001"
                     inputMode="decimal"
-                    value={latticeC ?? ""}
+                    value={latticeC ?? effectiveLatticeC ?? ""}
                     onChange={(e) => setLatticeC(e.target.value === "" ? null : Number(e.target.value))}
                   />
                 </Field>
@@ -2551,7 +2619,7 @@ export default function App() {
                     <select
                       id="int-dir"
                       value={
-                        ["100", "110", "111", "basal", "c", "prism", "random"].includes(params.interstitial_direction)
+                        intDirectionOptions.includes(params.interstitial_direction)
                           ? params.interstitial_direction
                           : "custom"
                       }
@@ -2563,17 +2631,15 @@ export default function App() {
                         }
                       }}
                     >
-                      <option value="100">&lt;100&gt;</option>
-                      <option value="110">&lt;110&gt;</option>
-                      <option value="111">&lt;111&gt;</option>
-                      <option value="basal">basal</option>
-                      <option value="c">c-axis</option>
-                      <option value="prism">prism</option>
-                      <option value="random">random</option>
+                      {intDirectionOptions.map((d) => (
+                        <option key={d} value={d}>
+                          {d === "100" || d === "110" || d === "111" ? `\u27E8${d}\u27E9` : d}
+                        </option>
+                      ))}
                       <option value="custom">custom Miller…</option>
                     </select>
                   </Field>
-                  {!["100", "110", "111", "basal", "c", "prism", "random"].includes(params.interstitial_direction) && (
+                  {!intDirectionOptions.includes(params.interstitial_direction) && (
                     <Field label="Miller indices" unit="h k l" htmlFor="int-miller">
                       <input
                         id="int-miller"
@@ -2587,7 +2653,11 @@ export default function App() {
                   <Field label="Geometry" htmlFor="int-geom">
                     <select
                       id="int-geom"
-                      value={params.interstitial_geometry}
+                      value={
+                        (crystalInfo?.interstitial_geometries || []).includes(params.interstitial_geometry)
+                          ? params.interstitial_geometry
+                          : crystalInfo?.default_interstitial_geometry || params.interstitial_geometry
+                      }
                       onChange={(e) => setParam("interstitial_geometry", e.target.value)}
                     >
                       {(crystalInfo?.interstitial_geometries || ["octahedral", "tetrahedral", "dumbbell", "crowdion"]).map(
@@ -2871,7 +2941,7 @@ export default function App() {
         {tab === "results" && (
           <div className="stack">
             <section className="panel">
-              <StructureViewer jobId={job?.id || null} refreshKey={job?.updated_at || job?.status} />
+              <StructureViewer jobId={job?.id || null} refreshKey={job?.status} />
             </section>
             {cascadeTimeline?.stages && cascadeTimeline.stages.length > 0 && (
               <section className="panel stack">

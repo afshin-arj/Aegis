@@ -470,7 +470,8 @@ def write_implant_input(
 
     masses = "\n".join(f"mass {i+1} {_approx_mass(sym)}" for i, sym in enumerate(elems))
     ion_type = elems.index(ion) + 1
-    create = _create_atoms_block(material, [e for e in elems if e != ion])
+    host_elems = [e for e in elems if e != ion] or elems[:1]
+    create = _create_atoms_block(material, host_elems)
     ensemble = _ensemble_fix(params)
     dump, dump_mod = _dump_command(params, "dump.implant.*.lammpstrj")
     restart = _restart_block(params)
@@ -576,28 +577,11 @@ def write_surface_input(
 
     masses = "\n".join(f"mass {i+1} {_approx_mass(sym)}" for i, sym in enumerate(elems))
     ion_type = elems.index(ion) + 1
-    host_elems = [e for e in elems if e != ion]
+    host_elems = [e for e in elems if e != ion] or elems[:1]
     create_host = (
         f"region substrate block 0 {nx} 0 {ny} 0 {nz} units lattice\n"
-        f"create_atoms 1 region substrate"
+        f"{_create_atoms_block(material, host_elems, region='substrate')}"
     )
-    if len(host_elems) > 1:
-        create_host = (
-            f"region substrate block 0 {nx} 0 {ny} 0 {nz} units lattice\n"
-            f"create_atoms 1 region substrate\n"
-            f"group all_atoms type 1\n"
-        )
-        remaining = 1.0
-        comp = {c["symbol"]: c["atomic_percent"] / 100.0 for c in material["composition"]}
-        for i, sym in enumerate(host_elems):
-            if i == 0:
-                continue
-            frac = comp.get(sym, 0.0)
-            if remaining <= 0:
-                break
-            f = min(frac / remaining, 1.0) if remaining else 0
-            create_host += f"set group all_atoms type/fraction {i+1} {f:.6f} {2000 + i}\n"
-            remaining -= frac
 
     boundary = str(params.get("boundary") or "p p s")
     if boundary.strip() == "p p p":
@@ -838,16 +822,20 @@ def write_interstitial_input(
     return path
 
 
-def _create_atoms_block(material: dict[str, Any], elems: list[str]) -> str:
-    """Fill the lattice: ordered basis for WC-hex; substitutional random alloy otherwise."""
+def _create_atoms_block(material: dict[str, Any], elems: list[str], *, region: str | None = None) -> str:
+    """Fill the lattice: ordered basis for WC-hex; substitutional random alloy otherwise.
+
+    If ``region`` is set (e.g. ``substrate``), atoms are created in that region.
+    """
     crystal = crystal_reg.normalize_crystal(material.get("crystal"))
+    target = f"region {region}" if region else "box"
     if crystal == "hex" and len(elems) >= 2:
         # Ordered W+C basis (basis 1 → type 1, basis 2 → type 2)
-        return "create_atoms 1 box basis 1 1 basis 2 2"
+        return f"create_atoms 1 {target} basis 1 1 basis 2 2"
     if len(elems) == 1:
-        return "create_atoms 1 box"
+        return f"create_atoms 1 {target}"
     comp = {c["symbol"]: c["atomic_percent"] / 100.0 for c in material["composition"]}
-    lines = ["create_atoms 1 box", "group all_atoms type 1"]
+    lines = [f"create_atoms 1 {target}", "group all_atoms type 1"]
     remaining = 1.0
     for i, sym in enumerate(elems):
         typ = i + 1

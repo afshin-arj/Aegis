@@ -105,7 +105,7 @@ class DataStore:
     def add_user_potential(self, pot: Potential) -> Potential:
         user: list = self._load_json(self.user_pots_path)
         user = [p for p in user if p.get("id") != pot.id]
-        user.append(pot.model_dump())
+        user.append(pot.model_dump(mode="json"))
         self.user_pots_path.write_text(json.dumps(user, indent=2), encoding="utf-8")
         return self._refresh_available(pot)
 
@@ -116,7 +116,7 @@ class DataStore:
             return None
         self._set_attachment(pot_id, dest_rel)
         # Also persist a user shadow so listing survives without re-reading only attachments
-        shadow = base.model_dump()
+        shadow = base.model_dump(mode="json")
         shadow["file_path"] = dest_rel
         shadow["is_placeholder"] = False
         shadow["available"] = True
