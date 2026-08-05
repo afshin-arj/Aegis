@@ -27,14 +27,44 @@
     "tags": ["elemental"]
   },
   {
+    "id": "fe-pure",
+    "name": "Iron (α-Fe)",
+    "description": "BCC iron — structural / RAFM baseline for cascade studies.",
+    "crystal": "bcc",
+    "lattice_constant_A": 2.866,
+    "composition": [{"symbol": "Fe", "atomic_percent": 100}],
+    "tags": ["elemental", "structural"]
+  },
+  {
+    "id": "cu-pure",
+    "name": "Copper (pure)",
+    "description": "FCC Cu — heat-sink / interlayer candidate.",
+    "crystal": "fcc",
+    "lattice_constant_A": 3.615,
+    "composition": [{"symbol": "Cu", "atomic_percent": 100}],
+    "tags": ["elemental", "fcc", "heat-sink"]
+  },
+  {
+    "id": "be-pure",
+    "name": "Beryllium (pure)",
+    "description": "HCP Be — first-wall / limiter candidate.",
+    "crystal": "hcp",
+    "lattice_constant_A": 2.286,
+    "lattice_c_A": 3.584,
+    "c_over_a": 1.568,
+    "composition": [{"symbol": "Be", "atomic_percent": 100}],
+    "tags": ["elemental", "hcp", "first-wall"]
+  },
+  {
     "id": "re-pure",
     "name": "Rhenium (pure)",
-    "description": "Often used as alloying addition to W; expensive as bulk PFM.",
+    "description": "HCP Re — often a W alloying addition; expensive as bulk PFM.",
     "crystal": "hcp",
     "lattice_constant_A": 2.761,
+    "lattice_c_A": 4.456,
+    "c_over_a": 1.614,
     "composition": [{"symbol": "Re", "atomic_percent": 100}],
-    "tags": ["elemental", "dopant"],
-    "metadata_only": false
+    "tags": ["elemental", "hcp", "dopant"]
   },
   {
     "id": "cr-pure",
@@ -44,6 +74,15 @@
     "lattice_constant_A": 2.91,
     "composition": [{"symbol": "Cr", "atomic_percent": 100}],
     "tags": ["elemental"]
+  },
+  {
+    "id": "c-diamond",
+    "name": "Carbon (diamond)",
+    "description": "Diamond-cubic carbon — ceramic / coating reference cell.",
+    "crystal": "diamond",
+    "lattice_constant_A": 3.567,
+    "composition": [{"symbol": "C", "atomic_percent": 100}],
+    "tags": ["elemental", "diamond", "ceramic"]
   },
   {
     "id": "w-5ta",
@@ -97,16 +136,18 @@
     "metadata_only": true
   },
   {
-    "id": "wc-meta",
-    "name": "WC (metadata)",
-    "description": "Tungsten carbide — Phase-1 metadata only until a suitable potential is selected/uploaded.",
+    "id": "wc-hex",
+    "name": "WC (hexagonal)",
+    "description": "Tungsten carbide — hexagonal W+C basis. Needs a WC-capable potential for production MD; dry-run otherwise.",
     "crystal": "hex",
     "lattice_constant_A": 2.906,
+    "lattice_c_A": 2.837,
+    "c_over_a": 0.976,
     "composition": [
       {"symbol": "W", "atomic_percent": 50},
       {"symbol": "C", "atomic_percent": 50}
     ],
-    "tags": ["ceramic"],
-    "metadata_only": true
+    "tags": ["ceramic", "hex", "wc"],
+    "metadata_only": false
   }
 ]

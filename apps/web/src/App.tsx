@@ -9,9 +9,24 @@ type Material = {
   description: string;
   crystal: string;
   lattice_constant_A: number;
+  lattice_c_A?: number | null;
+  c_over_a?: number | null;
   composition: ElementFraction[];
   tags: string[];
   metadata_only?: boolean;
+};
+type CrystalInfo = {
+  id: string;
+  label: string;
+  atoms_per_cell: number;
+  needs_c: boolean;
+  supported: boolean;
+  interstitial_geometries: string[];
+  default_interstitial_geometry: string;
+  default_interstitial_direction: string;
+  orients: Array<{ id: string; label: string }>;
+  notes: string;
+  sublattices?: string[];
 };
 type Potential = {
   id: string;
@@ -67,6 +82,13 @@ type EngineStatus = {
   mmonca_found?: boolean;
   mmonca_path?: string;
   mmonca_message?: string;
+  ase_found?: boolean;
+  ase_message?: string;
+  ovito_found?: boolean;
+  ovito_path?: string;
+  ovito_message?: string;
+  atomsk_found?: boolean;
+  atomsk_path?: string;
 };
 type JobInfo = {
   id: string;
@@ -119,6 +141,10 @@ type RunParams = {
   interstitial_geometry: string;
   interstitial_offset_A: number | null;
   interstitial_energy_eV: number;
+  structure_kind: string;
+  poly_n_grains: number;
+  poly_seed: number;
+  poly_texture: string;
   timestep_fs: number;
   max_steps: number;
   neighbor_skin: number;
@@ -129,6 +155,7 @@ type RunParams = {
   ws_lattice_A: number | null;
   cluster_cutoff_A: number;
   confirm_large: boolean;
+  run_dxa: boolean;
 };
 
 type TabId = "projects" | "doe" | "material" | "potential" | "scenario" | "params" | "run" | "results" | "engines";
@@ -189,6 +216,10 @@ const defaultParams: RunParams = {
   interstitial_geometry: "octahedral",
   interstitial_offset_A: null,
   interstitial_energy_eV: 0,
+  structure_kind: "single_crystal",
+  poly_n_grains: 4,
+  poly_seed: 42,
+  poly_texture: "random",
   timestep_fs: 0.001,
   max_steps: 20000,
   neighbor_skin: 2,
@@ -199,6 +230,7 @@ const defaultParams: RunParams = {
   ws_lattice_A: null,
   cluster_cutoff_A: 3.5,
   confirm_large: false,
+  run_dxa: false,
 };
 
 function formatApiError(payload: unknown, fallback: string): string {
@@ -425,6 +457,9 @@ export default function App() {
   const [materialId, setMaterialId] = useState("w-pure");
   const [composition, setComposition] = useState<ElementFraction[]>([{ symbol: "W", atomic_percent: 100 }]);
   const [lattice, setLattice] = useState(3.165);
+  const [latticeC, setLatticeC] = useState<number | null>(null);
+  const [crystals, setCrystals] = useState<CrystalInfo[]>([]);
+  const [dxaSummary, setDxaSummary] = useState<Record<string, unknown> | null>(null);
   const [potentialId, setPotentialId] = useState("");
   const [scenarioId, setScenarioId] = useState("dt-divertor");
   const [params, setParams] = useState<RunParams>(defaultParams);
@@ -507,6 +542,12 @@ export default function App() {
   const cellVolume = params.nx * params.ny * params.nz;
   const largeCell = cellVolume > 20 * 20 * 20;
   const potIsDemo = Boolean(selectedPot?.is_placeholder);
+  const crystalInfo = useMemo(
+    () => crystals.find((c) => c.id === (material?.crystal || "").toLowerCase()) || null,
+    [crystals, material?.crystal],
+  );
+  const atomsPerCell = crystalInfo?.atoms_per_cell ?? 2;
+  const crystalSupported = crystalInfo ? crystalInfo.supported : (material?.crystal || "bcc").toLowerCase() === "bcc";
 
   const blockers = useMemo(() => {
     const list: string[] = [];
@@ -517,6 +558,12 @@ export default function App() {
     if (compositionTotal <= 0) list.push("Composition requires a positive atomic fraction");
     if (largeCell && !params.confirm_large) list.push("Large cell (>20³) — confirm in LAMMPS tab");
     if (material?.metadata_only) list.push("Material is metadata-only (no runnable lattice recipe)");
+    if (material && !crystalSupported && !selectedPot?.is_placeholder) {
+      list.push(`Crystal ${material.crystal} needs a placeholder/dry-run potential or a supported lattice`);
+    }
+    if (crystalInfo?.needs_c && latticeC != null && latticeC <= 0) {
+      list.push("HCP/hex materials need a positive lattice c");
+    }
     if (params.mode === "interstitial" && selectedPot) {
       const need = new Set(
         [
@@ -541,17 +588,22 @@ export default function App() {
     params.interstitial_species,
     composition,
     material,
+    crystalSupported,
+    crystalInfo,
+    latticeC,
   ]);
 
   const verdict = blockers.length
     ? { tone: "blocked" as const, label: "Blocked", msg: blockers[0] }
-    : potIsDemo || !engines?.lammps_found
+    : potIsDemo || !engines?.lammps_found || !crystalSupported
       ? {
           tone: "warn" as const,
           label: "Ready · dry-run",
-          msg: potIsDemo
-            ? "Placeholder potential — demo dumps only. Upload a published potential for real MD."
-            : "LAMMPS not on PATH — job will write demo dumps for pipeline testing.",
+          msg: !crystalSupported
+            ? `Crystal ${material?.crystal} — dry-run demo only until supported.`
+            : potIsDemo
+              ? "Placeholder potential — demo dumps only. Upload a published potential for real MD."
+              : "LAMMPS not on PATH — job will write demo dumps for pipeline testing.",
         }
       : { tone: "ready" as const, label: "Ready", msg: "Material, potential, and parameters look runnable." };
 
@@ -563,13 +615,15 @@ export default function App() {
       api<EngineStatus>("/api/engines/status"),
       api<JobInfo[]>("/api/jobs"),
       api<DoeCampaign[]>("/api/campaigns").catch(() => [] as DoeCampaign[]),
+      api<{ crystals: CrystalInfo[] }>("/api/crystals").catch(() => ({ crystals: [] as CrystalInfo[] })),
     ])
-      .then(([, m, s, e, history, camps]) => {
+      .then(([, m, s, e, history, camps, cry]) => {
         setMaterials(m);
         setScenarios(s);
         setEngines(e);
         setJobs(history);
         setCampaigns(camps);
+        setCrystals(cry.crystals || []);
         const active = camps.find((c) => ["queued", "running"].includes(c.status));
         if (active) setCampaign(active);
         const first = m.find((x) => x.id === "w-pure") || m[0];
@@ -577,6 +631,7 @@ export default function App() {
           setMaterialId(first.id);
           setComposition(first.composition);
           setLattice(first.lattice_constant_A);
+          setLatticeC(first.lattice_c_A ?? null);
         }
       })
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));
@@ -767,7 +822,11 @@ export default function App() {
       const updated = await api<Material>(`/api/materials/${material.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ composition: normalized, lattice_constant_A: lattice }),
+        body: JSON.stringify({
+          composition: normalized,
+          lattice_constant_A: lattice,
+          lattice_c_A: latticeC,
+        }),
       });
       setComposition(updated.composition);
       setMaterials((ms) => ms.map((m) => (m.id === updated.id ? updated : m)));
@@ -915,7 +974,7 @@ export default function App() {
         project_name: projectName,
         material_id: materialId,
         material_override: material
-          ? { ...material, composition: normalized, lattice_constant_A: lattice }
+          ? { ...material, composition: normalized, lattice_constant_A: lattice, lattice_c_A: latticeC }
           : undefined,
         potential_id: potentialId,
         scenario_id: scenarioId,
@@ -1050,7 +1109,7 @@ export default function App() {
           project_name: projectName,
           material_id: materialId,
           material_override: material
-            ? { ...material, composition: normalized, lattice_constant_A: lattice }
+            ? { ...material, composition: normalized, lattice_constant_A: lattice, lattice_c_A: latticeC }
             : undefined,
           potential_id: potentialId,
           scenario_id: scenarioId,
@@ -1614,9 +1673,10 @@ export default function App() {
               </div>
             </div>
             <p className="hint">{material?.description}</p>
-            {material && material.crystal.toLowerCase() !== "bcc" && (
-              <div className="alert alert-warn" role="status">
-                Crystal is {material.crystal}. Phase-1 LAMMPS templates always build BCC cells — results are not representative for this lattice.
+            {material && crystalInfo && (
+              <div className={`alert ${crystalSupported ? "alert-ok" : "alert-warn"}`} role="status">
+                {crystalInfo.label}: {crystalInfo.notes}
+                {!crystalSupported ? " — dry-run only." : ""}
               </div>
             )}
             {Math.abs(compositionTotal - 100) > 0.05 && compositionTotal > 0 && (
@@ -1635,13 +1695,20 @@ export default function App() {
                   if (m) {
                     setComposition(m.composition);
                     setLattice(m.lattice_constant_A);
+                    setLatticeC(m.lattice_c_A ?? null);
+                    const info = crystals.find((c) => c.id === m.crystal.toLowerCase());
+                    if (info) {
+                      setParam("interstitial_geometry", info.default_interstitial_geometry);
+                      setParam("interstitial_direction", info.default_interstitial_direction);
+                      setParam("crystal_orient", info.orients[0]?.id || "100");
+                    }
                   }
                 }}
               >
                 {materials.map((m) => (
                   <option key={m.id} value={m.id}>
                     {m.name}
-                    {m.metadata_only ? " (metadata)" : ""}
+                    {m.metadata_only ? " (metadata)" : ""} · {m.crystal}
                   </option>
                 ))}
               </select>
@@ -1649,8 +1716,8 @@ export default function App() {
             <div className="row">
               <h3>Composition</h3>
               <p className="hint">
-                Fractions are <strong>substitutional</strong> on BCC lattice sites. To place impurities as interstitials
-                along &lt;100&gt;/&lt;110&gt;/&lt;111&gt;, use LAMMPS mode <em>interstitial insert</em>.
+                Fractions are <strong>substitutional</strong> on lattice sites ({material?.crystal || "bcc"}).
+                To place impurities as interstitials, use LAMMPS mode <em>interstitial insert</em>.
               </p>
               <Field label="Units" htmlFor="comp-unit">
                 <select
@@ -1725,6 +1792,61 @@ export default function App() {
                   onChange={(e) => setLattice(Number(e.target.value))}
                 />
               </Field>
+              {(crystalInfo?.needs_c ||
+                (material?.crystal || "").toLowerCase() === "hcp" ||
+                (material?.crystal || "").toLowerCase() === "hex") && (
+                <Field label="Lattice c" unit="Å" htmlFor="lattice-c">
+                  <input
+                    id="lattice-c"
+                    type="number"
+                    step="0.001"
+                    inputMode="decimal"
+                    value={latticeC ?? ""}
+                    onChange={(e) => setLatticeC(e.target.value === "" ? null : Number(e.target.value))}
+                  />
+                </Field>
+              )}
+              <div className="row">
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={busy || !material}
+                  onClick={async () => {
+                    if (!material) return;
+                    try {
+                      const r = await api<{
+                        status: string;
+                        lattice_constant_A?: number;
+                        lattice_c_A?: number | null;
+                        message?: string;
+                      }>(`/api/materials/${material.id}/lattice-relax`, { method: "POST" });
+                      if (r.status === "ok" && r.lattice_constant_A) {
+                        setLattice(r.lattice_constant_A);
+                        if (r.lattice_c_A) setLatticeC(r.lattice_c_A);
+                      } else {
+                        setError(r.message || "ASE relax unavailable — use Export POSCAR for DFT");
+                      }
+                    } catch (err) {
+                      setError(err instanceof Error ? err.message : String(err));
+                    }
+                  }}
+                >
+                  Relax lattice (ASE)
+                </button>
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={!material}
+                  onClick={() => {
+                    const a = document.createElement("a");
+                    a.href = `/api/materials/${materialId}/export-poscar`;
+                    a.download = `${materialId}.POSCAR`;
+                    a.click();
+                  }}
+                >
+                  Export POSCAR
+                </button>
+              </div>
             </div>
             <button type="button" disabled={busy || compositionTotal <= 0} onClick={saveComposition}>
               Normalize & save override
@@ -2050,7 +2172,9 @@ export default function App() {
               <h2>LAMMPS parameters</h2>
               <span className="chip">
                 <span className="chip-k">atoms proxy</span>
-                <span className="chip-v">~{cellVolume * 2} BCC sites</span>
+                <span className="chip-v">
+                  ~{cellVolume * atomsPerCell} {crystalInfo?.label || "lattice"} sites
+                </span>
               </span>
             </div>
             <fieldset className="fieldset">
@@ -2130,12 +2254,70 @@ export default function App() {
                     value={params.crystal_orient}
                     onChange={(e) => setParam("crystal_orient", e.target.value)}
                   >
-                    <option value="100">[100]</option>
-                    <option value="110">[110]</option>
-                    <option value="111">[111]</option>
+                    {(crystalInfo?.orients || [
+                      { id: "100", label: "⟨100⟩" },
+                      { id: "110", label: "⟨110⟩" },
+                      { id: "111", label: "⟨111⟩" },
+                    ]).map((o) => (
+                      <option key={o.id} value={o.id}>
+                        {o.label}
+                      </option>
+                    ))}
                   </select>
                 </Field>
               </div>
+              <div className="row">
+                <Field label="Structure" htmlFor="struct-kind">
+                  <select
+                    id="struct-kind"
+                    value={params.structure_kind}
+                    onChange={(e) => setParam("structure_kind", e.target.value)}
+                  >
+                    <option value="single_crystal">single crystal</option>
+                    <option value="polycrystal">polycrystal (Voronoi seeds)</option>
+                  </select>
+                </Field>
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={params.run_dxa}
+                    onChange={(e) => setParam("run_dxa", e.target.checked)}
+                  />
+                  Run OVITO DXA after job (if installed)
+                </label>
+              </div>
+              {params.structure_kind === "polycrystal" && (
+                <div className="row">
+                  <Field label="Grains" htmlFor="poly-n">
+                    <input
+                      id="poly-n"
+                      type="number"
+                      min={2}
+                      max={64}
+                      value={params.poly_n_grains}
+                      onChange={(e) => setParam("poly_n_grains", Number(e.target.value))}
+                    />
+                  </Field>
+                  <Field label="Texture" htmlFor="poly-tex">
+                    <select
+                      id="poly-tex"
+                      value={params.poly_texture}
+                      onChange={(e) => setParam("poly_texture", e.target.value)}
+                    >
+                      <option value="random">random</option>
+                      <option value="fiber">fiber (z)</option>
+                    </select>
+                  </Field>
+                  <Field label="Poly seed" htmlFor="poly-seed">
+                    <input
+                      id="poly-seed"
+                      type="number"
+                      value={params.poly_seed}
+                      onChange={(e) => setParam("poly_seed", Number(e.target.value))}
+                    />
+                  </Field>
+                </div>
+              )}
             </fieldset>
             <fieldset className="fieldset">
               <legend>Cascade / PKA</legend>
@@ -2313,8 +2495,8 @@ export default function App() {
               <fieldset className="fieldset">
                 <legend>Interstitial insertion</legend>
                 <p className="hint">
-                  Material composition stays substitutional on BCC sites. This mode adds extra interstitial atoms
-                  (or SIA dumbbell/crowdion pairs) oriented along a lattice direction — not random alloy swaps.
+                  Material composition stays substitutional on {material?.crystal || "host"} sites. This mode adds
+                  extra interstitial atoms (or SIA pairs) along crystal-aware directions — not random alloy swaps.
                 </p>
                 <div className="row">
                   <Field label="Species" htmlFor="int-sp">
@@ -2338,7 +2520,7 @@ export default function App() {
                     <select
                       id="int-dir"
                       value={
-                        ["100", "110", "111", "random"].includes(params.interstitial_direction)
+                        ["100", "110", "111", "basal", "c", "prism", "random"].includes(params.interstitial_direction)
                           ? params.interstitial_direction
                           : "custom"
                       }
@@ -2353,11 +2535,14 @@ export default function App() {
                       <option value="100">&lt;100&gt;</option>
                       <option value="110">&lt;110&gt;</option>
                       <option value="111">&lt;111&gt;</option>
+                      <option value="basal">basal</option>
+                      <option value="c">c-axis</option>
+                      <option value="prism">prism</option>
                       <option value="random">random</option>
                       <option value="custom">custom Miller…</option>
                     </select>
                   </Field>
-                  {!["100", "110", "111", "random"].includes(params.interstitial_direction) && (
+                  {!["100", "110", "111", "basal", "c", "prism", "random"].includes(params.interstitial_direction) && (
                     <Field label="Miller indices" unit="h k l" htmlFor="int-miller">
                       <input
                         id="int-miller"
@@ -2374,10 +2559,13 @@ export default function App() {
                       value={params.interstitial_geometry}
                       onChange={(e) => setParam("interstitial_geometry", e.target.value)}
                     >
-                      <option value="octahedral">octahedral site</option>
-                      <option value="tetrahedral">tetrahedral site</option>
-                      <option value="dumbbell">dumbbell (pair ±dir)</option>
-                      <option value="crowdion">crowdion seed (pair along dir)</option>
+                      {(crystalInfo?.interstitial_geometries || ["octahedral", "tetrahedral", "dumbbell", "crowdion"]).map(
+                        (g) => (
+                          <option key={g} value={g}>
+                            {g}
+                          </option>
+                        ),
+                      )}
                     </select>
                   </Field>
                   <Field label="Pair offset" unit="Å · blank = 0.25 a" htmlFor="int-off">
@@ -2848,6 +3036,40 @@ export default function App() {
               <DefectViz points={defects?.points || []} />
               <p className="hint">Vacancy = red · interstitial = copper · other = green. WS proxy markers (not full atoms).</p>
             </section>
+            <section className="panel stack">
+              <div className="panel-head">
+                <h2>OVITO DXA</h2>
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={!job || busy}
+                  onClick={async () => {
+                    if (!job) return;
+                    setBusy(true);
+                    try {
+                      setDxaSummary(await api(`/api/jobs/${job.id}/dxa?refresh=true`));
+                    } catch (err) {
+                      setError(err instanceof Error ? err.message : String(err));
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
+                >
+                  Run / refresh DXA
+                </button>
+              </div>
+              <p className="hint">
+                {engines?.ovito_message ||
+                  "Requires OVITO (ovitos). Aegis never fabricates dislocation networks."}
+              </p>
+              {dxaSummary ? (
+                <pre className="log" style={{ height: "auto", maxHeight: 220 }}>
+                  {JSON.stringify(dxaSummary, null, 2)}
+                </pre>
+              ) : (
+                <p className="hint">No DXA summary yet.</p>
+              )}
+            </section>
           </div>
           </div>
         )}
@@ -2885,11 +3107,6 @@ export default function App() {
                 </div>
                 <p className="hint">{engines?.kart_root || "third_party/kart not present"}</p>
                 <p className="hint">{engines?.kart_message}</p>
-                <p className="hint">
-                  Phase-2 writes <span className="mono">kart_work/T*/</span> handoff packages (initial.conf,
-                  conf.lammps, KMC.sh.aegis). Full catalogue anneals still launch via KART on WSL/Linux; Aegis
-                  stubs events until Energy.dat appears.
-                </p>
               </div>
               <div className="stack">
                 <h3>MMonCa (optional OKMC)</h3>
@@ -2903,23 +3120,49 @@ export default function App() {
                 </div>
                 <p className="hint">{engines?.mmonca_path || "Not required — KART is the primary KMC path"}</p>
                 <p className="hint">{engines?.mmonca_message}</p>
-                <p className="hint">
-                  See <span className="mono">engines/mmonca/SETUP.md</span>. Comparison object-KMC only.
-                </p>
+              </div>
+              <div className="stack">
+                <h3>ASE / DFT relax</h3>
+                <div className="chip-row">
+                  <span className="chip">
+                    <span className="chip-k">ASE</span>
+                    <span className={`chip-v ${engines?.ase_found ? "tone-ok" : "tone-warn"}`}>
+                      {engines?.ase_found ? "found" : "missing"}
+                    </span>
+                  </span>
+                </div>
+                <p className="hint">{engines?.ase_message}</p>
+              </div>
+              <div className="stack">
+                <h3>OVITO DXA</h3>
+                <div className="chip-row">
+                  <span className="chip">
+                    <span className="chip-k">OVITO</span>
+                    <span className={`chip-v ${engines?.ovito_found ? "tone-ok" : "tone-warn"}`}>
+                      {engines?.ovito_found ? "found" : "missing"}
+                    </span>
+                  </span>
+                </div>
+                <p className="hint">{engines?.ovito_message}</p>
+              </div>
+              <div className="stack">
+                <h3>Atomsk (optional)</h3>
+                <div className="chip-row">
+                  <span className="chip">
+                    <span className="chip-k">atomsk</span>
+                    <span className={`chip-v ${engines?.atomsk_found ? "tone-ok" : "tone-warn"}`}>
+                      {engines?.atomsk_found ? "found" : "optional"}
+                    </span>
+                  </span>
+                </div>
+                <p className="hint">{engines?.atomsk_path || "Polycrystal seeds work without Atomsk"}</p>
               </div>
             </div>
             <pre className="log" style={{ height: "auto" }}>
 {`# Prefer setup_and_run.cmd (installs LAMMPS + clones KART if missing)
 
-# Manual KART (PAT or SSH — never commit tokens)
-git clone git@gitlab.com:groupe_mousseau/kart.git third_party/kart
-cd third_party/kart
-git checkout 62d66adf
-# build per https://kart-doc.readthedocs.io/  (WSL recommended on Windows)
-# set AEGIS_KART_ROOT / AEGIS_KART_BIN
-# After a cascade, open runs/<job>/kart_work/T*/ and adapt KMC.sh.aegis
-
-# Optional MMonCa: set AEGIS_MMONCA_BIN (see engines/mmonca/SETUP.md)`}
+# Crystal-aware lattices: bcc | fcc | hcp | diamond | hex(WC)
+# Optional: pip install ase · install OVITO for DXA · atomsk for GB rebuilds`}
             </pre>
           </section>
         )}

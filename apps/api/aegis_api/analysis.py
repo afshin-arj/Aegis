@@ -45,15 +45,23 @@ def analyze_job_dir(
     cluster_cutoff_A: float | None = None,
     ws_lattice_A: float | None = None,
     mode: str | None = None,
+    crystal: str = "bcc",
+    lattice_c_A: float | None = None,
+    structure_kind: str = "single_crystal",
 ) -> dict[str, Any]:
     """Lightweight defect proxy analysis from the last dump frame.
 
-    Uses a simple Wigner–Seitz style occupancy on an ideal BCC grid built from
-    the dump box. Teaching/engineering proxy — not a replacement for OVITO.
+    Uses a Wigner–Seitz style occupancy on an ideal crystal grid built from
+    the dump box. Teaching/engineering proxy — not a replacement for OVITO DXA.
     For surface mode, also computes fuzz / erosion proxies.
     """
+    from lammps import crystal as crystal_reg
+
     a_ref = float(ws_lattice_A) if ws_lattice_A else float(lattice_A)
     cutoff = float(cluster_cutoff_A) if cluster_cutoff_A is not None else 0.9 * a_ref
+    cry = crystal_reg.normalize_crystal(crystal)
+    c_ref = float(lattice_c_A) if lattice_c_A else None
+    poly = str(structure_kind).lower() == "polycrystal"
 
     dumps = _prefer_analysis_dumps(job_dir)
     if not dumps:
@@ -64,7 +72,8 @@ def analyze_job_dir(
                 "interstitials": 0,
                 "clusters": 0,
                 "note": "no dump files found",
-                "method": "aegis-ws-proxy-v1",
+                "method": "aegis-ws-proxy-v2",
+                "crystal": cry,
             },
             "clusters": [],
             "points": [],
@@ -82,7 +91,8 @@ def analyze_job_dir(
                 "interstitials": 0,
                 "clusters": 0,
                 "dump": dump_path.name,
-                "method": "aegis-ws-proxy-v1",
+                "method": "aegis-ws-proxy-v2",
+                "crystal": cry,
             },
             "clusters": [],
             "points": [],
@@ -90,7 +100,7 @@ def analyze_job_dir(
         (job_dir / "defects.json").write_text(json.dumps(empty, indent=2), encoding="utf-8")
         return empty
 
-    sites = _bcc_sites(box, a_ref, z_max=None)
+    sites = crystal_reg.ideal_sites(box, cry, a_ref, c=c_ref, z_max=None)
     run_mode = (mode or "").lower()
     if run_mode == "surface":
         # Vacuum slab must not be counted as vacancies — limit WS grid to substrate height.
@@ -100,7 +110,7 @@ def analyze_job_dir(
         if zs:
             # Assume vacuum is the empty upper portion; use max occupied z + small pad as site limit
             z_max = max(zs) + 0.25 * a_ref
-            sites = _bcc_sites(box, a_ref, z_max=z_max)
+            sites = crystal_reg.ideal_sites(box, cry, a_ref, c=c_ref, z_max=z_max)
 
     occupied = [False] * len(sites)
     interstitial_pts: list[dict[str, Any]] = []
@@ -127,6 +137,9 @@ def analyze_job_dir(
 
     clusters = _cluster_points(interstitial_pts, cutoff)
     points = vacancies + interstitial_pts
+    note = ""
+    if poly:
+        note = "Polycrystal WS uses a single global lattice — approximate; prefer OVITO DXA per grain."
     summary: dict[str, Any] = {
         "summary": {
             "n_atoms": len(atoms),
@@ -136,9 +149,13 @@ def analyze_job_dir(
             "clusters": len(clusters),
             "dump": dump_path.name,
             "ws_lattice_A": a_ref,
+            "ws_lattice_c_A": c_ref,
             "cluster_cutoff_A": cutoff,
-            "method": "aegis-ws-proxy-v1",
+            "method": "aegis-ws-proxy-v2",
+            "crystal": cry,
+            "structure_kind": structure_kind,
             "mode": run_mode or "cascade",
+            "note": note,
             "hardening_proxy": {
                 "dbh_Nd_sqrt": (len(interstitial_pts) * max(len(clusters), 1)) ** 0.5,
                 "note": "Placeholder DBH/FKH-style scalar — not calibrated.",
@@ -147,6 +164,26 @@ def analyze_job_dir(
         "clusters": clusters,
         "points": points[:5000],
     }
+
+    # WC hex: optional sublattice vacancy proxies
+    if cry == "hex":
+        sub = crystal_reg.ideal_sites_sublattice(box, cry, a_ref, c=c_ref)
+        sub_stats = {}
+        for label, sub_sites in sub.items():
+            sub_occ = [False] * len(sub_sites)
+            for atom in atoms:
+                best_i, best_d2 = 0, 1e99
+                for i, s in enumerate(sub_sites):
+                    d2 = (atom["x"] - s[0]) ** 2 + (atom["y"] - s[1]) ** 2 + (atom["z"] - s[2]) ** 2
+                    if d2 < best_d2:
+                        best_d2, best_i = d2, i
+                if not sub_occ[best_i] and best_d2 <= (0.35 * a_ref) ** 2:
+                    sub_occ[best_i] = True
+            sub_stats[label] = {
+                "n_sites": len(sub_sites),
+                "vacancies_proxy": sum(1 for o in sub_occ if not o),
+            }
+        summary["summary"]["sublattice"] = sub_stats
 
     if run_mode == "surface":
         surface = analyze_surface_metrics(job_dir, lattice_A=a_ref, ion_type_hint=None)
@@ -295,20 +332,10 @@ def _read_last_frame(path: Path) -> tuple[list[dict[str, Any]], tuple[float, flo
 def _bcc_sites(
     box: tuple[float, float, float], a: float, *, z_max: float | None = None
 ) -> list[tuple[float, float, float]]:
-    lx, ly, lz = box
-    nx = max(int(round(lx / a)), 1)
-    ny = max(int(round(ly / a)), 1)
-    nz = max(int(round(lz / a)), 1)
-    sites: list[tuple[float, float, float]] = []
-    for i in range(nx):
-        for j in range(ny):
-            for k in range(nz):
-                for sx, sy, sz in ((0.0, 0.0, 0.0), (a / 2, a / 2, a / 2)):
-                    x, y, z = i * a + sx, j * a + sy, k * a + sz
-                    if z_max is not None and z > z_max:
-                        continue
-                    sites.append((x, y, z))
-    return sites
+    """Backward-compatible alias — prefer crystal.ideal_sites."""
+    from lammps import crystal as crystal_reg
+
+    return crystal_reg.ideal_sites(box, "bcc", a, z_max=z_max)
 
 
 def _cluster_points(points: list[dict[str, Any]], cutoff: float) -> list[dict[str, Any]]:

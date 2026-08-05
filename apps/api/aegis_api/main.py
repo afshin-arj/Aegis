@@ -105,6 +105,12 @@ def engines_status() -> EngineStatus:
             version = "found (version probe failed)"
     kart = discover_kart()
     mmonca = discover_mmonca()
+    from aegis_api.dxa import discover_ovito
+    from aegis_api.lattice_relax import discover_ase, discover_atomsk
+
+    ase = discover_ase()
+    ovito = discover_ovito()
+    atomsk = discover_atomsk()
     return EngineStatus(
         lammps_found=path is not None,
         lammps_path=path,
@@ -117,7 +123,77 @@ def engines_status() -> EngineStatus:
         mmonca_found=bool(mmonca.get("mmonca_found")),
         mmonca_path=mmonca.get("mmonca_path"),
         mmonca_message=mmonca.get("mmonca_message", ""),
+        ase_found=bool(ase.get("ase_found")),
+        ase_message=str(ase.get("ase_message", "")),
+        ovito_found=bool(ovito.get("ovito_found")),
+        ovito_path=ovito.get("ovito_path"),
+        ovito_message=str(ovito.get("ovito_message", "")),
+        atomsk_found=bool(atomsk.get("atomsk_found")),
+        atomsk_path=atomsk.get("atomsk_path"),
     )
+
+
+@app.get("/api/crystals")
+def list_crystal_systems() -> dict[str, Any]:
+    from lammps import crystal as crystal_reg
+    from aegis_api.interstitial_ef import load_interstitial_ef
+
+    return {
+        "crystals": crystal_reg.list_crystals(),
+        "interstitial_ef": load_interstitial_ef(),
+    }
+
+
+@app.get("/api/crystals/{crystal_id}/interstitials")
+def crystal_interstitials(crystal_id: str, host: str | None = None, geometry: str | None = None) -> dict[str, Any]:
+    from aegis_api.interstitial_ef import lookup_interstitial_ef
+
+    rows = lookup_interstitial_ef(crystal=crystal_id, host=host, geometry=geometry)
+    return {"crystal": crystal_id, "entries": rows}
+
+
+@app.post("/api/materials/{material_id}/lattice-relax")
+def lattice_relax(material_id: str) -> dict[str, Any]:
+    m = store.get_material(material_id)
+    if not m:
+        raise HTTPException(404, "material not found")
+    from aegis_api.lattice_relax import try_ase_relax
+
+    return try_ase_relax(m.model_dump())
+
+
+@app.get("/api/materials/{material_id}/export-poscar")
+def export_material_poscar(material_id: str, nx: int = 1, ny: int = 1, nz: int = 1) -> Response:
+    m = store.get_material(material_id)
+    if not m:
+        raise HTTPException(404, "material not found")
+    from aegis_api.lattice_relax import export_poscar
+
+    text = export_poscar(m.model_dump(), nx=nx, ny=ny, nz=nz)
+    return Response(
+        content=text,
+        media_type="text/plain",
+        headers={"Content-Disposition": f'attachment; filename="{material_id}.POSCAR"'},
+    )
+
+
+@app.post("/api/materials/{material_id}/lattice-from-poscar")
+async def lattice_from_poscar(material_id: str, file: UploadFile = File(...)) -> Material:
+    m = store.get_material(material_id)
+    if not m:
+        raise HTTPException(404, "material not found")
+    from aegis_api.lattice_relax import parse_lattice_from_poscar
+
+    raw = (await file.read()).decode("utf-8", errors="replace")
+    try:
+        lat = parse_lattice_from_poscar(raw)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    data = m.model_dump()
+    data["lattice_constant_A"] = lat["lattice_constant_A"]
+    if lat.get("lattice_c_A"):
+        data["lattice_c_A"] = lat["lattice_c_A"]
+    return store.save_material(Material(**data))
 
 
 @app.get("/api/materials", response_model=list[Material])
@@ -650,6 +726,21 @@ def get_cascade_timeline(job_id: str) -> dict[str, Any]:
     if not path.exists():
         raise HTTPException(404, "cascade timeline not available (run a cascade job with auto stages)")
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+@app.get("/api/jobs/{job_id}/dxa")
+def get_job_dxa(job_id: str, refresh: bool = False) -> dict[str, Any]:
+    job_dir = RUNS_ROOT / job_id
+    if not job_dir.exists():
+        raise HTTPException(404, "job not found")
+    from aegis_api.dxa import load_dxa_summary, run_dxa_on_job
+
+    if refresh or not (job_dir / "dxa_summary.json").exists():
+        return run_dxa_on_job(job_dir)
+    data = load_dxa_summary(job_dir)
+    if not data:
+        raise HTTPException(404, "DXA summary not available")
+    return data
 
 
 @app.get("/api/jobs/{job_id}/trajectory")

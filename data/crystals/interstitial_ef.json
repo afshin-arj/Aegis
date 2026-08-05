@@ -1,0 +1,98 @@
+[
+  {
+    "crystal": "bcc",
+    "host": "W",
+    "defect_species": "He",
+    "geometry": "tetrahedral",
+    "direction": "100",
+    "Ef_eV": 5.5,
+    "offset_A": null,
+    "confidence": "medium",
+    "citation": "Typical DFT range for He in W tetrahedral (~4–6 eV); workbench default.",
+    "notes": "Engineering default — validate against your potential."
+  },
+  {
+    "crystal": "bcc",
+    "host": "W",
+    "defect_species": "W",
+    "geometry": "dumbbell",
+    "direction": "111",
+    "Ef_eV": 9.5,
+    "offset_A": 0.75,
+    "confidence": "medium",
+    "citation": "⟨111⟩ crowdion/dumbbell SIA in BCC W (literature ~9–10 eV).",
+    "notes": "Half-separation ~0.25 a ≈ 0.79 Å; catalog uses 0.75 Å."
+  },
+  {
+    "crystal": "bcc",
+    "host": "Fe",
+    "defect_species": "Fe",
+    "geometry": "dumbbell",
+    "direction": "110",
+    "Ef_eV": 3.6,
+    "offset_A": 0.7,
+    "confidence": "medium",
+    "citation": "⟨110⟩ dumbbell SIA in α-Fe (typical DFT ~3.5–4 eV).",
+    "notes": ""
+  },
+  {
+    "crystal": "fcc",
+    "host": "Cu",
+    "defect_species": "Cu",
+    "geometry": "dumbbell",
+    "direction": "110",
+    "Ef_eV": 3.2,
+    "offset_A": 0.9,
+    "confidence": "medium",
+    "citation": "⟨110⟩ dumbbell SIA in FCC Cu.",
+    "notes": ""
+  },
+  {
+    "crystal": "fcc",
+    "host": "Cu",
+    "defect_species": "He",
+    "geometry": "octahedral",
+    "direction": "100",
+    "Ef_eV": 2.0,
+    "offset_A": null,
+    "confidence": "low",
+    "citation": "Order-of-magnitude He octahedral in Cu.",
+    "notes": "Low confidence — potential-dependent."
+  },
+  {
+    "crystal": "hcp",
+    "host": "Be",
+    "defect_species": "Be",
+    "geometry": "octahedral",
+    "direction": "basal",
+    "Ef_eV": 4.0,
+    "offset_A": null,
+    "confidence": "low",
+    "citation": "Approximate Be SIA octahedral default.",
+    "notes": ""
+  },
+  {
+    "crystal": "diamond",
+    "host": "C",
+    "defect_species": "C",
+    "geometry": "tetrahedral",
+    "direction": "100",
+    "Ef_eV": 10.0,
+    "offset_A": null,
+    "confidence": "low",
+    "citation": "Self-interstitial in diamond — strongly potential-dependent.",
+    "notes": ""
+  },
+  {
+    "crystal": "hex",
+    "host": "W",
+    "defect_species": "C",
+    "geometry": "octahedral",
+    "direction": "c",
+    "Ef_eV": 2.5,
+    "offset_A": null,
+    "confidence": "low",
+    "citation": "WC interstitial proxy — not a calibrated ceramic value.",
+    "notes": "Sublattice-aware analysis recommended."
+  }
+]

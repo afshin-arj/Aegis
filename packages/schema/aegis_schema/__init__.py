@@ -24,6 +24,20 @@ class RunMode(str, Enum):
     INTERSTITIAL = "interstitial"  # insert impurities/SIAs along lattice directions
 
 
+class CrystalSystem(str, Enum):
+    BCC = "bcc"
+    FCC = "fcc"
+    HCP = "hcp"
+    DIAMOND = "diamond"
+    HEX = "hex"  # WC-like hexagonal
+    OTHER = "other"
+
+
+class StructureKind(str, Enum):
+    SINGLE_CRYSTAL = "single_crystal"
+    POLYCRYSTAL = "polycrystal"
+
+
 class ElementFraction(BaseModel):
     symbol: str = Field(..., min_length=1, max_length=3)
     atomic_percent: float = Field(..., ge=0, le=100)
@@ -33,8 +47,10 @@ class Material(BaseModel):
     id: str
     name: str
     description: str = ""
-    crystal: str = "bcc"
+    crystal: CrystalSystem | str = CrystalSystem.BCC
     lattice_constant_A: float = 3.165
+    lattice_c_A: float | None = None  # HCP / hex c axis
+    c_over_a: float | None = None  # optional; derived into lattice_c_A when needed
     composition: list[ElementFraction]
     tags: list[str] = Field(default_factory=list)
     metadata_only: bool = False
@@ -47,12 +63,23 @@ class Material(BaseModel):
             raise ValueError(f"composition must sum to 100 at%, got {total}")
         return v
 
+    @field_validator("crystal", mode="before")
+    @classmethod
+    def normalize_crystal(cls, v: Any) -> str:
+        if v is None:
+            return CrystalSystem.BCC.value
+        key = str(getattr(v, "value", v)).strip().lower()
+        aliases = {"wc": "hex", "dia": "diamond", "diamond_cubic": "diamond"}
+        return aliases.get(key, key)
+
 
 class MaterialUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
-    crystal: str | None = None
+    crystal: CrystalSystem | str | None = None
     lattice_constant_A: float | None = None
+    lattice_c_A: float | None = None
+    c_over_a: float | None = None
     composition: list[ElementFraction] | None = None
     tags: list[str] | None = None
 
@@ -144,7 +171,7 @@ class LammpsRunParams(BaseModel):
     ny: int = Field(8, ge=2, le=64)
     nz: int = Field(8, ge=2, le=64)
     boundary: str = "p p p"
-    crystal_orient: str = "100"  # box x-axis: 100 | 110 | 111
+    crystal_orient: str = "100"  # structure-aware: 100/110/111 or basal/prism
     seed: int = 592856
     ensemble: Ensemble = Ensemble.NVE
     temperature_K: float = 300.0
@@ -171,12 +198,17 @@ class LammpsRunParams(BaseModel):
     # Interstitial insertion (not substitutional composition)
     interstitial_species: str = "He"
     interstitial_count: int = Field(1, ge=1, le=64)
-    # Pre-defined BCC directions: 100 | 110 | 111 | random | "h k l"
+    # Crystal-aware directions: 100 | 110 | 111 | basal | c | random | "h k l"
     interstitial_direction: str = "111"
-    # octahedral | tetrahedral | dumbbell | crowdion
+    # octahedral | tetrahedral | dumbbell | crowdion | basal | hexagonal
     interstitial_geometry: str = "octahedral"
     interstitial_offset_A: float | None = None  # dumbbell/crowdion half-separation; default ~0.25 a
     interstitial_energy_eV: float = 0.0  # optional kick along the lattice direction after insert
+    # Polycrystal (Phase D)
+    structure_kind: StructureKind = StructureKind.SINGLE_CRYSTAL
+    poly_n_grains: int = Field(4, ge=2, le=64)
+    poly_seed: int = 42
+    poly_texture: str = "random"  # random | fiber
     timestep_fs: float = 0.001
     max_steps: int = 20000
     neighbor_skin: float = 2.0
@@ -187,6 +219,8 @@ class LammpsRunParams(BaseModel):
     ws_lattice_A: float | None = None
     cluster_cutoff_A: float = 3.5
     confirm_large: bool = False
+    # Optional post-job OVITO DXA
+    run_dxa: bool = False
 
 
 class JobCreate(BaseModel):
@@ -259,6 +293,13 @@ class EngineStatus(BaseModel):
     mmonca_found: bool = False
     mmonca_path: str | None = None
     mmonca_message: str = ""
+    ase_found: bool = False
+    ase_message: str = ""
+    ovito_found: bool = False
+    ovito_path: str | None = None
+    ovito_message: str = ""
+    atomsk_found: bool = False
+    atomsk_path: str | None = None
 
 
 class DoeAxis(str, Enum):

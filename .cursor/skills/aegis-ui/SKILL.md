@@ -37,3 +37,5 @@ description: Aegis workbench UI information architecture and visual design rules
 - WebSocket job log
 - Three.js defect points + StructureViewer trajectory scrub (respect reduced motion)
 - Cascade GIF: `GET /api/jobs/{id}/animation.gif` (Pillow 2D); also written as `animation.gif` after analysis
+- Crystal registry: Material shows a/c, filtered interstitial geometries; Engines reports ASE/OVITO/Atomsk
+- Results: OVITO DXA panel when available

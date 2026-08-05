@@ -269,12 +269,21 @@ class JobManager:
             with log_path.open("w", encoding="utf-8") as log:
                 log.write(f"[Aegis] job {job_id}\n")
                 log.write(f"[Aegis] material={material.id} potential={potential.id}\n")
-                if material.crystal.lower() != "bcc":
+                from lammps import crystal as crystal_reg
+
+                cry = crystal_reg.normalize_crystal(str(getattr(material.crystal, "value", material.crystal)))
+                if not crystal_reg.is_supported(cry):
+                    if not is_placeholder and lmp_path:
+                        raise RuntimeError(
+                            f"crystal '{cry}' is not supported for real LAMMPS runs. "
+                            "Use bcc/fcc/hcp/diamond/hex, or a placeholder potential for dry-run."
+                        )
                     log.write(
-                        f"[Aegis] WARNING: material crystal={material.crystal}; "
-                        "Phase-1 templates build BCC cells only.\n"
+                        f"[Aegis] WARNING: crystal={cry} unsupported — dry-run demo only.\n"
                     )
-                if not lmp_path or is_placeholder:
+                else:
+                    log.write(f"[Aegis] crystal builder={cry}\n")
+                if not lmp_path or is_placeholder or not crystal_reg.is_supported(cry):
                     if is_placeholder:
                         log.write(
                             "[Aegis] Placeholder potential — dry-run demo dumps only "
@@ -320,12 +329,23 @@ class JobManager:
                 return
 
             self._update(job_id, status=JobStatus.ANALYZING, message="defect analysis")
+            from lammps import crystal as crystal_reg
+
+            cry = crystal_reg.normalize_crystal(str(getattr(material.crystal, "value", material.crystal)))
+            c_A = getattr(material, "lattice_c_A", None) or crystal_reg.resolve_c_A(
+                material.model_dump() if hasattr(material, "model_dump") else mat_dict
+            )
             summary = analyze_job_dir(
                 job_dir,
                 lattice_A=material.lattice_constant_A,
                 cluster_cutoff_A=float(params.get("cluster_cutoff_A") or 3.5),
                 ws_lattice_A=params.get("ws_lattice_A") or material.lattice_constant_A,
                 mode=mode,
+                crystal=cry,
+                lattice_c_A=c_A,
+                structure_kind=str(
+                    getattr(params.get("structure_kind"), "value", params.get("structure_kind", "single_crystal"))
+                ),
             )
             (job_dir / "defects.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
             surface_summary = (summary.get("surface") or {}).get("summary")
@@ -341,6 +361,18 @@ class JobManager:
             except Exception as gif_exc:  # noqa: BLE001
                 with log_path.open("a", encoding="utf-8") as log:
                     log.write(f"[Aegis] animation.gif skipped: {gif_exc}\n")
+
+            # Optional OVITO DXA
+            if params.get("run_dxa"):
+                try:
+                    from aegis_api.dxa import run_dxa_on_job
+
+                    dxa = run_dxa_on_job(job_dir)
+                    with log_path.open("a", encoding="utf-8") as log:
+                        log.write(f"[Aegis] DXA: {dxa.get('status', 'done')}\n")
+                except Exception as dxa_exc:  # noqa: BLE001
+                    with log_path.open("a", encoding="utf-8") as log:
+                        log.write(f"[Aegis] DXA skipped: {dxa_exc}\n")
 
             if self._is_cancelled(job_id):
                 return
@@ -402,31 +434,39 @@ class JobManager:
         self, job_dir: Path, material: Material, *, dump_name: str = "dump.cascade.000000000.lammpstrj"
     ) -> None:
         """Artificial multi-frame trajectory so structure viz works without LAMMPS."""
+        from lammps import crystal as crystal_reg
+
         a = material.lattice_constant_A
+        cry = crystal_reg.normalize_crystal(str(getattr(material.crystal, "value", material.crystal)))
+        offsets = crystal_reg.basis_offsets(cry)
+        # 2×2×2 conventional cells
+        n_cells = 2
 
         def frame(timestep: int, displace: float = 0.0, extra: bool = False) -> list[str]:
             atoms: list[str] = []
             n = 0
-            for i in range(2):
-                for j in range(2):
-                    for k in range(2):
-                        n += 1
-                        atoms.append(f"{n} 1 {i*a} {j*a} {k*a}")
-                        n += 1
-                        dx = displace if (i, j, k) == (1, 1, 1) else 0.0
-                        atoms.append(f"{n} 1 {i*a+a/2+dx} {j*a+a/2} {k*a+a/2}")
+            for i in range(n_cells):
+                for j in range(n_cells):
+                    for k in range(n_cells):
+                        for bi, (ox, oy, oz) in enumerate(offsets):
+                            n += 1
+                            dx = displace if (i, j, k, bi) == (1, 1, 1, 0) else 0.0
+                            atoms.append(
+                                f"{n} 1 {i*a + ox*a + dx:.6f} {j*a + oy*a:.6f} {k*a + oz*a:.6f}"
+                            )
             if extra:
                 n += 1
-                atoms.append(f"{n} 1 {a*0.25} {a*0.25} {a*0.25}")
+                atoms.append(f"{n} 1 {a*0.25:.6f} {a*0.25:.6f} {a*0.25:.6f}")
+            L = n_cells * a
             lines = [
                 "ITEM: TIMESTEP",
                 str(timestep),
                 "ITEM: NUMBER OF ATOMS",
                 str(n),
                 "ITEM: BOX BOUNDS pp pp pp",
-                f"0 {2*a}",
-                f"0 {2*a}",
-                f"0 {2*a}",
+                f"0 {L}",
+                f"0 {L}",
+                f"0 {L}",
                 "ITEM: ATOMS id type x y z",
                 *atoms,
             ]
@@ -435,7 +475,6 @@ class JobManager:
         (job_dir / "dump.initial.lammpstrj").write_text(
             "\n".join(frame(0, 0.0, False)) + "\n", encoding="utf-8"
         )
-        # Multi-timestep "after" trajectory in one file
         traj = (
             frame(0, 0.2, False)
             + frame(1000, 0.5, True)
@@ -443,7 +482,7 @@ class JobManager:
             + frame(5000, 0.9, True)
         )
         (job_dir / dump_name).write_text("\n".join(traj) + "\n", encoding="utf-8")
-        (job_dir / "final.data").write_text("# demo\n", encoding="utf-8")
+        (job_dir / "final.data").write_text(f"# demo crystal={cry}\n", encoding="utf-8")
 
     def _write_demo_surface_dump(self, job_dir: Path, material: Material, params: dict) -> None:
         """Demo free-surface trajectory with fuzz / implant proxies for dry-run."""

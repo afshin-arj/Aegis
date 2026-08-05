@@ -6,6 +6,9 @@ import textwrap
 from pathlib import Path
 from typing import Any
 
+from lammps import crystal as crystal_reg
+from lammps.polycrystal import build_polycrystal_meta, polycrystal_lammps_comment
+
 
 def _elements_line(composition: list[dict[str, Any]]) -> list[str]:
     return [c["symbol"] for c in composition if c.get("atomic_percent", 0) > 0]
@@ -16,19 +19,7 @@ def render_pair_coeff(template: str, file_path: str, elements: list[str]) -> str
 
 
 def _direction_unit(direction: str, seed: int) -> tuple[float, float, float]:
-    if direction.strip().lower() == "random":
-        # Deterministic pseudo-random unit vector from seed (reproducible templates)
-        x = math.sin(seed * 12.9898) * 43758.5453
-        y = math.sin(seed * 78.233) * 43758.5453
-        z = math.sin(seed * 39.425) * 43758.5453
-        vx, vy, vz = (x - math.floor(x)) * 2 - 1, (y - math.floor(y)) * 2 - 1, (z - math.floor(z)) * 2 - 1
-    else:
-        parts = [float(x) for x in direction.replace(",", " ").split()]
-        while len(parts) < 3:
-            parts.append(0.0)
-        vx, vy, vz = parts[0], parts[1], parts[2]
-    norm = math.sqrt(vx * vx + vy * vy + vz * vz) or 1.0
-    return vx / norm, vy / norm, vz / norm
+    return crystal_reg.direction_unit("bcc", direction, seed)
 
 
 def _dump_command(params: dict[str, Any], pattern: str) -> tuple[str, str]:
@@ -62,49 +53,50 @@ def _restart_block(params: dict[str, Any]) -> str:
     return f"restart {every} restart.*.aegis"
 
 
-def _lattice_line(a: float, params: dict[str, Any]) -> str:
-    orient = str(params.get("crystal_orient", "100")).strip().replace(" ", "")
-    # LAMMPS lattice orient: x / y / z Miller vectors
-    presets = {
-        "100": "orient x 1 0 0 orient y 0 1 0 orient z 0 0 1",
-        "110": "orient x 1 1 0 orient y -1 1 0 orient z 0 0 1",
-        "111": "orient x 1 1 1 orient y 1 -1 0 orient z 1 1 -2",
-    }
-    o = presets.get(orient, presets["100"])
-    return f"lattice bcc {a} {o}"
+def _lattice_line(material: dict[str, Any], params: dict[str, Any]) -> str:
+    return crystal_reg.lattice_line(material, params)
 
 
 def _crystal_comment(material: dict[str, Any]) -> str:
-    crystal = str(material.get("crystal", "bcc")).lower()
-    if crystal != "bcc":
-        return (
-            f"# WARNING: material crystal={crystal}; Aegis Phase-1 templates always build BCC. "
-            "Results are not representative for non-BCC lattices."
-        )
-    return "# Crystal: BCC lattice builder"
+    return crystal_reg.crystal_comment(material)
 
 
-def _snap_bcc_lattice_site(fx: float, fy: float, fz: float, nx: int, ny: int, nz: int) -> tuple[float, float, float]:
-    """Snap fractional box coords to the nearest BCC lattice site (lattice units)."""
-    tx = max(0.0, min(1.0, fx)) * nx
-    ty = max(0.0, min(1.0, fy)) * ny
-    tz = max(0.0, min(1.0, fz)) * nz
-    # Candidate: corner sites (integer) and body-center (half-integer)
-    candidates: list[tuple[float, float, float]] = []
-    i0, j0, k0 = int(math.floor(tx)), int(math.floor(ty)), int(math.floor(tz))
-    for di in range(-1, 3):
-        for dj in range(-1, 3):
-            for dk in range(-1, 3):
-                i, j, k = i0 + di, j0 + dj, k0 + dk
-                if 0 <= i < nx and 0 <= j < ny and 0 <= k < nz:
-                    candidates.append((float(i), float(j), float(k)))
-                    # body center of cell (i,j,k)
-                    if i + 0.5 < nx and j + 0.5 < ny and k + 0.5 < nz:
-                        candidates.append((i + 0.5, j + 0.5, k + 0.5))
-    if not candidates:
-        return nx * 0.5, ny * 0.5, nz * 0.5
-    best = min(candidates, key=lambda p: (p[0] - tx) ** 2 + (p[1] - ty) ** 2 + (p[2] - tz) ** 2)
-    return best
+def _snap_lattice_site(
+    material: dict[str, Any],
+    fx: float,
+    fy: float,
+    fz: float,
+    nx: int,
+    ny: int,
+    nz: int,
+) -> tuple[float, float, float]:
+    return crystal_reg.snap_lattice_site(
+        str(material.get("crystal", "bcc")),
+        fx,
+        fy,
+        fz,
+        nx,
+        ny,
+        nz,
+    )
+
+
+def _poly_preamble(path: Path, material: dict[str, Any], params: dict[str, Any]) -> str:
+    kind = str(getattr(params.get("structure_kind"), "value", params.get("structure_kind", "single_crystal"))).lower()
+    if kind != "polycrystal":
+        return ""
+    meta = build_polycrystal_meta(
+        path.parent,
+        nx=int(params["nx"]),
+        ny=int(params["ny"]),
+        nz=int(params["nz"]),
+        n_grains=int(params.get("poly_n_grains", 4)),
+        seed=int(params.get("poly_seed", params.get("seed", 42))),
+        texture=str(params.get("poly_texture", "random")),
+        crystal=str(material.get("crystal", "bcc")),
+        a=float(material.get("lattice_constant_A", 3.165)),
+    )
+    return polycrystal_lammps_comment(meta)
 
 
 def plan_cascade_stages(
@@ -234,6 +226,7 @@ def write_cascade_input(
     ensemble = _ensemble_fix(params)
     restart = _restart_block(params)
     crystal_note = _crystal_comment(material)
+    poly_note = _poly_preamble(path, material, params)
 
     schedule = plan_cascade_stages(
         energy_eV=E,
@@ -275,7 +268,7 @@ def write_cascade_input(
                 fy = 0.35 + 0.3 * (((i // 3) % 3) / 2)
                 fz = 0.5
 
-        sx, sy, sz = _snap_bcc_lattice_site(fx, fy, fz, nx, ny, nz)
+        sx, sy, sz = _snap_lattice_site(material, fx, fy, fz, nx, ny, nz)
         site_notes.append(f"PKA{i+1}: frac≈({fx:.3f},{fy:.3f},{fz:.3f}) → lattice ({sx:.3f},{sy:.3f},{sz:.3f})")
         # Sphere large enough to catch one BCC atom at the snapped site
         rad = 0.45
@@ -348,6 +341,7 @@ def write_cascade_input(
         f"""\
         # Aegis-generated cascade input — review before production use
         {crystal_note}
+        {poly_note}
         # Cascade timeline written to cascade_timeline.json (OVITO stage guide)
         # Auto stages: {schedule['auto']} total_steps={schedule['total_steps']} extended={schedule.get('extended_max_steps')}
 {sites_comment}
@@ -393,7 +387,7 @@ def write_cascade_input(
     # Inject oriented lattice command
     script = script.replace(
         f"lattice bcc {a}\n",
-        f"{_lattice_line(a, params)}\n",
+        f"{_lattice_line(material, params)}\n",
         1,
     )
     path.write_text(script, encoding="utf-8")
@@ -433,6 +427,7 @@ def _format_ovito_guide(schedule: dict[str, Any], site_notes: list[str]) -> str:
             "  1. Load dump.initial.lammpstrj as the pristine lattice.",
             "  2. Load dump.cascade.*.lammpstrj as the time series (growth→peak→quench→residual).",
             "  3. Optionally overlay dump.stage.*.lammpstrj frames as bookmarks for each regime.",
+            "  4. Optional: run OVITO DXA on residual frames (Aegis Results → DXA when OVITO is installed).",
             "",
         ]
     )
@@ -540,7 +535,7 @@ def write_implant_input(
     )
     script = script.replace(
         f"lattice bcc {a}\n",
-        f"{_lattice_line(a, params)}\n",
+        f"{_lattice_line(material, params)}\n",
         1,
     )
     path.write_text(script, encoding="utf-8")
@@ -677,43 +672,21 @@ def write_surface_input(
     )
     script = script.replace(
         f"lattice bcc {a}\n",
-        f"{_lattice_line(a, params)}\n",
+        f"{_lattice_line(material, params)}\n",
         1,
     )
     path.write_text(script, encoding="utf-8")
     return path
 
 
-def _lattice_direction_unit(direction: str, seed: int) -> tuple[float, float, float]:
-    """Unit vector for pre-defined BCC lattice directions."""
-    key = direction.strip().lower().replace(",", " ")
-    presets = {
-        "100": (1.0, 0.0, 0.0),
-        "010": (0.0, 1.0, 0.0),
-        "001": (0.0, 0.0, 1.0),
-        "110": (1.0, 1.0, 0.0),
-        "101": (1.0, 0.0, 1.0),
-        "011": (0.0, 1.0, 1.0),
-        "111": (1.0, 1.0, 1.0),
-        "<100>": (1.0, 0.0, 0.0),
-        "<110>": (1.0, 1.0, 0.0),
-        "<111>": (1.0, 1.0, 1.0),
-        "[100]": (1.0, 0.0, 0.0),
-        "[110]": (1.0, 1.0, 0.0),
-        "[111]": (1.0, 1.0, 1.0),
-    }
-    if key in presets:
-        vx, vy, vz = presets[key]
-    elif key == "random":
-        return _direction_unit("random", seed)
-    else:
-        return _direction_unit(direction, seed)
-    norm = math.sqrt(vx * vx + vy * vy + vz * vz) or 1.0
-    return vx / norm, vy / norm, vz / norm
+def _lattice_direction_unit(direction: str, seed: int, crystal: str = "bcc") -> tuple[float, float, float]:
+    """Unit vector for crystal-aware lattice directions."""
+    return crystal_reg.direction_unit(crystal, direction, seed)
 
 
 def _interstitial_sites_lattice(
     *,
+    crystal: str,
     geometry: str,
     count: int,
     nx: int,
@@ -723,60 +696,17 @@ def _interstitial_sites_lattice(
     a: float,
     offset_A: float,
 ) -> list[tuple[float, float, float, str]]:
-    """Return list of (x,y,z in lattice units, kind) for interstitial inserts.
-
-    kind is 'single' (one atom) or 'pair' markers handled by caller via paired sites.
-    For dumbbell/crowdion we return pairs of positions as consecutive singles with kind 'sia'.
-    """
-    geom = geometry.strip().lower()
-    ux, uy, uz = direction
-    # Anchor near geometric center of the box (lattice units)
-    cx, cy, cz = nx * 0.5, ny * 0.5, nz * 0.5
-    # Perpendicular spread basis
-    if abs(ux) < 0.9:
-        px, py, pz = 0.0, -uz, uy
-    else:
-        px, py, pz = -uy, ux, 0.0
-    pn = math.sqrt(px * px + py * py + pz * pz) or 1.0
-    px, py, pz = px / pn, py / pn, pz / pn
-    qx, qy, qz = uy * pz - uz * py, uz * px - ux * pz, ux * py - uy * px
-
-    half = (offset_A / a) if a > 0 else 0.25
-    sites: list[tuple[float, float, float, str]] = []
-
-    for i in range(count):
-        # Spread along a small grid in the plane ⊥ direction
-        sx = ((i % 3) - 1) * 0.35
-        sy = (((i // 3) % 3) - 1) * 0.35
-        sz = ((i // 9) % 3) * 0.2
-        base_x = cx + sx * px + sy * qx + sz * ux
-        base_y = cy + sx * py + sy * qy + sz * uy
-        base_z = cz + sx * pz + sy * qz + sz * uz
-        # Clamp into box with small margin
-        base_x = min(max(base_x, 0.25), nx - 0.25)
-        base_y = min(max(base_y, 0.25), ny - 0.25)
-        base_z = min(max(base_z, 0.25), nz - 0.25)
-
-        if geom in {"dumbbell", "crowdion"}:
-            # Pair of atoms along the lattice direction (SIA dumbbell / crowdion seed)
-            sep = half if geom == "dumbbell" else half * 1.6
-            sites.append((base_x + sep * ux, base_y + sep * uy, base_z + sep * uz, "pair"))
-            sites.append((base_x - sep * ux, base_y - sep * uy, base_z - sep * uz, "pair"))
-        elif geom == "tetrahedral":
-            # BCC tetrahedral offset ~ (0.5, 0.25, 0) in a unit cell, oriented with direction
-            ox, oy, oz = 0.5 * ux + 0.25 * px, 0.5 * uy + 0.25 * py, 0.5 * uz + 0.25 * pz
-            sites.append((base_x + ox * 0.5, base_y + oy * 0.5, base_z + oz * 0.5, "single"))
-        else:
-            # Default octahedral: midway along the chosen lattice direction from a lattice point
-            sites.append(
-                (
-                    base_x + 0.5 * ux,
-                    base_y + 0.5 * uy,
-                    base_z + 0.5 * uz,
-                    "single",
-                )
-            )
-    return sites
+    return crystal_reg.interstitial_sites_lattice(
+        crystal=crystal,
+        geometry=geometry,
+        count=count,
+        nx=nx,
+        ny=ny,
+        nz=nz,
+        direction=direction,
+        a=a,
+        offset_A=offset_A,
+    )
 
 
 def write_interstitial_input(
@@ -787,11 +717,11 @@ def write_interstitial_input(
     params: dict[str, Any],
     potential_file: str,
 ) -> Path:
-    """Insert interstitial impurities / SIA seeds along pre-defined BCC lattice directions.
+    """Insert interstitial impurities / SIA seeds along crystal-aware lattice directions.
 
     Material composition remains substitutional on the host lattice. Interstitials are
-    extra atoms (octahedral / tetrahedral / dumbbell / crowdion) oriented along
-    <100>, <110>, <111>, or a custom Miller vector.
+    extra atoms (octahedral / tetrahedral / dumbbell / crowdion / basal) oriented along
+    structure-appropriate directions.
     """
     host_elems = _elements_line(material["composition"])
     if not host_elems:
@@ -802,6 +732,7 @@ def write_interstitial_input(
         elems.append(species)
 
     a = float(material.get("lattice_constant_A", 3.165))
+    crystal = str(material.get("crystal", "bcc"))
     nx, ny, nz = int(params["nx"]), int(params["ny"]), int(params["nz"])
     seed = int(params["seed"])
     dt = float(params["timestep_fs"])
@@ -809,7 +740,9 @@ def write_interstitial_input(
     T = float(params["temperature_K"])
     count = max(1, int(params.get("interstitial_count", 1)))
     direction_s = str(params.get("interstitial_direction", "111"))
-    geometry = str(params.get("interstitial_geometry", "octahedral"))
+    geometry = crystal_reg.validate_interstitial_geometry(
+        crystal, str(params.get("interstitial_geometry", "octahedral"))
+    )
     offset = params.get("interstitial_offset_A")
     offset_A = float(offset) if offset not in (None, "") else 0.25 * a
     E_kick = float(params.get("interstitial_energy_eV", 0.0) or 0.0)
@@ -826,9 +759,11 @@ def write_interstitial_input(
     dump, dump_mod = _dump_command(params, "dump.interstitial.*.lammpstrj")
     restart = _restart_block(params)
     crystal_note = _crystal_comment(material)
+    poly_note = _poly_preamble(path, material, params)
 
-    ux, uy, uz = _lattice_direction_unit(direction_s, seed)
+    ux, uy, uz = _lattice_direction_unit(direction_s, seed, crystal)
     sites = _interstitial_sites_lattice(
+        crystal=crystal,
         geometry=geometry,
         count=count,
         nx=nx,
@@ -864,6 +799,7 @@ def write_interstitial_input(
         # atoms_created={n_atoms_inserted} (dumbbell/crowdion create a pair per count)
         # Host composition is SUBSTITUTIONAL; these inserts are EXTRA interstitial atoms.
         {crystal_note}
+        {poly_note}
         units metal
         dimension 3
         boundary {params.get("boundary", "p p p")}
@@ -908,7 +844,7 @@ def write_interstitial_input(
     )
     script = script.replace(
         f"lattice bcc {a}\n",
-        f"{_lattice_line(a, params)}\n",
+        f"{_lattice_line(material, params)}\n",
         1,
     )
     path.write_text(script, encoding="utf-8")
