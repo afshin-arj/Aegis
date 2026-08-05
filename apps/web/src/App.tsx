@@ -102,6 +102,11 @@ type RunParams = {
   pka_direction: string;
   n_pkas: number;
   pka_delay_steps: number;
+  pka_site: string;
+  pka_frac_x: number;
+  pka_frac_y: number;
+  pka_frac_z: number;
+  cascade_auto_stages: boolean;
   ion_type: string;
   ion_energy_eV: number;
   ion_count: number;
@@ -167,6 +172,11 @@ const defaultParams: RunParams = {
   pka_direction: "random",
   n_pkas: 1,
   pka_delay_steps: 0,
+  pka_site: "center",
+  pka_frac_x: 0.5,
+  pka_frac_y: 0.5,
+  pka_frac_z: 0.5,
+  cascade_auto_stages: true,
   ion_type: "He",
   ion_energy_eV: 500,
   ion_count: 1,
@@ -427,6 +437,20 @@ export default function App() {
   const [kartMaxKmcTimeS, setKartMaxKmcTimeS] = useState(1);
   const [kartDoeTemps, setKartDoeTemps] = useState("");
   const [kartSummary, setKartSummary] = useState<KartSummary | null>(null);
+  const [cascadeTimeline, setCascadeTimeline] = useState<{
+    auto?: boolean;
+    note?: string;
+    total_steps?: number;
+    extended_max_steps?: boolean;
+    stages?: Array<{
+      id: string;
+      label: string;
+      steps: number;
+      dump_every: number;
+      timestep_start?: number;
+      timestep_end?: number;
+    }>;
+  } | null>(null);
   const [campaigns, setCampaigns] = useState<DoeCampaign[]>([]);
   const [campaign, setCampaign] = useState<DoeCampaign | null>(null);
   const [doeName, setDoeName] = useState("DEMO-energy-T");
@@ -684,6 +708,7 @@ export default function App() {
     setLog("");
     setDefects(null);
     setKartSummary(null);
+    setCascadeTimeline(null);
     try {
       const info = await api<JobInfo>(`/api/jobs/${jobId}`);
       setJob(info);
@@ -697,6 +722,11 @@ export default function App() {
           setKartSummary(await api<KartSummary>(`/api/jobs/${jobId}/kart`));
         } catch {
           setKartSummary((info.kart_summary as KartSummary) || null);
+        }
+        try {
+          setCascadeTimeline(await api(`/api/jobs/${jobId}/cascade-timeline`));
+        } catch {
+          setCascadeTimeline(null);
         }
       }
     } catch (err) {
@@ -2089,6 +2119,11 @@ export default function App() {
             </fieldset>
             <fieldset className="fieldset">
               <legend>Cascade / PKA</legend>
+              <p className="hint">
+                Pick PKA energy, direction, and lattice site. With auto stages on, Aegis densifies dumps through
+                growth → peak → quench → residual so OVITO can scrub each regime (see{" "}
+                <code>cascade_stages_OVITO.txt</code> in the job folder).
+              </p>
               <div className="row">
                 <Field label="PKA species" htmlFor="pka-sp">
                   <input
@@ -2133,6 +2168,64 @@ export default function App() {
                     onChange={(e) => setParam("pka_delay_steps", Number(e.target.value))}
                   />
                 </Field>
+              </div>
+              <div className="row">
+                <Field label="PKA site" htmlFor="pka-site">
+                  <select
+                    id="pka-site"
+                    value={params.pka_site}
+                    onChange={(e) => setParam("pka_site", e.target.value)}
+                  >
+                    <option value="center">box center (snapped to lattice)</option>
+                    <option value="coords">fractional coords (snapped)</option>
+                    <option value="random">random lattice site</option>
+                  </select>
+                </Field>
+                {params.pka_site === "coords" && (
+                  <>
+                    <Field label="x frac" unit="0–1" htmlFor="pka-fx">
+                      <input
+                        id="pka-fx"
+                        type="number"
+                        step="0.01"
+                        min={0}
+                        max={1}
+                        value={params.pka_frac_x}
+                        onChange={(e) => setParam("pka_frac_x", Number(e.target.value))}
+                      />
+                    </Field>
+                    <Field label="y frac" unit="0–1" htmlFor="pka-fy">
+                      <input
+                        id="pka-fy"
+                        type="number"
+                        step="0.01"
+                        min={0}
+                        max={1}
+                        value={params.pka_frac_y}
+                        onChange={(e) => setParam("pka_frac_y", Number(e.target.value))}
+                      />
+                    </Field>
+                    <Field label="z frac" unit="0–1" htmlFor="pka-fz">
+                      <input
+                        id="pka-fz"
+                        type="number"
+                        step="0.01"
+                        min={0}
+                        max={1}
+                        value={params.pka_frac_z}
+                        onChange={(e) => setParam("pka_frac_z", Number(e.target.value))}
+                      />
+                    </Field>
+                  </>
+                )}
+                <label className="check-row">
+                  <input
+                    type="checkbox"
+                    checked={params.cascade_auto_stages}
+                    onChange={(e) => setParam("cascade_auto_stages", e.target.checked)}
+                  />
+                  Auto stage dumps (growth / peak / quench / residual)
+                </label>
               </div>
             </fieldset>
             <fieldset className="fieldset">
@@ -2541,6 +2634,46 @@ export default function App() {
             <section className="panel">
               <StructureViewer jobId={job?.id || null} refreshKey={job?.updated_at || job?.status} />
             </section>
+            {cascadeTimeline?.stages && cascadeTimeline.stages.length > 0 && (
+              <section className="panel stack">
+                <h2>Cascade stages</h2>
+                <p className="hint">{cascadeTimeline.note}</p>
+                {cascadeTimeline.extended_max_steps && (
+                  <div className="alert alert-warn">
+                    Auto stages extended the cascade past your max_steps so quench/residual could finish (
+                    {cascadeTimeline.total_steps} steps total).
+                  </div>
+                )}
+                <div className="table-wrap">
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        <th>stage</th>
+                        <th>label</th>
+                        <th>timesteps</th>
+                        <th>dump every</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {cascadeTimeline.stages.map((st) => (
+                        <tr key={st.id}>
+                          <td>{st.id}</td>
+                          <td>{st.label}</td>
+                          <td>
+                            {st.timestep_start ?? 0}–{st.timestep_end ?? st.steps}
+                          </td>
+                          <td>{st.dump_every}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="hint">
+                  OVITO: load <code>dump.initial.lammpstrj</code>, then <code>dump.cascade.*.lammpstrj</code>; stage
+                  bookmarks are <code>dump.stage.*.lammpstrj</code>.
+                </p>
+              </section>
+            )}
           <div className="grid-2">
             <section className="panel stack">
               <div className="panel-head">

@@ -32,6 +32,7 @@ def list_trajectory_frames(job_dir: Path) -> list[dict[str, Any]]:
     dump_files = sorted(
         {
             *job_dir.glob("dump.cascade*.lammpstrj"),
+            *job_dir.glob("dump.stage*.lammpstrj"),
             *job_dir.glob("dump.implant*.lammpstrj"),
             *job_dir.glob("dump.surface*.lammpstrj"),
             *job_dir.glob("dump.interstitial*.lammpstrj"),

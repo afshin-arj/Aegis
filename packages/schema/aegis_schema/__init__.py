@@ -154,6 +154,13 @@ class LammpsRunParams(BaseModel):
     pka_direction: str = "random"  # random | h k l e.g. "1 1 0"
     n_pkas: int = Field(1, ge=1, le=20)
     pka_delay_steps: int = 0
+    # PKA site: center | random | coords (fractional box position → nearest lattice site)
+    pka_site: str = "center"
+    pka_frac_x: float = Field(0.5, ge=0.0, le=1.0)
+    pka_frac_y: float = Field(0.5, ge=0.0, le=1.0)
+    pka_frac_z: float = Field(0.5, ge=0.0, le=1.0)
+    # Auto stage-aware cascade schedule (growth → peak → quench → residual) for OVITO timelines
+    cascade_auto_stages: bool = True
     ion_type: str = "He"
     ion_energy_eV: float = 500.0
     ion_count: int = 1

@@ -642,6 +642,16 @@ def post_kart_anneal(job_id: str, body: KartAnnealRequest) -> dict[str, Any]:
         raise HTTPException(500, str(exc)) from exc
 
 
+@app.get("/api/jobs/{job_id}/cascade-timeline")
+def get_cascade_timeline(job_id: str) -> dict[str, Any]:
+    """Heuristic growth/peak/quench/residual schedule written with the cascade input."""
+    job_dir = RUNS_ROOT / job_id
+    path = job_dir / "cascade_timeline.json"
+    if not path.exists():
+        raise HTTPException(404, "cascade timeline not available (run a cascade job with auto stages)")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 @app.get("/api/jobs/{job_id}/trajectory")
 def get_trajectory_index(job_id: str) -> dict[str, Any]:
     job_dir = RUNS_ROOT / job_id

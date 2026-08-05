@@ -12,6 +12,7 @@ def _prefer_analysis_dumps(job_dir: Path) -> list[Path]:
         "dump.surface.*.lammpstrj",
         "dump.interstitial.*.lammpstrj",
         "dump.cascade.*.lammpstrj",
+        "dump.stage.*.lammpstrj",
         "dump.implant.*.lammpstrj",
         "dump.*.lammpstrj",
     ):

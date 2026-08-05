@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import textwrap
 from pathlib import Path
@@ -83,6 +84,120 @@ def _crystal_comment(material: dict[str, Any]) -> str:
     return "# Crystal: BCC lattice builder"
 
 
+def _snap_bcc_lattice_site(fx: float, fy: float, fz: float, nx: int, ny: int, nz: int) -> tuple[float, float, float]:
+    """Snap fractional box coords to the nearest BCC lattice site (lattice units)."""
+    tx = max(0.0, min(1.0, fx)) * nx
+    ty = max(0.0, min(1.0, fy)) * ny
+    tz = max(0.0, min(1.0, fz)) * nz
+    # Candidate: corner sites (integer) and body-center (half-integer)
+    candidates: list[tuple[float, float, float]] = []
+    i0, j0, k0 = int(math.floor(tx)), int(math.floor(ty)), int(math.floor(tz))
+    for di in range(-1, 3):
+        for dj in range(-1, 3):
+            for dk in range(-1, 3):
+                i, j, k = i0 + di, j0 + dj, k0 + dk
+                if 0 <= i < nx and 0 <= j < ny and 0 <= k < nz:
+                    candidates.append((float(i), float(j), float(k)))
+                    # body center of cell (i,j,k)
+                    if i + 0.5 < nx and j + 0.5 < ny and k + 0.5 < nz:
+                        candidates.append((i + 0.5, j + 0.5, k + 0.5))
+    if not candidates:
+        return nx * 0.5, ny * 0.5, nz * 0.5
+    best = min(candidates, key=lambda p: (p[0] - tx) ** 2 + (p[1] - ty) ** 2 + (p[2] - tz) ** 2)
+    return best
+
+
+def plan_cascade_stages(
+    *,
+    energy_eV: float,
+    timestep_fs: float,
+    max_steps: int,
+    dump_every: int,
+    auto: bool,
+) -> dict[str, Any]:
+    """Heuristic cascade timeline so growth/peak/quench/residual are all sampled.
+
+    Uses energy-scaled *fractions* of a bounded step budget so tiny timesteps cannot
+    explode into multi-million-step local DEMO runs. Not a peak detector — a schedule
+    that makes OVITO scrubbing cover each physical regime.
+    """
+    dump_every = max(1, int(dump_every))
+    max_steps = max(1, int(max_steps))
+    if not auto:
+        return {
+            "auto": False,
+            "total_steps": max_steps,
+            "extended_max_steps": False,
+            "note": "Single continuous run; stage names are not applied.",
+            "stages": [
+                {
+                    "id": "full",
+                    "label": "Full cascade window",
+                    "steps": max_steps,
+                    "dump_every": dump_every,
+                    "timestep_start": 0,
+                    "timestep_end": max_steps,
+                }
+            ],
+        }
+
+    dt_ps = max(float(timestep_fs), 1e-9) * 1e-3  # fs → ps
+    scale = max(1.0, (max(energy_eV, 1.0) / 5000.0) ** 0.35)
+    # ~14 ps metallic cascade window at 5 keV, weakly energy-scaled
+    target_ps = 14.0 * scale
+    suggested = max(max_steps, int(round(target_ps / dt_ps)))
+    # Bound extension for local workbench (avoid millions of steps if dt is tiny)
+    hard_cap = max(max_steps, min(200_000, max_steps * 5))
+    total = min(suggested, hard_cap)
+    extended = total > max_steps
+
+    # Fractions: brief growth, peak spike, long quench, residual settle
+    fracs = [("growth", "PKA / cascade growth", 0.08), ("peak", "Cascade peak (thermal spike)", 0.17), ("quench", "Quench / recombination", 0.40), ("residual", "Residual defects", 0.35)]
+    raw = [max(10, int(round(total * f))) for _, _, f in fracs]
+    # Fix rounding so sum == total
+    raw[-1] = max(10, total - sum(raw[:-1]))
+
+    def denser(base: int, stage_steps: int, target_frames: int) -> int:
+        return max(1, min(base, max(1, stage_steps // max(target_frames, 1))))
+
+    densify = [
+        denser(dump_every, raw[0], 25),
+        denser(max(1, dump_every // 5), raw[1], 40),
+        denser(dump_every, raw[2], 30),
+        denser(max(dump_every, dump_every * 2), raw[3], 20),
+    ]
+
+    stages = []
+    t0 = 0
+    for (sid, label, _), nrun, every in zip(fracs, raw, densify):
+        stages.append(
+            {
+                "id": sid,
+                "label": label,
+                "steps": nrun,
+                "dump_every": every,
+                "timestep_start": t0,
+                "timestep_end": t0 + nrun,
+            }
+        )
+        t0 += nrun
+
+    return {
+        "auto": True,
+        "total_steps": t0,
+        "extended_max_steps": extended,
+        "energy_eV": energy_eV,
+        "timestep_fs": timestep_fs,
+        "target_ps": target_ps,
+        "scale": scale,
+        "note": (
+            "Heuristic stage schedule for metallic cascades (bounded step budget). "
+            "Dense dumps during growth/peak so OVITO can scrub PKA → peak → recombination → residual."
+        ),
+        "stages": stages,
+    }
+
+
 def write_cascade_input(
     path: Path,
     *,
@@ -103,6 +218,10 @@ def write_cascade_input(
     E = float(params["pka_energy_eV"])
     n_pkas = max(1, int(params.get("n_pkas", 1)))
     delay = max(0, int(params.get("pka_delay_steps", 0)))
+    site_mode = str(params.get("pka_site") or "center").strip().lower()
+    auto_stages = bool(params.get("cascade_auto_stages", True))
+    dump_every = int(params.get("dump_every", 1000))
+
     pair_style = potential["lammps_pair_style"]
     pair_coeff = render_pair_coeff(
         potential["pair_coeff_template"], potential_file, elems
@@ -113,28 +232,64 @@ def write_cascade_input(
     masses = "\n".join(f"mass {i+1} {_approx_mass(sym)}" for i, sym in enumerate(elems))
     create = _create_atoms_block(material, elems)
     ensemble = _ensemble_fix(params)
-    dump, dump_mod = _dump_command(params, "dump.cascade.*.lammpstrj")
     restart = _restart_block(params)
     crystal_note = _crystal_comment(material)
 
-    # Multi-PKA: kick distinct near-center atoms (mid-ID proxy for cubic BCC fill)
+    schedule = plan_cascade_stages(
+        energy_eV=E,
+        timestep_fs=dt,
+        max_steps=steps,
+        dump_every=dump_every,
+        auto=auto_stages,
+    )
+    # Persist timeline next to input for OVITO / UI
+    timeline_path = path.parent / "cascade_timeline.json"
+    timeline_path.write_text(json.dumps(schedule, indent=2), encoding="utf-8")
+
+    # PKA site targets in lattice units
     pka_blocks: list[str] = []
+    site_notes: list[str] = []
     for i in range(n_pkas):
         s = seed + i * 9973
         dvx, dvy, dvz = _direction_unit(str(params.get("pka_direction", "random")), s)
-        sp = speed
-        # Atom id 1 is a corner site; mid-box IDs are closer to the geometric center
-        # for sequential create_atoms on a cubic lattice. Offset for multi-PKA.
+        if site_mode == "random":
+            # Deterministic pseudo-random fractional position from seed
+            rx = (math.sin(s * 12.9898) * 43758.5453) % 1.0
+            ry = (math.sin(s * 78.233) * 43758.5453) % 1.0
+            rz = (math.sin(s * 39.425) * 43758.5453) % 1.0
+            # Keep away from boundaries a bit
+            fx, fy, fz = 0.15 + 0.7 * abs(rx), 0.15 + 0.7 * abs(ry), 0.15 + 0.7 * abs(rz)
+        elif site_mode == "coords":
+            fx = float(params.get("pka_frac_x", 0.5))
+            fy = float(params.get("pka_frac_y", 0.5))
+            fz = float(params.get("pka_frac_z", 0.5))
+            # Slightly jitter multi-PKA so they don't all hit the same site
+            if n_pkas > 1:
+                fx = min(0.95, max(0.05, fx + 0.03 * ((i % 3) - 1)))
+                fy = min(0.95, max(0.05, fy + 0.03 * (((i // 3) % 3) - 1)))
+                fz = min(0.95, max(0.05, fz + 0.02 * (i % 2)))
+        else:
+            fx = fy = fz = 0.5
+            if n_pkas > 1:
+                fx = 0.35 + 0.3 * ((i % 3) / 2)
+                fy = 0.35 + 0.3 * (((i // 3) % 3) / 2)
+                fz = 0.5
+
+        sx, sy, sz = _snap_bcc_lattice_site(fx, fy, fz, nx, ny, nz)
+        site_notes.append(f"PKA{i+1}: frac≈({fx:.3f},{fy:.3f},{fz:.3f}) → lattice ({sx:.3f},{sy:.3f},{sz:.3f})")
+        # Sphere large enough to catch one BCC atom at the snapped site
+        rad = 0.45
         pka_blocks.append(
             textwrap.dedent(
                 f"""\
-                # PKA event {i + 1}/{n_pkas} species={primary}
-                variable cx equal lx/2
-                variable cy equal ly/2
-                variable cz equal lz/2
-                variable pkaid equal min(atoms,max(1,(({i}+1)*floor(atoms/({n_pkas}+1)))+1))
-                group pka_{i} id ${{pkaid}}
-                velocity pka_{i} set {dvx * sp:.6f} {dvy * sp:.6f} {dvz * sp:.6f} units box
+                # PKA event {i + 1}/{n_pkas} species={primary} site={site_mode}
+                # Target lattice site ({sx:.6f} {sy:.6f} {sz:.6f}); pick nearest atom in a small sphere
+                region pka_pick_{i} sphere {sx:.6f} {sy:.6f} {sz:.6f} {rad:.4f} units lattice
+                group pka_{i} region pka_pick_{i}
+                # Fallback if FP miss: expand once
+                variable npka_{i} equal count(pka_{i})
+                if "${{npka_{i}}} == 0" then "region pka_pick_{i} sphere {sx:.6f} {sy:.6f} {sz:.6f} 0.85 units lattice" "group pka_{i} region pka_pick_{i}"
+                velocity pka_{i} set {dvx * speed:.6f} {dvy * speed:.6f} {dvz * speed:.6f} units box
                 """
             )
         )
@@ -142,11 +297,60 @@ def write_cascade_input(
             pka_blocks.append(f"run {delay}")
 
     pka_script = "\n".join(pka_blocks)
+    sites_comment = "\n".join(f"        # {n}" for n in site_notes)
+
+    # Staged dynamics block
+    stage_lines: list[str] = []
+    if schedule["auto"]:
+        for idx, st in enumerate(schedule["stages"]):
+            every = int(st["dump_every"])
+            nrun = int(st["steps"])
+            sid = st["id"]
+            undump = "undump 1\n" if idx > 0 else ""
+            stage_lines.append(
+                textwrap.dedent(
+                    f"""\
+                    # --- Stage: {st['label']} ({sid}) steps={nrun} dump_every={every} ---
+                    print "Aegis cascade stage start: {sid}"
+                    {undump}dump 1 all custom {every} dump.cascade.*.lammpstrj id type x y z
+                    dump_modify 1 sort id pad 9
+                    write_dump all custom dump.stage.{sid}.lammpstrj id type x y z modify sort id
+                    run {nrun}
+                    print "Aegis cascade stage end: {sid}"
+                    """
+                )
+            )
+        dynamics = "\n".join(stage_lines)
+    else:
+        dump, dump_mod = _dump_command(params, "dump.cascade.*.lammpstrj")
+        dynamics = textwrap.dedent(
+            f"""\
+            {dump}
+            {dump_mod}
+            run 0
+            timestep {dt}
+            run {schedule['total_steps']}
+            """
+        )
+
+    if schedule["auto"]:
+        dynamics_header = textwrap.dedent(
+            f"""\
+            run 0
+            timestep {dt}
+            {dynamics}
+            """
+        )
+    else:
+        dynamics_header = dynamics
 
     script = textwrap.dedent(
         f"""\
         # Aegis-generated cascade input — review before production use
         {crystal_note}
+        # Cascade timeline written to cascade_timeline.json (OVITO stage guide)
+        # Auto stages: {schedule['auto']} total_steps={schedule['total_steps']} extended={schedule.get('extended_max_steps')}
+{sites_comment}
         units metal
         dimension 3
         boundary {params.get("boundary", "p p p")}
@@ -176,16 +380,11 @@ def write_cascade_input(
         reset_timestep 0
         thermo {int(params.get("thermo_every", 100))}
         thermo_style custom step temp pe ke etotal press
-        {dump}
-        {dump_mod}
         {restart}
 
         {pka_script}
         # Capture cascade t=0 immediately after PKA kick(s)
-        run 0
-
-        timestep {dt}
-        run {steps}
+        {dynamics_header}
 
         write_data final.data
         print "Aegis cascade finished"
@@ -198,7 +397,46 @@ def write_cascade_input(
         1,
     )
     path.write_text(script, encoding="utf-8")
+    # Human-readable OVITO note
+    (path.parent / "cascade_stages_OVITO.txt").write_text(
+        _format_ovito_guide(schedule, site_notes),
+        encoding="utf-8",
+    )
     return path
+
+
+def _format_ovito_guide(schedule: dict[str, Any], site_notes: list[str]) -> str:
+    lines = [
+        "Aegis cascade stage guide (open dump.cascade.*.lammpstrj and dump.stage.*.lammpstrj in OVITO)",
+        "",
+        schedule.get("note", ""),
+        f"Total cascade steps after PKA: {schedule.get('total_steps')}",
+        f"max_steps was extended: {schedule.get('extended_max_steps')}",
+        "",
+        "PKA sites:",
+        *[f"  - {n}" for n in site_notes],
+        "",
+        "Stages (timestep ranges after reset_timestep 0):",
+    ]
+    for st in schedule.get("stages") or []:
+        lines.append(
+            f"  - {st.get('id')}: {st.get('label')}  "
+            f"steps {st.get('timestep_start')}–{st.get('timestep_end')}  "
+            f"dump_every={st.get('dump_every')}"
+        )
+        if st.get("id") not in {"full"}:
+            lines.append(f"    marker dump: dump.stage.{st.get('id')}.lammpstrj")
+    lines.extend(
+        [
+            "",
+            "Suggested OVITO workflow:",
+            "  1. Load dump.initial.lammpstrj as the pristine lattice.",
+            "  2. Load dump.cascade.*.lammpstrj as the time series (growth→peak→quench→residual).",
+            "  3. Optionally overlay dump.stage.*.lammpstrj frames as bookmarks for each regime.",
+            "",
+        ]
+    )
+    return "\n".join(lines) + "\n"
 
 
 def write_implant_input(
