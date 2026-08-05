@@ -1,25 +1,41 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 
 def _prefer_analysis_dumps(job_dir: Path) -> list[Path]:
-    """Prefer damage trajectory dumps over the pre-damage initial dump."""
+    """Prefer damage trajectory dumps over the pre-damage initial dump.
+
+    Excludes ``dump.stage.*`` bookmarks (written at stage *start*) so analysis
+    uses the last cascade/implant/surface frame, not a mid-run marker.
+    """
     candidates: list[Path] = []
     for pattern in (
         "dump.surface.*.lammpstrj",
         "dump.interstitial.*.lammpstrj",
         "dump.cascade.*.lammpstrj",
-        "dump.stage.*.lammpstrj",
         "dump.implant.*.lammpstrj",
         "dump.*.lammpstrj",
     ):
         candidates.extend(job_dir.glob(pattern))
-    uniq = sorted({p.resolve(): p for p in candidates}.values(), key=lambda p: p.name)
-    non_initial = [p for p in uniq if "initial" not in p.name.lower()]
-    return non_initial or uniq
+    uniq = {p.resolve(): p for p in candidates}.values()
+    non_initial = [
+        p
+        for p in uniq
+        if "initial" not in p.name.lower() and not p.name.startswith("dump.stage")
+    ]
+
+    def _sort_key(p: Path) -> tuple[int, str]:
+        m = re.search(r"(\d+)\.lammpstrj$", p.name)
+        if m:
+            return (int(m.group(1)), p.name)
+        return (10**12, p.name)
+
+    ordered = sorted(non_initial, key=_sort_key)
+    return ordered or sorted(uniq, key=lambda p: p.name)
 
 
 def analyze_job_dir(

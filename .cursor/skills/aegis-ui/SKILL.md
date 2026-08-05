@@ -14,7 +14,7 @@ description: Aegis workbench UI information architecture and visual design rules
 5. Scenario — D–D / D–T + project name + default chips
 6. LAMMPS — fieldsets + advanced expander
 7. Run — console log / empty state / HPC pack download
-8. Results — structure before/after, defect table, cluster chart, 3D, export
+8. Results — structure before/after, cascade stages, defect table, cluster chart, 3D, defects JSON + cascade GIF export
 9. Engines — LAMMPS + KART + optional MMonCa status
 ## Expert-console patterns (SHAMS / Fair-MAST / ui-ux-pro-max)
 
@@ -36,3 +36,4 @@ description: Aegis workbench UI information architecture and visual design rules
 - React + Vite; proxy `/api`
 - WebSocket job log
 - Three.js defect points + StructureViewer trajectory scrub (respect reduced motion)
+- Cascade GIF: `GET /api/jobs/{id}/animation.gif` (Pillow 2D); also written as `animation.gif` after analysis

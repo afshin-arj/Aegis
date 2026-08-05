@@ -5,11 +5,19 @@ from pathlib import Path
 from typing import Any, Iterator
 
 
-def list_trajectory_frames(job_dir: Path) -> list[dict[str, Any]]:
+def list_trajectory_frames(
+    job_dir: Path,
+    *,
+    include_stages: bool = False,
+) -> list[dict[str, Any]]:
     """Index dump frames for OVITO-like scrubbing.
 
     Prefers ``dump.initial.lammpstrj`` as the pre-damage reference, then
     chronological cascade / implant / surface / interstitial dumps.
+
+    Stage bookmark dumps (``dump.stage.*.lammpstrj``) are excluded by default —
+    they are OVITO markers at stage starts and would otherwise sort after the
+    time series and confuse the scrubber / GIF / defect analysis.
     """
     frames: list[dict[str, Any]] = []
     index = 0
@@ -29,20 +37,26 @@ def list_trajectory_frames(job_dir: Path) -> list[dict[str, Any]]:
             )
             index += 1
 
+    patterns = [
+        "dump.cascade*.lammpstrj",
+        "dump.implant*.lammpstrj",
+        "dump.surface*.lammpstrj",
+        "dump.interstitial*.lammpstrj",
+        "dump.*.lammpstrj",
+    ]
+    if include_stages:
+        patterns.insert(1, "dump.stage*.lammpstrj")
+
     dump_files = sorted(
-        {
-            *job_dir.glob("dump.cascade*.lammpstrj"),
-            *job_dir.glob("dump.stage*.lammpstrj"),
-            *job_dir.glob("dump.implant*.lammpstrj"),
-            *job_dir.glob("dump.surface*.lammpstrj"),
-            *job_dir.glob("dump.interstitial*.lammpstrj"),
-            *job_dir.glob("dump.*.lammpstrj"),
-        },
+        {p for pat in patterns for p in job_dir.glob(pat)},
         key=_dump_sort_key,
     )
     for path in dump_files:
         if path.name == "dump.initial.lammpstrj":
             continue
+        if not include_stages and _is_stage_dump(path.name):
+            continue
+        is_stage = _is_stage_dump(path.name)
         for local_i, meta in enumerate(_iter_frame_meta(path)):
             frames.append(
                 {
@@ -51,7 +65,7 @@ def list_trajectory_frames(job_dir: Path) -> list[dict[str, Any]]:
                     "n_atoms": meta["n_atoms"],
                     "file": path.name,
                     "file_frame": local_i,
-                    "role": "trajectory",
+                    "role": "stage" if is_stage else "trajectory",
                 }
             )
             index += 1
@@ -66,8 +80,9 @@ def get_trajectory_frame(
     frame_index: int,
     *,
     max_atoms: int = 12000,
+    include_stages: bool = False,
 ) -> dict[str, Any]:
-    frames = list_trajectory_frames(job_dir)
+    frames = list_trajectory_frames(job_dir, include_stages=include_stages)
     if not frames:
         raise FileNotFoundError("no dump frames found")
     if frame_index < 0 or frame_index >= len(frames):
@@ -94,11 +109,19 @@ def get_trajectory_frame(
     }
 
 
-def _dump_sort_key(path: Path) -> tuple[int, str]:
-    m = re.search(r"(\d+)\.lammpstrj$", path.name)
+def _is_stage_dump(name: str) -> bool:
+    return name.startswith("dump.stage") and name.endswith(".lammpstrj")
+
+
+def _dump_sort_key(path: Path) -> tuple[int, int, str]:
+    """Sort cascade/implant dumps by numeric pad; stage bookmarks last if included."""
+    name = path.name
+    if _is_stage_dump(name):
+        return (2, 10**12, name)
+    m = re.search(r"(\d+)\.lammpstrj$", name)
     if m:
-        return (int(m.group(1)), path.name)
-    return (10**12, path.name)
+        return (0, int(m.group(1)), name)
+    return (1, 10**12, name)
 
 
 def _iter_frame_meta(path: Path) -> Iterator[dict[str, Any]]:
@@ -152,10 +175,12 @@ def _read_frame_at(path: Path, file_frame: int) -> tuple[list[dict[str, Any]], t
             x = xlo + x * lx
             y = ylo + y * ly
             z = zlo + z * lz
+        atom_id = int(parts[idx["id"]]) if "id" in idx else len(atoms) + 1
+        atom_type = int(parts[idx["type"]]) if "type" in idx else 1
         atoms.append(
             {
-                "id": int(parts[idx.get("id", 0)]),
-                "type": int(parts[idx.get("type", 1)]),
+                "id": atom_id,
+                "type": atom_type,
                 "x": x,
                 "y": y,
                 "z": z,

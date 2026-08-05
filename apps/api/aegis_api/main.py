@@ -11,7 +11,7 @@ from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import ValidationError
 
 # Repo paths: .../apps/api/aegis_api/main.py → parents[3] = repo root
@@ -682,6 +682,68 @@ def get_trajectory_frame(job_id: str, frame_index: int, max_atoms: int = 12000) 
         raise HTTPException(404, str(exc)) from exc
     except IndexError as exc:
         raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/api/jobs/{job_id}/animation.gif")
+def get_job_animation_gif(
+    job_id: str,
+    max_frames: int = 40,
+    max_atoms: int = 3000,
+    size: int = 480,
+    proj: str = "xy",
+    duration_ms: int = 120,
+    refresh: bool = False,
+) -> Response:
+    """2D projection GIF from dump frames (before + time series). Cached on disk."""
+    job_dir = RUNS_ROOT / job_id
+    if not job_dir.exists():
+        raise HTTPException(404, "job not found")
+    cache_path = job_dir / "animation.gif"
+    # Serve cached GIF when query matches defaults (or any prior build) unless refresh
+    use_cache = (
+        not refresh
+        and cache_path.exists()
+        and max_frames == 40
+        and max_atoms == 3000
+        and size == 480
+        and proj == "xy"
+        and duration_ms == 120
+    )
+    if use_cache:
+        return Response(
+            content=cache_path.read_bytes(),
+            media_type="image/gif",
+            headers={"Content-Disposition": f'attachment; filename="aegis-{job_id}.gif"'},
+        )
+    from aegis_api.animation import build_trajectory_gif, cache_trajectory_gif
+
+    try:
+        gif = build_trajectory_gif(
+            job_dir,
+            max_frames=max(2, min(max_frames, 80)),
+            max_atoms=max(100, min(max_atoms, 20000)),
+            size=max(160, min(size, 1024)),
+            proj=proj,
+            duration_ms=max(40, min(duration_ms, 2000)),
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, f"GIF render failed: {exc}") from exc
+
+    # Cache default-parameter builds for quick re-download
+    if max_frames == 40 and max_atoms == 3000 and size == 480 and proj == "xy" and duration_ms == 120:
+        try:
+            cache_trajectory_gif(job_dir, gif)
+        except OSError:
+            pass
+    return Response(
+        content=gif,
+        media_type="image/gif",
+        headers={"Content-Disposition": f'attachment; filename="aegis-{job_id}.gif"'},
+    )
 
 
 @app.websocket("/api/jobs/{job_id}/log")

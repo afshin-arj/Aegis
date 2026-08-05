@@ -655,6 +655,24 @@ export default function App() {
           } catch {
             if (!cancelled) setKartSummary((info.kart_summary as KartSummary) || null);
           }
+          try {
+            const tl = await api<{
+              stages?: Array<{
+                id: string;
+                label: string;
+                steps: number;
+                dump_every: number;
+                timestep_start?: number;
+                timestep_end?: number;
+              }>;
+              note?: string;
+              total_steps?: number;
+              extended_max_steps?: boolean;
+            }>(`/api/jobs/${watchedId}/cascade-timeline`);
+            if (!cancelled) setCascadeTimeline(tl);
+          } catch {
+            if (!cancelled) setCascadeTimeline(null);
+          }
           if (!cancelled && info.status === "completed") {
             setTab((t) => (t === "run" ? "results" : t));
           }
@@ -889,6 +907,7 @@ export default function App() {
     setLog("");
     setDefects(null);
     setKartSummary(null);
+    setCascadeTimeline(null);
     try {
       const normalized = normalizeComposition(composition);
       setComposition(normalized);
@@ -1285,6 +1304,7 @@ export default function App() {
                   setLog("");
                   setDefects(null);
                   setKartSummary(null);
+                  setCascadeTimeline(null);
                 }}
               >
                 New study
@@ -2670,7 +2690,8 @@ export default function App() {
                 </div>
                 <p className="hint">
                   OVITO: load <code>dump.initial.lammpstrj</code>, then <code>dump.cascade.*.lammpstrj</code>; stage
-                  bookmarks are <code>dump.stage.*.lammpstrj</code>.
+                  bookmarks are <code>dump.stage.*.lammpstrj</code>. Use <strong>Download cascade GIF</strong> for a
+                  quick 2D preview of the dump series (also written as <code>animation.gif</code> in the job folder).
                 </p>
               </section>
             )}
@@ -2678,9 +2699,25 @@ export default function App() {
             <section className="panel stack">
               <div className="panel-head">
                 <h2>Defect summary</h2>
-                <button type="button" className="secondary" disabled={!defects} onClick={exportDefects}>
-                  Export defects JSON
-                </button>
+                <div className="row">
+                  <button type="button" className="secondary" disabled={!defects} onClick={exportDefects}>
+                    Export defects JSON
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={!job || job.status !== "completed"}
+                    onClick={() => {
+                      if (!job) return;
+                      const a = document.createElement("a");
+                      a.href = `/api/jobs/${job.id}/animation.gif`;
+                      a.download = `aegis-${job.id}.gif`;
+                      a.click();
+                    }}
+                  >
+                    Download cascade GIF
+                  </button>
+                </div>
               </div>
               <div className="alert alert-warn">
                 SIA/vacancy counts use a Wigner–Seitz proxy. Validate production conclusions against the trajectory,

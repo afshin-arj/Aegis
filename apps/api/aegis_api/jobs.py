@@ -330,6 +330,18 @@ class JobManager:
             (job_dir / "defects.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
             surface_summary = (summary.get("surface") or {}).get("summary")
 
+            # Best-effort cascade/implant preview GIF for Results download
+            try:
+                from aegis_api.animation import build_trajectory_gif, cache_trajectory_gif
+
+                gif = build_trajectory_gif(job_dir)
+                cache_trajectory_gif(job_dir, gif)
+                with log_path.open("a", encoding="utf-8") as log:
+                    log.write("[Aegis] wrote animation.gif (2D dump preview)\n")
+            except Exception as gif_exc:  # noqa: BLE001
+                with log_path.open("a", encoding="utf-8") as log:
+                    log.write(f"[Aegis] animation.gif skipped: {gif_exc}\n")
+
             if self._is_cancelled(job_id):
                 return
 
