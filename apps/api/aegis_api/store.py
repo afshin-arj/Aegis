@@ -44,7 +44,7 @@ class DataStore:
     def save_material(self, material: Material) -> Material:
         user: list = self._load_json(self.user_materials_path)
         user = [m for m in user if m.get("id") != material.id]
-        user.append(material.model_dump())
+        user.append(material.model_dump(mode="json"))
         self.user_materials_path.write_text(json.dumps(user, indent=2), encoding="utf-8")
         return material
 

@@ -112,6 +112,26 @@ def analyze_job_dir(
             z_max = max(zs) + 0.25 * a_ref
             sites = crystal_reg.ideal_sites(box, cry, a_ref, c=c_ref, z_max=z_max)
 
+    if not sites:
+        empty_sites = {
+            "summary": {
+                "n_atoms": len(atoms),
+                "n_sites": 0,
+                "vacancies": 0,
+                "interstitials": len(atoms),
+                "clusters": 0,
+                "dump": dump_path.name,
+                "ws_lattice_A": a_ref,
+                "method": "aegis-ws-proxy-v2",
+                "crystal": cry,
+                "note": "no ideal lattice sites generated for this box/crystal — treat atoms as interstitial proxies",
+            },
+            "clusters": [],
+            "points": [{**a, "kind": "interstitial"} for a in atoms[:5000]],
+        }
+        (job_dir / "defects.json").write_text(json.dumps(empty_sites, indent=2), encoding="utf-8")
+        return empty_sites
+
     occupied = [False] * len(sites)
     interstitial_pts: list[dict[str, Any]] = []
     for atom in atoms:
@@ -170,6 +190,9 @@ def analyze_job_dir(
         sub = crystal_reg.ideal_sites_sublattice(box, cry, a_ref, c=c_ref)
         sub_stats = {}
         for label, sub_sites in sub.items():
+            if not sub_sites:
+                sub_stats[label] = {"n_sites": 0, "vacancies_proxy": 0}
+                continue
             sub_occ = [False] * len(sub_sites)
             for atom in atoms:
                 best_i, best_d2 = 0, 1e99

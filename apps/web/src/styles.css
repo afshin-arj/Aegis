@@ -704,6 +704,7 @@ details.advanced[open] summary::before {
 .alert-ok {
   border-color: var(--ok);
   background: rgba(61, 154, 106, 0.1);
+  color: #b8e0c8;
 }
 
 .log {

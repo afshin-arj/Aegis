@@ -18,8 +18,8 @@ def render_pair_coeff(template: str, file_path: str, elements: list[str]) -> str
     return template.format(file=file_path.replace("\\", "/"), elements=" ".join(elements))
 
 
-def _direction_unit(direction: str, seed: int) -> tuple[float, float, float]:
-    return crystal_reg.direction_unit("bcc", direction, seed)
+def _direction_unit(direction: str, seed: int, crystal: str = "bcc") -> tuple[float, float, float]:
+    return crystal_reg.direction_unit(crystal, direction, seed)
 
 
 def _dump_command(params: dict[str, Any], pattern: str) -> tuple[str, str]:
@@ -227,6 +227,7 @@ def write_cascade_input(
     restart = _restart_block(params)
     crystal_note = _crystal_comment(material)
     poly_note = _poly_preamble(path, material, params)
+    lattice_cmd = _lattice_line(material, params)
 
     schedule = plan_cascade_stages(
         energy_eV=E,
@@ -244,7 +245,11 @@ def write_cascade_input(
     site_notes: list[str] = []
     for i in range(n_pkas):
         s = seed + i * 9973
-        dvx, dvy, dvz = _direction_unit(str(params.get("pka_direction", "random")), s)
+        dvx, dvy, dvz = _direction_unit(
+            str(params.get("pka_direction", "random")),
+            s,
+            str(material.get("crystal", "bcc")),
+        )
         if site_mode == "random":
             # Deterministic pseudo-random fractional position from seed
             rx = (math.sin(s * 12.9898) * 43758.5453) % 1.0
@@ -350,7 +355,7 @@ def write_cascade_input(
         boundary {params.get("boundary", "p p p")}
         atom_style atomic
 
-        lattice bcc {a}
+        {lattice_cmd}
         region box block 0 {nx} 0 {ny} 0 {nz} units lattice
         create_box {len(elems)} box
         {create}
@@ -383,12 +388,6 @@ def write_cascade_input(
         write_data final.data
         print "Aegis cascade finished"
         """
-    )
-    # Inject oriented lattice command
-    script = script.replace(
-        f"lattice bcc {a}\n",
-        f"{_lattice_line(material, params)}\n",
-        1,
     )
     path.write_text(script, encoding="utf-8")
     # Human-readable OVITO note
@@ -476,6 +475,7 @@ def write_implant_input(
     dump, dump_mod = _dump_command(params, "dump.implant.*.lammpstrj")
     restart = _restart_block(params)
     crystal_note = _crystal_comment(material)
+    lattice_cmd = _lattice_line(material, params)
 
     insert_lines = []
     for i in range(ion_count):
@@ -496,7 +496,7 @@ def write_implant_input(
         boundary {params.get("boundary", "p p p")}
         atom_style atomic
 
-        lattice bcc {a}
+        {lattice_cmd}
         region box block 0 {nx} 0 {ny} 0 {nz} units lattice
         create_box {len(elems)} box
         {create}
@@ -532,11 +532,6 @@ def write_implant_input(
         write_data final.data
         print "Aegis implant finished"
         """
-    )
-    script = script.replace(
-        f"lattice bcc {a}\n",
-        f"{_lattice_line(material, params)}\n",
-        1,
     )
     path.write_text(script, encoding="utf-8")
     return path
@@ -611,6 +606,7 @@ def write_surface_input(
     dump, dump_mod = _dump_command(params, "dump.surface.*.lammpstrj")
     restart = _restart_block(params)
     crystal_note = _crystal_comment(material)
+    lattice_cmd = _lattice_line(material, params)
 
     insert_lines = []
     for i in range(n_impacts):
@@ -632,7 +628,7 @@ def write_surface_input(
         boundary {boundary}
         atom_style atomic
 
-        lattice bcc {a}
+        {lattice_cmd}
         region box block 0 {nx} 0 {ny} 0 {nz_box} units lattice
         create_box {len(elems)} box
         {create_host}
@@ -669,11 +665,6 @@ def write_surface_input(
         write_data final.data
         print "Aegis surface MD finished"
         """
-    )
-    script = script.replace(
-        f"lattice bcc {a}\n",
-        f"{_lattice_line(material, params)}\n",
-        1,
     )
     path.write_text(script, encoding="utf-8")
     return path
@@ -760,6 +751,7 @@ def write_interstitial_input(
     restart = _restart_block(params)
     crystal_note = _crystal_comment(material)
     poly_note = _poly_preamble(path, material, params)
+    lattice_cmd = _lattice_line(material, params)
 
     ux, uy, uz = _lattice_direction_unit(direction_s, seed, crystal)
     sites = _interstitial_sites_lattice(
@@ -805,7 +797,7 @@ def write_interstitial_input(
         boundary {params.get("boundary", "p p p")}
         atom_style atomic
 
-        lattice bcc {a}
+        {lattice_cmd}
         region box block 0 {nx} 0 {ny} 0 {nz} units lattice
         create_box {len(elems)} box
         {create}
@@ -842,17 +834,16 @@ def write_interstitial_input(
         print "Aegis interstitial insertion finished"
         """
     )
-    script = script.replace(
-        f"lattice bcc {a}\n",
-        f"{_lattice_line(material, params)}\n",
-        1,
-    )
     path.write_text(script, encoding="utf-8")
     return path
 
 
 def _create_atoms_block(material: dict[str, Any], elems: list[str]) -> str:
-    """Random substitutional alloy on BCC lattice for multi-element materials."""
+    """Fill the lattice: ordered basis for WC-hex; substitutional random alloy otherwise."""
+    crystal = crystal_reg.normalize_crystal(material.get("crystal"))
+    if crystal == "hex" and len(elems) >= 2:
+        # Ordered W+C basis (basis 1 → type 1, basis 2 → type 2)
+        return "create_atoms 1 box basis 1 1 basis 2 2"
     if len(elems) == 1:
         return "create_atoms 1 box"
     comp = {c["symbol"]: c["atomic_percent"] / 100.0 for c in material["composition"]}
@@ -877,13 +868,23 @@ def _approx_mass(symbol: str) -> float:
         "D": 2.014,
         "T": 3.016,
         "He": 4.0026,
+        "Be": 9.0122,
+        "B": 10.81,
         "C": 12.011,
+        "N": 14.007,
+        "O": 15.999,
+        "Al": 26.982,
+        "Si": 28.085,
+        "Ti": 47.867,
         "V": 50.942,
         "Cr": 51.996,
         "Fe": 55.845,
+        "Ni": 58.693,
+        "Cu": 63.546,
         "Mo": 95.95,
         "Ta": 180.95,
         "W": 183.84,
         "Re": 186.21,
+        "Os": 190.23,
     }
     return table.get(symbol, 1.0)

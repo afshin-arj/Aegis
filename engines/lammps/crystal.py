@@ -205,8 +205,17 @@ def lattice_line(material: dict[str, Any], params: dict[str, Any] | None = None)
     if crystal == "diamond":
         return f"lattice diamond {a} {o}".strip()
     if crystal == "hcp":
+        # LAMMPS native `lattice hcp a` locks c/a = √(8/3); use custom for material c.
         c = resolve_c_A(material, crystal) or a * 1.633
-        return f"lattice hcp {a} {c} {o}".strip()
+        return (
+            f"lattice custom {a} "
+            f"a1 1.0 0.0 0.0 "
+            f"a2 -0.5 {math.sqrt(3)/2:.8f} 0.0 "
+            f"a3 0.0 0.0 {c/a:.8f} "
+            f"basis 0.0 0.0 0.0 "
+            f"basis 0.333333 0.666667 0.5 "
+            f"{o}"
+        ).strip()
     if crystal == "hex":
         # WC: custom lattice — two basis sites (W at 0,0,0; C at 1/3,2/3,1/2)
         c = resolve_c_A(material, crystal) or a * 0.976

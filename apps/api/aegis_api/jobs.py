@@ -227,51 +227,24 @@ class JobManager:
             is_placeholder = bool(getattr(potential, "is_placeholder", False)) or "placeholder" in pot_file.name.lower()
 
             in_path = job_dir / "in.aegis"
-            mat_dict = material.model_dump()
-            pot_dict = potential.model_dump()
+            mat_dict = material.model_dump(mode="json")
+            pot_dict = potential.model_dump(mode="json")
             mode = str(getattr(params.get("mode"), "value", params.get("mode")) or "cascade")
-            if mode == "surface":
-                write_surface_input(
-                    in_path,
-                    material=mat_dict,
-                    potential=pot_dict,
-                    params=params,
-                    potential_file=local_pot.name,
-                )
-            elif mode == "implant":
-                write_implant_input(
-                    in_path,
-                    material=mat_dict,
-                    potential=pot_dict,
-                    params=params,
-                    potential_file=local_pot.name,
-                )
-            elif mode == "interstitial":
-                write_interstitial_input(
-                    in_path,
-                    material=mat_dict,
-                    potential=pot_dict,
-                    params=params,
-                    potential_file=local_pot.name,
-                )
-            else:
-                write_cascade_input(
-                    in_path,
-                    material=mat_dict,
-                    potential=pot_dict,
-                    params=params,
-                    potential_file=local_pot.name,
-                )
 
+            from lammps import crystal as crystal_reg
+
+            cry = crystal_reg.normalize_crystal(str(getattr(material.crystal, "value", material.crystal)))
             lmp = os.environ.get("AEGIS_LAMMPS_BIN", "lmp")
             lmp_path = shutil.which(lmp) or (lmp if Path(lmp).exists() else None)
+            use_dry_run = (
+                not lmp_path
+                or is_placeholder
+                or not crystal_reg.is_supported(cry)
+            )
 
             with log_path.open("w", encoding="utf-8") as log:
                 log.write(f"[Aegis] job {job_id}\n")
                 log.write(f"[Aegis] material={material.id} potential={potential.id}\n")
-                from lammps import crystal as crystal_reg
-
-                cry = crystal_reg.normalize_crystal(str(getattr(material.crystal, "value", material.crystal)))
                 if not crystal_reg.is_supported(cry):
                     if not is_placeholder and lmp_path:
                         raise RuntimeError(
@@ -283,7 +256,15 @@ class JobManager:
                     )
                 else:
                     log.write(f"[Aegis] crystal builder={cry}\n")
-                if not lmp_path or is_placeholder or not crystal_reg.is_supported(cry):
+
+                if use_dry_run:
+                    # Stub input so job folder still has in.aegis without calling lattice_line
+                    in_path.write_text(
+                        f"# Aegis dry-run stub (crystal={cry}, placeholder={is_placeholder}, "
+                        f"lammps={'missing' if not lmp_path else 'skipped'})\n"
+                        f"# Real MD inputs are written only when LAMMPS + non-placeholder potential + supported crystal.\n",
+                        encoding="utf-8",
+                    )
                     if is_placeholder:
                         log.write(
                             "[Aegis] Placeholder potential — dry-run demo dumps only "
@@ -306,6 +287,38 @@ class JobManager:
                         self._write_demo_dump(job_dir, material)
                     log.write("[Aegis] demo dump written for analysis.\n")
                 else:
+                    if mode == "surface":
+                        write_surface_input(
+                            in_path,
+                            material=mat_dict,
+                            potential=pot_dict,
+                            params=params,
+                            potential_file=local_pot.name,
+                        )
+                    elif mode == "implant":
+                        write_implant_input(
+                            in_path,
+                            material=mat_dict,
+                            potential=pot_dict,
+                            params=params,
+                            potential_file=local_pot.name,
+                        )
+                    elif mode == "interstitial":
+                        write_interstitial_input(
+                            in_path,
+                            material=mat_dict,
+                            potential=pot_dict,
+                            params=params,
+                            potential_file=local_pot.name,
+                        )
+                    else:
+                        write_cascade_input(
+                            in_path,
+                            material=mat_dict,
+                            potential=pot_dict,
+                            params=params,
+                            potential_file=local_pot.name,
+                        )
                     log.write(f"[Aegis] launching {lmp_path} -in {in_path.name}\n")
                     log.flush()
                     proc = subprocess.Popen(
@@ -329,12 +342,7 @@ class JobManager:
                 return
 
             self._update(job_id, status=JobStatus.ANALYZING, message="defect analysis")
-            from lammps import crystal as crystal_reg
-
-            cry = crystal_reg.normalize_crystal(str(getattr(material.crystal, "value", material.crystal)))
-            c_A = getattr(material, "lattice_c_A", None) or crystal_reg.resolve_c_A(
-                material.model_dump() if hasattr(material, "model_dump") else mat_dict
-            )
+            c_A = getattr(material, "lattice_c_A", None) or crystal_reg.resolve_c_A(mat_dict)
             summary = analyze_job_dir(
                 job_dir,
                 lattice_A=material.lattice_constant_A,
@@ -435,12 +443,19 @@ class JobManager:
     ) -> None:
         """Artificial multi-frame trajectory so structure viz works without LAMMPS."""
         from lammps import crystal as crystal_reg
+        import math
 
-        a = material.lattice_constant_A
+        a = float(material.lattice_constant_A)
         cry = crystal_reg.normalize_crystal(str(getattr(material.crystal, "value", material.crystal)))
+        mat = material.model_dump(mode="json")
+        c = crystal_reg.resolve_c_A(mat, cry) or a
         offsets = crystal_reg.basis_offsets(cry)
-        # 2×2×2 conventional cells
         n_cells = 2
+        # Orthorhombic-ish mapping for hex/hcp; cubic for others
+        if cry in {"hcp", "hex"}:
+            sx, sy, sz = a, a * math.sqrt(3), c
+        else:
+            sx = sy = sz = a
 
         def frame(timestep: int, displace: float = 0.0, extra: bool = False) -> list[str]:
             atoms: list[str] = []
@@ -452,21 +467,21 @@ class JobManager:
                             n += 1
                             dx = displace if (i, j, k, bi) == (1, 1, 1, 0) else 0.0
                             atoms.append(
-                                f"{n} 1 {i*a + ox*a + dx:.6f} {j*a + oy*a:.6f} {k*a + oz*a:.6f}"
+                                f"{n} 1 {i*sx + ox*sx + dx:.6f} {j*sy + oy*sy:.6f} {k*sz + oz*sz:.6f}"
                             )
             if extra:
                 n += 1
-                atoms.append(f"{n} 1 {a*0.25:.6f} {a*0.25:.6f} {a*0.25:.6f}")
-            L = n_cells * a
+                atoms.append(f"{n} 1 {sx*0.25:.6f} {sy*0.25:.6f} {sz*0.25:.6f}")
+            Lx, Ly, Lz = n_cells * sx, n_cells * sy, n_cells * sz
             lines = [
                 "ITEM: TIMESTEP",
                 str(timestep),
                 "ITEM: NUMBER OF ATOMS",
                 str(n),
                 "ITEM: BOX BOUNDS pp pp pp",
-                f"0 {L}",
-                f"0 {L}",
-                f"0 {L}",
+                f"0 {Lx}",
+                f"0 {Ly}",
+                f"0 {Lz}",
                 "ITEM: ATOMS id type x y z",
                 *atoms,
             ]
@@ -482,7 +497,7 @@ class JobManager:
             + frame(5000, 0.9, True)
         )
         (job_dir / dump_name).write_text("\n".join(traj) + "\n", encoding="utf-8")
-        (job_dir / "final.data").write_text(f"# demo crystal={cry}\n", encoding="utf-8")
+        (job_dir / "final.data").write_text(f"# demo crystal={cry} a={a} c={c}\n", encoding="utf-8")
 
     def _write_demo_surface_dump(self, job_dir: Path, material: Material, params: dict) -> None:
         """Demo free-surface trajectory with fuzz / implant proxies for dry-run."""

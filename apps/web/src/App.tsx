@@ -546,8 +546,15 @@ export default function App() {
     () => crystals.find((c) => c.id === (material?.crystal || "").toLowerCase()) || null,
     [crystals, material?.crystal],
   );
-  const atomsPerCell = crystalInfo?.atoms_per_cell ?? 2;
-  const crystalSupported = crystalInfo ? crystalInfo.supported : (material?.crystal || "bcc").toLowerCase() === "bcc";
+  const RUNNABLE_CRYSTALS = useMemo(() => new Set(["bcc", "fcc", "hcp", "diamond", "hex"]), []);
+  const atomsPerCell = useMemo(() => {
+    if (crystalInfo) return crystalInfo.atoms_per_cell;
+    const cry = (material?.crystal || "bcc").toLowerCase();
+    return ({ bcc: 2, fcc: 4, hcp: 2, diamond: 8, hex: 2 } as Record<string, number>)[cry] ?? 2;
+  }, [crystalInfo, material?.crystal]);
+  const crystalSupported = crystalInfo
+    ? crystalInfo.supported
+    : RUNNABLE_CRYSTALS.has((material?.crystal || "bcc").toLowerCase());
 
   const blockers = useMemo(() => {
     const list: string[] = [];
@@ -561,7 +568,10 @@ export default function App() {
     if (material && !crystalSupported && !selectedPot?.is_placeholder) {
       list.push(`Crystal ${material.crystal} needs a placeholder/dry-run potential or a supported lattice`);
     }
-    if (crystalInfo?.needs_c && latticeC != null && latticeC <= 0) {
+    const needsC =
+      crystalInfo?.needs_c ||
+      ["hcp", "hex"].includes((material?.crystal || "").toLowerCase());
+    if (needsC && !(latticeC != null && latticeC > 0)) {
       list.push("HCP/hex materials need a positive lattice c");
     }
     if (params.mode === "interstitial" && selectedPot) {
@@ -728,6 +738,12 @@ export default function App() {
           } catch {
             if (!cancelled) setCascadeTimeline(null);
           }
+          try {
+            const dxa = await api<Record<string, unknown>>(`/api/jobs/${watchedId}/dxa`);
+            if (!cancelled) setDxaSummary(dxa);
+          } catch {
+            if (!cancelled) setDxaSummary(null);
+          }
           if (!cancelled && info.status === "completed") {
             setTab((t) => (t === "run" ? "results" : t));
           }
@@ -782,6 +798,7 @@ export default function App() {
     setDefects(null);
     setKartSummary(null);
     setCascadeTimeline(null);
+    setDxaSummary(null);
     try {
       const info = await api<JobInfo>(`/api/jobs/${jobId}`);
       setJob(info);
@@ -800,6 +817,11 @@ export default function App() {
           setCascadeTimeline(await api(`/api/jobs/${jobId}/cascade-timeline`));
         } catch {
           setCascadeTimeline(null);
+        }
+        try {
+          setDxaSummary(await api(`/api/jobs/${jobId}/dxa`));
+        } catch {
+          setDxaSummary(null);
         }
       }
     } catch (err) {
@@ -826,6 +848,7 @@ export default function App() {
           composition: normalized,
           lattice_constant_A: lattice,
           lattice_c_A: latticeC,
+          crystal: material.crystal,
         }),
       });
       setComposition(updated.composition);
@@ -967,6 +990,7 @@ export default function App() {
     setDefects(null);
     setKartSummary(null);
     setCascadeTimeline(null);
+    setDxaSummary(null);
     try {
       const normalized = normalizeComposition(composition);
       setComposition(normalized);
@@ -1364,6 +1388,7 @@ export default function App() {
                   setDefects(null);
                   setKartSummary(null);
                   setCascadeTimeline(null);
+                  setDxaSummary(null);
                 }}
               >
                 New study
@@ -2251,7 +2276,13 @@ export default function App() {
                 <Field label="Crystal orientation" unit="x-axis" htmlFor="orient">
                   <select
                     id="orient"
-                    value={params.crystal_orient}
+                    value={
+                      (crystalInfo?.orients || [{ id: "100" }, { id: "110" }, { id: "111" }]).some(
+                        (o) => o.id === params.crystal_orient,
+                      )
+                        ? params.crystal_orient
+                        : (crystalInfo?.orients?.[0]?.id || "100")
+                    }
                     onChange={(e) => setParam("crystal_orient", e.target.value)}
                   >
                     {(crystalInfo?.orients || [
@@ -2277,7 +2308,7 @@ export default function App() {
                     <option value="polycrystal">polycrystal (Voronoi seeds)</option>
                   </select>
                 </Field>
-                <label className="check">
+                <label className="check-row">
                   <input
                     type="checkbox"
                     checked={params.run_dxa}
@@ -3036,6 +3067,7 @@ export default function App() {
               <DefectViz points={defects?.points || []} />
               <p className="hint">Vacancy = red · interstitial = copper · other = green. WS proxy markers (not full atoms).</p>
             </section>
+          </div>
             <section className="panel stack">
               <div className="panel-head">
                 <h2>OVITO DXA</h2>
@@ -3070,7 +3102,6 @@ export default function App() {
                 <p className="hint">No DXA summary yet.</p>
               )}
             </section>
-          </div>
           </div>
         )}
 

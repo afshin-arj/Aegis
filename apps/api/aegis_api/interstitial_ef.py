@@ -23,9 +23,11 @@ def lookup_interstitial_ef(
     defect_species: str | None = None,
     geometry: str | None = None,
 ) -> list[dict[str, Any]]:
+    from lammps import crystal as crystal_reg
+
     rows = load_interstitial_ef()
-    cry = (crystal or "").lower()
-    out = [r for r in rows if str(r.get("crystal", "")).lower() == cry]
+    cry = crystal_reg.normalize_crystal(crystal or "")
+    out = [r for r in rows if crystal_reg.normalize_crystal(str(r.get("crystal", ""))) == cry]
     if host:
         out = [r for r in out if str(r.get("host", "")).lower() == host.lower()]
     if defect_species:
