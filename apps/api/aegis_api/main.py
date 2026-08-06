@@ -612,6 +612,7 @@ def export_campaign_hpc(campaign_id: str, body: HpcExportRequest) -> FileRespons
     root.mkdir(parents=True, exist_ok=True)
     exported = 0
     case_dirs: list[str] = []
+    prepare_errors: list[str] = []
     for case in info.cases:
         if not case.job_id:
             continue
@@ -620,15 +621,23 @@ def export_campaign_hpc(campaign_id: str, body: HpcExportRequest) -> FileRespons
             try:
                 jobs.prepare_inputs(case.job_id)
             except Exception as exc:  # noqa: BLE001
+                prepare_errors.append(f"{case.job_id}: {exc}")
                 continue
         if not (job_dir / "in.aegis").exists():
+            prepare_errors.append(f"{case.job_id}: in.aegis still missing after prepare")
             continue
         case_out = root / case.job_id
         write_hpc_pack(job_dir, out_dir=case_out, req=body, job_id=case.job_id, make_zip=False)
         case_dirs.append(case.job_id)
         exported += 1
     if exported == 0:
-        raise HTTPException(400, "no cases with prepared inputs available for HPC export yet")
+        detail = "; ".join(prepare_errors[:5]) if prepare_errors else "no cases with prepared inputs"
+        raise HTTPException(400, f"no cases with prepared inputs available for HPC export yet ({detail})")
+    if prepare_errors:
+        (root / "prepare_warnings.txt").write_text(
+            "\n".join(prepare_errors) + "\n",
+            encoding="utf-8",
+        )
     write_campaign_submit_helper(root, body, case_dirs)
     import zipfile
 

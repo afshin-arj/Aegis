@@ -363,13 +363,17 @@ function Start-Aegis {
     throw "Missing .venv Python at $venvPy - Ensure-PythonDeps must run first."
   }
 
-  # Free ports if a previous run left zombies
+  # Free ports if a previous run left zombies (kill process trees so npm/vite go too)
   foreach ($port in 8000, 5173) {
     try {
       $conns = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
       foreach ($c in $conns) {
-        Write-Warn ("Stopping leftover process on port {0} (pid {1})" -f $port, $c.OwningProcess)
-        Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue
+        $pidToKill = $c.OwningProcess
+        Write-Warn ("Stopping leftover process on port {0} (pid {1})" -f $port, $pidToKill)
+        & taskkill.exe /PID $pidToKill /T /F 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+          Stop-Process -Id $pidToKill -Force -ErrorAction SilentlyContinue
+        }
       }
     } catch { }
   }
@@ -450,8 +454,15 @@ function Start-Aegis {
       Start-Sleep -Seconds 2
     }
   } finally {
-    if (-not $apiJob.HasExited) { Stop-Process -Id $apiJob.Id -Force -ErrorAction SilentlyContinue }
-    if (-not $webJob.HasExited) { Stop-Process -Id $webJob.Id -Force -ErrorAction SilentlyContinue }
+    function Stop-Tree([int]$ProcessId) {
+      if ($ProcessId -le 0) { return }
+      & taskkill.exe /PID $ProcessId /T /F 2>$null | Out-Null
+      if ($LASTEXITCODE -ne 0) {
+        Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+      }
+    }
+    if ($apiJob -and -not $apiJob.HasExited) { Stop-Tree $apiJob.Id }
+    if ($webJob -and -not $webJob.HasExited) { Stop-Tree $webJob.Id }
   }
 }
 

@@ -784,20 +784,9 @@ export default function App() {
     let cancelled = false;
     const wsProto = location.protocol === "https:" ? "wss" : "ws";
 
-    (async () => {
-      try {
-        const res = await fetch(`/api/jobs/${watchedId}/artifacts/run.log`);
-        if (cancelled) return;
-        if (res.ok) {
-          setLog(await res.text());
-        } else {
-          setLog("");
-        }
-      } catch {
-        if (!cancelled) setLog("");
-      }
-    })();
-
+    // WS streams existing run.log from offset 0 then tails — single source of truth
+    // (HTTP seed previously raced WS and duplicated/gapped the Run tab log).
+    setLog("");
     const ws = new WebSocket(`${wsProto}://${location.host}/api/jobs/${watchedId}/log`);
     ws.onmessage = (ev) => {
       if (!cancelled) setLog((prev) => prev + ev.data);
@@ -899,7 +888,6 @@ export default function App() {
     setBusy(true);
     setError("");
     setLog("");
-    setLogEpoch((n) => n + 1);
     setDefects(null);
     setKartSummary(null);
     setCascadeTimeline(null);
@@ -908,6 +896,8 @@ export default function App() {
       const info = await api<JobInfo>(`/api/jobs/${jobId}`);
       if (reqId !== loadJobReq.current) return;
       setJob(info);
+      // Bump after setJob so the log effect does not briefly re-sub the previous id.
+      setLogEpoch((n) => n + 1);
       if (info.status === "completed" || info.status === "failed") {
         try {
           const d = await api<NonNullable<typeof defects>>(`/api/jobs/${jobId}/defects`);
@@ -922,13 +912,25 @@ export default function App() {
           if (reqId === loadJobReq.current) setKartSummary((info.kart_summary as KartSummary) || null);
         }
         try {
-          const tl = await api(`/api/jobs/${jobId}/cascade-timeline`);
+          const tl = await api<{
+            stages?: Array<{
+              id: string;
+              label: string;
+              steps: number;
+              dump_every: number;
+              timestep_start?: number;
+              timestep_end?: number;
+            }>;
+            note?: string;
+            total_steps?: number;
+            extended_max_steps?: boolean;
+          }>(`/api/jobs/${jobId}/cascade-timeline`);
           if (reqId === loadJobReq.current) setCascadeTimeline(tl);
         } catch {
           if (reqId === loadJobReq.current) setCascadeTimeline(null);
         }
         try {
-          const dxa = await api(`/api/jobs/${jobId}/dxa`);
+          const dxa = await api<Record<string, unknown>>(`/api/jobs/${jobId}/dxa`);
           if (reqId === loadJobReq.current) setDxaSummary(dxa);
         } catch {
           if (reqId === loadJobReq.current) setDxaSummary(null);
@@ -1841,12 +1843,31 @@ export default function App() {
                     setComposition(m.composition);
                     setLattice(m.lattice_constant_A);
                     setLatticeC(resolveLatticeC(m, null));
-                    const info = crystals.find((c) => c.id === m.crystal.toLowerCase());
-                    if (info) {
-                      setParam("interstitial_geometry", info.default_interstitial_geometry);
-                      setParam("interstitial_direction", info.default_interstitial_direction);
-                      setParam("crystal_orient", info.orients[0]?.id || "100");
-                    }
+                    const hosts = m.composition
+                      .filter((el) => Number(el.atomic_percent) > 0)
+                      .map((el) => el.symbol);
+                    const host0 = hosts[0];
+                    setParams((prev) => {
+                      const next = { ...prev };
+                      if (host0 && !hosts.includes(prev.pka_species)) {
+                        next.pka_species = host0;
+                      }
+                      // Rewrite interstitial only when it tracked the old host PKA (keep He/Ne/etc.).
+                      if (
+                        host0 &&
+                        prev.interstitial_species === prev.pka_species &&
+                        !hosts.includes(prev.interstitial_species)
+                      ) {
+                        next.interstitial_species = host0;
+                      }
+                      const info = crystals.find((c) => c.id === m.crystal.toLowerCase());
+                      if (info) {
+                        next.interstitial_geometry = info.default_interstitial_geometry;
+                        next.interstitial_direction = info.default_interstitial_direction;
+                        next.crystal_orient = info.orients[0]?.id || "100";
+                      }
+                      return next;
+                    });
                   }
                 }}
               >
@@ -2406,7 +2427,10 @@ export default function App() {
                   <input
                     id="boundary"
                     value={params.boundary}
-                    onChange={(e) => setParam("boundary", e.target.value)}
+                    onChange={(e) => {
+                      modeDirty.current = true;
+                      setParam("boundary", e.target.value);
+                    }}
                   />
                 </Field>
                 <Field label="Crystal orientation" unit="x-axis" htmlFor="orient">
