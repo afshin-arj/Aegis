@@ -128,6 +128,8 @@ def engines_status() -> EngineStatus:
         ovito_found=bool(ovito.get("ovito_found")),
         ovito_path=ovito.get("ovito_path"),
         ovito_message=str(ovito.get("ovito_message", "")),
+        ovito_mode=str(ovito.get("ovito_mode", "")),
+        ovito_version=ovito.get("ovito_version"),
         atomsk_found=bool(atomsk.get("atomsk_found")),
         atomsk_path=atomsk.get("atomsk_path"),
     )
@@ -718,6 +720,57 @@ def post_kart_anneal(job_id: str, body: KartAnnealRequest) -> dict[str, Any]:
         raise HTTPException(500, str(exc)) from exc
 
 
+@app.get("/api/engines/ovito")
+def ovito_status() -> dict[str, Any]:
+    """OVITO discovery + install hints for the Engines / DXA panels."""
+    from aegis_api.dxa import discover_ovito, install_ovito_hint
+
+    info = discover_ovito()
+    info["install"] = install_ovito_hint()
+    return info
+
+
+@app.post("/api/engines/ovito/install")
+def ovito_pip_install() -> dict[str, Any]:
+    """Best-effort ``pip install -U ovito`` into the running API interpreter."""
+    import subprocess
+    import sys
+
+    from aegis_api.dxa import discover_ovito, install_ovito_hint
+
+    hint = install_ovito_hint()
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-U", "ovito"],
+            capture_output=True,
+            text=True,
+            timeout=600,
+            check=False,
+        )
+        ok = proc.returncode == 0
+        info = discover_ovito()
+        return {
+            "ok": ok and bool(info.get("ovito_found")),
+            "returncode": proc.returncode,
+            "stdout_tail": (proc.stdout or "")[-2000:],
+            "stderr_tail": (proc.stderr or "")[-2000:],
+            "discover": info,
+            "install": hint,
+            "message": (
+                "OVITO installed — refresh Engines / run DXA"
+                if ok and info.get("ovito_found")
+                else "pip finished with errors — see stderr_tail or install OVITO Pro and set AEGIS_OVITO_BIN"
+            ),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "message": str(exc),
+            "install": hint,
+            "discover": discover_ovito(),
+        }
+
+
 @app.get("/api/jobs/{job_id}/cascade-timeline")
 def get_cascade_timeline(job_id: str) -> dict[str, Any]:
     """Heuristic growth/peak/quench/residual schedule written with the cascade input."""
@@ -742,6 +795,16 @@ def get_job_dxa(job_id: str, refresh: bool = False) -> dict[str, Any]:
     if not data:
         raise HTTPException(404, "DXA summary not available")
     return data
+
+
+@app.get("/api/jobs/{job_id}/dxa/ca")
+def download_dxa_ca(job_id: str) -> FileResponse:
+    """Download OVITO Crystal Analysis (``.ca``) network for desktop inspection."""
+    job_dir = RUNS_ROOT / job_id
+    path = job_dir / "dislocations.ca"
+    if not path.exists():
+        raise HTTPException(404, "dislocations.ca not found — run DXA first")
+    return FileResponse(path, filename=f"aegis-{job_id}-dislocations.ca", media_type="text/plain")
 
 
 @app.get("/api/jobs/{job_id}/trajectory")

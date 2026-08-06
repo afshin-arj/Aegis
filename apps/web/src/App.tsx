@@ -87,6 +87,8 @@ type EngineStatus = {
   ovito_found?: boolean;
   ovito_path?: string;
   ovito_message?: string;
+  ovito_mode?: string;
+  ovito_version?: string | null;
   atomsk_found?: boolean;
   atomsk_path?: string;
 };
@@ -3141,35 +3143,103 @@ export default function App() {
             <section className="panel stack">
               <div className="panel-head">
                 <h2>OVITO DXA</h2>
-                <button
-                  type="button"
-                  className="secondary"
-                  disabled={!job || busy}
-                  onClick={async () => {
-                    if (!job) return;
-                    setBusy(true);
-                    try {
-                      setDxaSummary(await api(`/api/jobs/${job.id}/dxa?refresh=true`));
-                    } catch (err) {
-                      setError(err instanceof Error ? err.message : String(err));
-                    } finally {
-                      setBusy(false);
-                    }
-                  }}
-                >
-                  Run / refresh DXA
-                </button>
+                <div className="chip-row">
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={!job || busy}
+                    onClick={async () => {
+                      if (!job) return;
+                      setBusy(true);
+                      try {
+                        setDxaSummary(await api(`/api/jobs/${job.id}/dxa?refresh=true`));
+                        setEngines(await api<EngineStatus>("/api/engines/status"));
+                      } catch (err) {
+                        setError(err instanceof Error ? err.message : String(err));
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
+                  >
+                    Run / refresh DXA
+                  </button>
+                  {job && dxaSummary && (dxaSummary as { ca_file?: string }).ca_file ? (
+                    <a className="secondary btn-link" href={`/api/jobs/${job.id}/dxa/ca`}>
+                      Download .ca
+                    </a>
+                  ) : null}
+                </div>
               </div>
               <p className="hint">
                 {engines?.ovito_message ||
-                  "Requires OVITO (ovitos). Aegis never fabricates dislocation networks."}
+                  "Install with pip install -U ovito (or set AEGIS_OVITO_BIN). Aegis never fabricates dislocation networks."}
               </p>
               {dxaSummary ? (
-                <pre className="log" style={{ height: "auto", maxHeight: 220 }}>
-                  {JSON.stringify(dxaSummary, null, 2)}
-                </pre>
+                <>
+                  <div className="chip-row">
+                    <span className="chip">
+                      <span className="chip-k">status</span>
+                      <span className="chip-v">{String((dxaSummary as { status?: string }).status || "—")}</span>
+                    </span>
+                    {(dxaSummary as { ovito_lattice?: string }).ovito_lattice ? (
+                      <span className="chip">
+                        <span className="chip-k">lattice</span>
+                        <span className="chip-v">
+                          {String((dxaSummary as { crystal?: string }).crystal || "")} →{" "}
+                          {String((dxaSummary as { ovito_lattice?: string }).ovito_lattice)}
+                        </span>
+                      </span>
+                    ) : null}
+                    {(dxaSummary as { dislocation_length_A?: number | null }).dislocation_length_A !=
+                    null ? (
+                      <span className="chip">
+                        <span className="chip-k">Σ L</span>
+                        <span className="chip-v">
+                          {Number(
+                            (dxaSummary as { dislocation_length_A?: number }).dislocation_length_A,
+                          ).toFixed(2)}{" "}
+                          Å
+                        </span>
+                      </span>
+                    ) : null}
+                    {(dxaSummary as { n_dislocation_segments?: number | null }).n_dislocation_segments !=
+                    null ? (
+                      <span className="chip">
+                        <span className="chip-k">segments</span>
+                        <span className="chip-v">
+                          {String(
+                            (dxaSummary as { n_dislocation_segments?: number }).n_dislocation_segments,
+                          )}
+                        </span>
+                      </span>
+                    ) : null}
+                    {(dxaSummary as { how?: string }).how ? (
+                      <span className="chip">
+                        <span className="chip-k">via</span>
+                        <span className="chip-v">{String((dxaSummary as { how?: string }).how)}</span>
+                      </span>
+                    ) : null}
+                  </div>
+                  {(dxaSummary as { message?: string }).message ? (
+                    <p className="hint">{String((dxaSummary as { message?: string }).message)}</p>
+                  ) : null}
+                  {(dxaSummary as { ca_hint?: string }).ca_hint ? (
+                    <p className="hint">{String((dxaSummary as { ca_hint?: string }).ca_hint)}</p>
+                  ) : null}
+                  {(dxaSummary as { install_hint?: string }).install_hint ? (
+                    <pre className="log" style={{ height: "auto", maxHeight: 80 }}>
+                      {(dxaSummary as { install_hint?: string }).install_hint}
+                    </pre>
+                  ) : null}
+                  <details>
+                    <summary className="hint">Raw DXA JSON</summary>
+                    <pre className="log" style={{ height: "auto", maxHeight: 220 }}>
+                      {JSON.stringify(dxaSummary, null, 2)}
+                    </pre>
+                  </details>
+                </>
               ) : (
-                <p className="hint">No DXA summary yet.</p>
+                <p className="hint">No DXA summary yet — enable “Run OVITO DXA after job” or click Run / refresh.</p>
               )}
             </section>
           </div>
@@ -3243,8 +3313,61 @@ export default function App() {
                       {engines?.ovito_found ? "found" : "missing"}
                     </span>
                   </span>
+                  {engines?.ovito_mode ? (
+                    <span className="chip">
+                      <span className="chip-k">mode</span>
+                      <span className="chip-v">{engines.ovito_mode}</span>
+                    </span>
+                  ) : null}
+                  {engines?.ovito_version ? (
+                    <span className="chip">
+                      <span className="chip-k">ver</span>
+                      <span className="chip-v">{engines.ovito_version}</span>
+                    </span>
+                  ) : null}
                 </div>
                 <p className="hint">{engines?.ovito_message}</p>
+                <p className="hint">{engines?.ovito_path || "Optional: set AEGIS_OVITO_BIN to ovitos.exe"}</p>
+                <div className="chip-row">
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={busy || Boolean(engines?.ovito_found && engines?.ovito_mode?.includes("module"))}
+                    onClick={async () => {
+                      setBusy(true);
+                      setError("");
+                      try {
+                        const r = await api<{
+                          ok: boolean;
+                          message?: string;
+                          install?: { pip_command?: string };
+                        }>("/api/engines/ovito/install", { method: "POST" });
+                        setEngines(await api<EngineStatus>("/api/engines/status"));
+                        if (!r.ok) {
+                          setError(
+                            r.message ||
+                              r.install?.pip_command ||
+                              "OVITO pip install failed — see Engines hint",
+                          );
+                        }
+                      } catch (err) {
+                        setError(err instanceof Error ? err.message : String(err));
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
+                  >
+                    Install OVITO (pip)
+                  </button>
+                  <a
+                    className="secondary btn-link"
+                    href="https://docs.ovito.org/python/introduction/installation.html"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Docs
+                  </a>
+                </div>
               </div>
               <div className="stack">
                 <h3>Atomsk (optional)</h3>
@@ -3263,7 +3386,8 @@ export default function App() {
 {`# Prefer setup_and_run.cmd (installs LAMMPS + clones KART if missing)
 
 # Crystal-aware lattices: bcc | fcc | hcp | diamond | hex(WC)
-# Optional: pip install ase · install OVITO for DXA · atomsk for GB rebuilds`}
+# OVITO DXA (easiest): pip install -U ovito   OR set AEGIS_OVITO_BIN=…/ovitos.exe
+# Optional: pip install ase · atomsk for GB rebuilds`}
             </pre>
           </section>
         )}

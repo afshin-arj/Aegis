@@ -121,6 +121,26 @@ button.secondary:hover:not(:disabled) {
   background: var(--copper-dim);
 }
 
+a.secondary.btn-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding: 0.45rem 0.9rem;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+  text-decoration: none;
+  font: inherit;
+  cursor: pointer;
+}
+
+a.secondary.btn-link:hover {
+  border-color: var(--copper);
+  background: var(--copper-dim);
+}
+
 button.ghost {
   background: transparent;
   color: var(--muted);

@@ -298,6 +298,8 @@ class EngineStatus(BaseModel):
     ovito_found: bool = False
     ovito_path: str | None = None
     ovito_message: str = ""
+    ovito_mode: str = ""
+    ovito_version: str | None = None
     atomsk_found: bool = False
     atomsk_path: str | None = None
 

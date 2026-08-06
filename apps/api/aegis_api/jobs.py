@@ -389,7 +389,7 @@ class JobManager:
                 try:
                     from aegis_api.dxa import run_dxa_on_job
 
-                    dxa = run_dxa_on_job(job_dir)
+                    dxa = run_dxa_on_job(job_dir, crystal=cry)
                     with log_path.open("a", encoding="utf-8") as log:
                         log.write(f"[Aegis] DXA: {dxa.get('status', 'done')}\n")
                 except Exception as dxa_exc:  # noqa: BLE001

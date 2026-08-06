@@ -82,6 +82,7 @@ Copy `.env.example` → `.env` (never commit secrets).
 | Variable | Purpose |
 |----------|---------|
 | `AEGIS_LAMMPS_BIN` | Path to `lmp` / `lmp.exe` |
+| `AEGIS_OVITO_BIN` | Optional path to OVITO Pro `ovitos` (or use `pip install -U ovito`) |
 | `AEGIS_KART_ROOT` / `AEGIS_KART_BIN` | KART clone / binary |
 | `AEGIS_KART_COMMIT` | Pin (default `62d66adf`) |
 | `GITLAB_TOKEN` | Clone KART only (local `.env`) |
@@ -109,7 +110,7 @@ runs/                 Job artifacts (gitignored)
 ## Engineering notes
 
 - **Potentials:** Aegis never invents coefficients. Upload a published file or place one under `data/potentials/curated/`. The bundled placeholder is for pipeline wiring only—real MD requires a valid EAM/FS/MEAM file.
-- **Defect analysis:** Phase-1 Wigner–Seitz-style proxy for engineering inspection—not a replacement for OVITO production analysis.
+- **Defect analysis:** Phase-1 Wigner–Seitz-style proxy for engineering inspection—not a replacement for OVITO production analysis. Enable DXA from the LAMMPS tab or Results; easiest install is `pip install -U ovito` in the Aegis venv (see [docs/ovito.md](docs/ovito.md)).
 - **Large cells:** runs with &gt;20³ unit cells require explicit confirmation.
 
 ---
