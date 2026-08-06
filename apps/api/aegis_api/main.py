@@ -543,6 +543,9 @@ def create_campaign(body: DoeCampaignCreate) -> DoeCampaignInfo:
     material = body.base.material_override or store.get_material(body.base.material_id)
     if not material:
         raise HTTPException(404, "material not found")
+    comps = [c for c in (material.composition or []) if float(getattr(c, "atomic_percent", 0) or 0) > 0]
+    if not comps:
+        raise HTTPException(400, "Material composition is empty — add at least one element with positive at%.")
     potential = store.get_potential(body.base.potential_id)
     if not potential:
         raise HTTPException(404, "potential not found")

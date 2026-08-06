@@ -533,6 +533,7 @@ export default function App() {
   const [projectFilter, setProjectFilter] = useState<string>("");
   const loadJobReq = useRef(0);
   const modeDirty = useRef(false);
+  const [logEpoch, setLogEpoch] = useState(0);
 
   const material = useMemo(() => materials.find((m) => m.id === materialId), [materials, materialId]);
   const selectedPot = useMemo(() => potentials.find((p) => p.id === potentialId), [potentials, potentialId]);
@@ -590,6 +591,9 @@ export default function App() {
       list.push("Potential file missing — upload or place under data/potentials/curated/");
     }
     if (compositionTotal <= 0) list.push("Composition requires a positive atomic fraction");
+    if (!(params.nx >= 2 && params.ny >= 2 && params.nz >= 2)) {
+      list.push("Cell size needs nx, ny, nz ≥ 2");
+    }
     if (largeCell && !params.confirm_large) list.push("Large cell (>20³) — confirm in LAMMPS tab");
     if (material?.metadata_only) list.push("Material is metadata-only (no runnable lattice recipe)");
     if (material && !crystalSupported && !selectedPot?.is_placeholder) {
@@ -601,29 +605,27 @@ export default function App() {
     if (needsC && !(effectiveLatticeC != null && effectiveLatticeC > 0)) {
       list.push("HCP/hex materials need a positive lattice c");
     }
+    const potElems = new Set((selectedPot?.elements || []).map((s) => s.toLowerCase()));
+    const covers = (sym: string) => potElems.has(sym.toLowerCase());
     if (params.mode === "interstitial" && selectedPot) {
-      const need = new Set(
-        [
-          ...composition.filter((e) => e.atomic_percent > 0).map((e) => e.symbol),
-          params.interstitial_species,
-        ].filter(Boolean),
-      );
-      if (![...need].every((s) => selectedPot.elements.includes(s))) {
+      const need = [
+        ...composition.filter((e) => e.atomic_percent > 0).map((e) => e.symbol),
+        params.interstitial_species,
+      ].filter(Boolean);
+      if (!need.every(covers)) {
         list.push(
-          `Potential must cover host + interstitial species (${[...need].join(", ")}); current covers ${selectedPot.elements.join(" ")}`,
+          `Potential must cover host + interstitial species (${need.join(", ")}); current covers ${selectedPot.elements.join(" ")}`,
         );
       }
     }
     if (selectedPot && ["cascade", "implant", "surface"].includes(params.mode)) {
-      const need = new Set(
-        [
-          ...composition.filter((e) => e.atomic_percent > 0).map((e) => e.symbol),
-          params.mode === "cascade" ? params.pka_species : params.ion_type,
-        ].filter(Boolean),
-      );
-      if (![...need].every((s) => selectedPot.elements.includes(s))) {
+      const need = [
+        ...composition.filter((e) => e.atomic_percent > 0).map((e) => e.symbol),
+        params.mode === "cascade" ? params.pka_species : params.ion_type,
+      ].filter(Boolean);
+      if (!need.every(covers)) {
         list.push(
-          `Potential must cover host + ${params.mode === "cascade" ? "PKA" : "ion"} species (${[...need].join(", ")}); current covers ${selectedPot.elements.join(" ")}`,
+          `Potential must cover host + ${params.mode === "cascade" ? "PKA" : "ion"} species (${need.join(", ")}); current covers ${selectedPot.elements.join(" ")}`,
         );
       }
     }
@@ -635,6 +637,9 @@ export default function App() {
     largeCell,
     params.confirm_large,
     params.mode,
+    params.nx,
+    params.ny,
+    params.nz,
     params.interstitial_species,
     params.pka_species,
     params.ion_type,
@@ -755,6 +760,12 @@ export default function App() {
       if (modeDirty.current) {
         delete defaults.mode;
         delete defaults.boundary;
+      } else {
+        // Non-surface scenarios must clear sticky free-surface boundaries
+        const nextMode = String(defaults.mode ?? prev.mode);
+        if (nextMode !== "surface" && defaults.boundary == null) {
+          defaults.boundary = "p p p";
+        }
       }
       return { ...prev, ...defaults } as RunParams;
     });
@@ -772,6 +783,21 @@ export default function App() {
     const watchedId = job.id;
     let cancelled = false;
     const wsProto = location.protocol === "https:" ? "wss" : "ws";
+
+    (async () => {
+      try {
+        const res = await fetch(`/api/jobs/${watchedId}/artifacts/run.log`);
+        if (cancelled) return;
+        if (res.ok) {
+          setLog(await res.text());
+        } else {
+          setLog("");
+        }
+      } catch {
+        if (!cancelled) setLog("");
+      }
+    })();
+
     const ws = new WebSocket(`${wsProto}://${location.host}/api/jobs/${watchedId}/log`);
     ws.onmessage = (ev) => {
       if (!cancelled) setLog((prev) => prev + ev.data);
@@ -834,7 +860,7 @@ export default function App() {
       ws.close();
       clearInterval(timer);
     };
-  }, [job?.id]);
+  }, [job?.id, logEpoch]);
 
   useEffect(() => {
     if (!campaign?.id) return;
@@ -873,6 +899,7 @@ export default function App() {
     setBusy(true);
     setError("");
     setLog("");
+    setLogEpoch((n) => n + 1);
     setDefects(null);
     setKartSummary(null);
     setCascadeTimeline(null);

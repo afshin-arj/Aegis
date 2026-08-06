@@ -6,6 +6,7 @@
     "description": "Scenario preset for D–D-relevant cascade/He parameters (not full plasma transport). Lower neutron energy emphasis vs D–T.",
     "defaults": {
       "mode": "cascade",
+      "boundary": "p p p",
       "temperature_K": 600,
       "pka_species": "W",
       "pka_energy_eV": 5000,
@@ -27,6 +28,7 @@
     "description": "Scenario preset reflecting D–T: 3.5 MeV α production context and harder PKA proxy. 14.1 MeV neutrons are not simulated directly — use self-ion/PKA energy as a damage proxy.",
     "defaults": {
       "mode": "cascade",
+      "boundary": "p p p",
       "temperature_K": 800,
       "pka_species": "W",
       "pka_energy_eV": 20000,
@@ -48,6 +50,7 @@
     "description": "High-energy He-ion style defaults aligned with bulk bubble/loop studies (energies ≫ Ed).",
     "defaults": {
       "mode": "implant",
+      "boundary": "p p p",
       "temperature_K": 300,
       "ion_type": "He",
       "ion_energy_eV": 10000,

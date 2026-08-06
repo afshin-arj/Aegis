@@ -52,16 +52,23 @@ def export_poscar(material: dict[str, Any], *, nx: int = 1, ny: int = 1, nz: int
                             )
                         )
     else:
-        scale_a = scale_b = scale_c = a * max(nx, 1)
-        # Use nx for all for cubic export simplicity when equal
-        n = max(nx, 1)
-        scale_a = scale_b = scale_c = a * n
+        # Cubic / diamond: honor nx, ny, nz independently
+        nx = max(int(nx), 1)
+        ny = max(int(ny), 1)
+        nz = max(int(nz), 1)
+        scale_a, scale_b, scale_c = a * nx, a * ny, a * nz
         coords = []
-        for i in range(n):
-            for j in range(n):
-                for k in range(n):
+        for i in range(nx):
+            for j in range(ny):
+                for k in range(nz):
                     for ox, oy, oz in offsets:
-                        coords.append(((i + ox) / n, (j + oy) / n, (k + oz) / n))
+                        coords.append(
+                            (
+                                (i + ox) / nx,
+                                (j + oy) / ny,
+                                (k + oz) / nz,
+                            )
+                        )
 
     lines = [
         f"Aegis {host} {cry}",

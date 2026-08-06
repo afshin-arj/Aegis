@@ -218,7 +218,7 @@ export default function StructureViewer({ jobId, refreshKey }: Props) {
         } else {
           setBefore(null);
         }
-        const firstAfter = traj.after_indices[0] ?? traj.before_index;
+        const firstAfter = traj.after_indices[0];
         setAfterIdx(0);
         if (firstAfter != null) {
           const af = await api<TrajFrame>(`/api/jobs/${jobId}/trajectory/${firstAfter}`);
