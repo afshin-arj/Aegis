@@ -31,6 +31,7 @@ _CRYSTAL_TO_OVITO = {
 
 
 def _resolve_ovitos_bin() -> str | None:
+    """Return path to OVITO's *script* interpreter only (never the GUI ``ovito`` binary)."""
     env = (os.environ.get("AEGIS_OVITO_BIN") or "").strip()
     if env:
         p = Path(env)
@@ -39,7 +40,8 @@ def _resolve_ovitos_bin() -> str | None:
         found = shutil.which(env)
         if found:
             return found
-    return shutil.which("ovitos") or shutil.which("ovito")
+    # Do not fall back to ``ovito`` — that launches the desktop GUI, not scripts.
+    return shutil.which("ovitos")
 
 
 def _try_import_ovito() -> tuple[bool, str | None, Any]:
@@ -98,7 +100,8 @@ def discover_ovito() -> dict[str, Any]:
         msg = (
             "OVITO not found. Easiest: in the Aegis venv run "
             "`pip install -U ovito` (see https://docs.ovito.org/python/). "
-            "Or install OVITO Pro and set AEGIS_OVITO_BIN to ovitos.exe."
+            "Or install OVITO Pro and set AEGIS_OVITO_BIN to ovitos.exe "
+            "(not the GUI ovito.exe)."
         )
     return {
         "ovito_found": found,

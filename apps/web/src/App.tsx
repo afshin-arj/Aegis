@@ -532,6 +532,7 @@ export default function App() {
   const [compUnit, setCompUnit] = useState<"at%" | "wt%">("at%");
   const [projectFilter, setProjectFilter] = useState<string>("");
   const loadJobReq = useRef(0);
+  const modeDirty = useRef(false);
 
   const material = useMemo(() => materials.find((m) => m.id === materialId), [materials, materialId]);
   const selectedPot = useMemo(() => potentials.find((p) => p.id === potentialId), [potentials, potentialId]);
@@ -613,6 +614,19 @@ export default function App() {
         );
       }
     }
+    if (selectedPot && ["cascade", "implant", "surface"].includes(params.mode)) {
+      const need = new Set(
+        [
+          ...composition.filter((e) => e.atomic_percent > 0).map((e) => e.symbol),
+          params.mode === "cascade" ? params.pka_species : params.ion_type,
+        ].filter(Boolean),
+      );
+      if (![...need].every((s) => selectedPot.elements.includes(s))) {
+        list.push(
+          `Potential must cover host + ${params.mode === "cascade" ? "PKA" : "ion"} species (${[...need].join(", ")}); current covers ${selectedPot.elements.join(" ")}`,
+        );
+      }
+    }
     return list;
   }, [
     potentialId,
@@ -622,6 +636,8 @@ export default function App() {
     params.confirm_large,
     params.mode,
     params.interstitial_species,
+    params.pka_species,
+    params.ion_type,
     composition,
     material,
     crystalSupported,
@@ -734,7 +750,14 @@ export default function App() {
   useEffect(() => {
     const sc = scenarios.find((s) => s.id === scenarioId);
     if (!sc) return;
-    setParams((prev) => ({ ...prev, ...sc.defaults }) as RunParams);
+    setParams((prev) => {
+      const defaults = { ...(sc.defaults as Partial<RunParams>) };
+      if (modeDirty.current) {
+        delete defaults.mode;
+        delete defaults.boundary;
+      }
+      return { ...prev, ...defaults } as RunParams;
+    });
   }, [scenarioId, scenarios]);
 
   useEffect(() => {
@@ -2276,7 +2299,23 @@ export default function App() {
               <legend>Mode & thermostat</legend>
               <div className="row">
                 <Field label="Mode" htmlFor="mode">
-                  <select id="mode" value={params.mode} onChange={(e) => setParam("mode", e.target.value)}>
+                  <select
+                    id="mode"
+                    value={params.mode}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      modeDirty.current = true;
+                      setParams((p) => {
+                        const patch: Partial<RunParams> = { mode: next };
+                        if (next === "surface") {
+                          patch.boundary = "p p s";
+                        } else if (p.mode === "surface" && (p.boundary || "").trim() === "p p s") {
+                          patch.boundary = "p p p";
+                        }
+                        return { ...p, ...patch };
+                      });
+                    }}
+                  >
                     <option value="cascade">cascade / PKA</option>
                     <option value="implant">ion implant (bulk)</option>
                     <option value="surface">low-E surface (fuzz proxy)</option>

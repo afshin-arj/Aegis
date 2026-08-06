@@ -129,12 +129,34 @@ class JobManager:
         pot_file = self.store.resolve_potential_file(potential)
         if not pot_file:
             raise FileNotFoundError("potential file missing")
+
+        from lammps import crystal as crystal_reg
+
+        cry = crystal_reg.normalize_crystal(str(getattr(material.crystal, "value", material.crystal)))
+        is_placeholder = bool(getattr(potential, "is_placeholder", False)) or "placeholder" in pot_file.name.lower()
+        if not crystal_reg.is_supported(cry) and not is_placeholder:
+            raise ValueError(
+                f"crystal '{cry}' is not supported for real LAMMPS inputs. "
+                "Use bcc/fcc/hcp/diamond/hex, or a placeholder potential for dry-run stubs."
+            )
+
         local_pot = job_dir / pot_file.name
         shutil.copy2(pot_file, local_pot)
         in_path = job_dir / "in.aegis"
         mat_dict = material.model_dump(mode="json")
         pot_dict = potential.model_dump(mode="json")
         mode = str(getattr(params.get("mode"), "value", params.get("mode")) or "cascade")
+
+        if not crystal_reg.is_supported(cry) or is_placeholder:
+            # Honest stub for HPC packs that still need a file present
+            in_path.write_text(
+                f"# Aegis HPC stub (crystal={cry}, placeholder={is_placeholder})\n"
+                f"# Replace with a supported crystal + published potential before submitting.\n",
+                encoding="utf-8",
+            )
+            self._update(job_id, message="stub inputs prepared (unsupported crystal or placeholder)")
+            return in_path
+
         if mode == "surface":
             write_surface_input(
                 in_path,

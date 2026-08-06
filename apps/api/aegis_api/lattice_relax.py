@@ -38,7 +38,7 @@ def export_poscar(material: dict[str, Any], *, nx: int = 1, ny: int = 1, nz: int
     # Scale box
     if cry in {"hcp", "hex"} and c:
         # Orthorhombic-ish export
-        scale_a, scale_b, scale_c = a * nx, a * (3**0.5) * ny, c * nz
+        scale_a, scale_b, scale_c = a * nx, a * (3**0.5 / 2.0) * ny, c * nz
         coords = []
         for i in range(nx):
             for j in range(ny):
@@ -97,8 +97,15 @@ def try_ase_relax(material: dict[str, Any]) -> dict[str, Any]:
         host = elems[0] if elems else "Cu"
         cry = str(material.get("crystal", "fcc")).lower()
         a0 = float(material.get("lattice_constant_A", 3.6))
-        # EMT supports limited set (Cu, Ag, Au, Ni, Pd, Pt, Al)
-        crystalname = {"bcc": "bcc", "fcc": "fcc", "hcp": "hcp"}.get(cry, "fcc")
+        # EMT supports limited crystals; never silently map diamond/hex → fcc
+        if cry not in {"bcc", "fcc", "hcp"}:
+            return {
+                "status": "unsupported",
+                "message": f"ASE EMT relax does not support crystal '{cry}'. Export POSCAR for DFT.",
+                "poscar": export_poscar(material),
+                "note": "Use exported POSCAR with your DFT code, then import a/c.",
+            }
+        crystalname = cry
         atoms = bulk(host, crystalname, a=a0, cubic=True)
         atoms.calc = EMT()
         ucf = ExpCellFilter(atoms)

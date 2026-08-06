@@ -181,11 +181,17 @@ export default function StructureViewer({ jobId, refreshKey }: Props) {
   const [afterIdx, setAfterIdx] = useState(0);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [scrubErr, setScrubErr] = useState("");
   const scrubReq = useRef(0);
 
   const afterFrames = useMemo(() => index?.after_indices ?? [], [index]);
 
   useEffect(() => {
+    // Invalidate any in-flight scrub from a previous job
+    scrubReq.current += 1;
+    setAfter(null);
+    setScrubErr("");
+
     if (!jobId) {
       setIndex(null);
       setBefore(null);
@@ -229,6 +235,7 @@ export default function StructureViewer({ jobId, refreshKey }: Props) {
     })();
     return () => {
       cancelled = true;
+      scrubReq.current += 1;
     };
   }, [jobId, refreshKey]);
 
@@ -238,12 +245,13 @@ export default function StructureViewer({ jobId, refreshKey }: Props) {
     const reqId = ++scrubReq.current;
     setAfterIdx(clamped);
     setBusy(true);
+    setScrubErr("");
     try {
       const frame = await api<TrajFrame>(`/api/jobs/${jobId}/trajectory/${afterFrames[clamped]}`);
       if (reqId !== scrubReq.current) return;
       setAfter(frame);
     } catch (e) {
-      if (reqId === scrubReq.current) setErr(String(e));
+      if (reqId === scrubReq.current) setScrubErr(String(e));
     } finally {
       if (reqId === scrubReq.current) setBusy(false);
     }
@@ -259,7 +267,7 @@ export default function StructureViewer({ jobId, refreshKey }: Props) {
     );
   }
 
-  if (err) {
+  if (err && !before && !after && !busy) {
     return (
       <div className="alert alert-fail" role="alert">
         {err}
@@ -270,6 +278,8 @@ export default function StructureViewer({ jobId, refreshKey }: Props) {
   const afterMeta = afterFrames.length
     ? index?.frames.find((f) => f.index === afterFrames[afterIdx])
     : null;
+
+  const loadingEmpty = busy && !before && !after;
 
   return (
     <div className="stack structure-panel">
@@ -284,71 +294,89 @@ export default function StructureViewer({ jobId, refreshKey }: Props) {
         Atom colors by LAMMPS type. Drag to rotate. Large cells are stride-downsampled for interactive viewing —
         not a substitute for OVITO production analysis.
       </p>
-      {busy && <p className="hint">Loading frame…</p>}
-      <div className="structure-compare">
-        <div className="stack">
-          <h3>Before</h3>
-          <div className="chip-row">
-            <span className="chip">
-              <span className="chip-k">step</span>
-              <span className="chip-v">{before?.timestep ?? "—"}</span>
-            </span>
-            <span className="chip">
-              <span className="chip-k">atoms</span>
-              <span className="chip-v">
-                {before ? `${before.n_atoms}${before.truncated ? "*" : ""}` : "—"}
-              </span>
-            </span>
-          </div>
-          {before ? (
-            <AtomCanvas atoms={before.atoms} box={before.box} label="Structure before cascade" />
-          ) : (
-            <div className="viz structure-viz empty-viz">No initial dump</div>
-          )}
+      {err && (
+        <div className="alert alert-fail" role="alert">
+          {err}
         </div>
-        <div className="stack">
-          <h3>After</h3>
-          <div className="chip-row">
-            <span className="chip">
-              <span className="chip-k">step</span>
-              <span className="chip-v">{after?.timestep ?? "—"}</span>
-            </span>
-            <span className="chip">
-              <span className="chip-k">atoms</span>
-              <span className="chip-v">
-                {after ? `${after.n_atoms}${after.truncated ? "*" : ""}` : "—"}
-              </span>
-            </span>
-            {afterMeta && (
+      )}
+      {scrubErr && (
+        <div className="alert alert-warn" role="status">
+          Scrub failed: {scrubErr}
+        </div>
+      )}
+      {busy && <p className="hint">Loading frame…</p>}
+      {loadingEmpty ? (
+        <div className="empty">
+          <div className="empty-kicker">Structure</div>
+          <h3>Loading trajectory…</h3>
+          <p className="hint">Fetching before/after frames for this job.</p>
+        </div>
+      ) : (
+        <div className="structure-compare">
+          <div className="stack">
+            <h3>Before</h3>
+            <div className="chip-row">
               <span className="chip">
-                <span className="chip-k">file</span>
-                <span className="chip-v">{afterMeta.file}</span>
+                <span className="chip-k">step</span>
+                <span className="chip-v">{before?.timestep ?? "—"}</span>
               </span>
+              <span className="chip">
+                <span className="chip-k">atoms</span>
+                <span className="chip-v">
+                  {before ? `${before.n_atoms}${before.truncated ? "*" : ""}` : "—"}
+                </span>
+              </span>
+            </div>
+            {before ? (
+              <AtomCanvas atoms={before.atoms} box={before.box} label="Structure before cascade" />
+            ) : (
+              <div className="viz structure-viz empty-viz">No initial dump</div>
             )}
           </div>
-          {after ? (
-            <AtomCanvas atoms={after.atoms} box={after.box} label="Structure after cascade" />
-          ) : (
-            <div className="viz structure-viz empty-viz">No trajectory dump</div>
-          )}
-          {afterFrames.length > 1 && (
-            <label className="scrubber">
-              <span>
-                Timestep index {afterIdx + 1} / {afterFrames.length}
-                {after ? ` · t = ${after.timestep}` : ""}
+          <div className="stack">
+            <h3>After</h3>
+            <div className="chip-row">
+              <span className="chip">
+                <span className="chip-k">step</span>
+                <span className="chip-v">{after?.timestep ?? "—"}</span>
               </span>
-              <input
-                type="range"
-                min={0}
-                max={afterFrames.length - 1}
-                value={afterIdx}
-                onChange={(e) => void scrub(Number(e.target.value))}
-                aria-label="Trajectory timestep"
-              />
-            </label>
-          )}
+              <span className="chip">
+                <span className="chip-k">atoms</span>
+                <span className="chip-v">
+                  {after ? `${after.n_atoms}${after.truncated ? "*" : ""}` : "—"}
+                </span>
+              </span>
+              {afterMeta && (
+                <span className="chip">
+                  <span className="chip-k">file</span>
+                  <span className="chip-v">{afterMeta.file}</span>
+                </span>
+              )}
+            </div>
+            {after ? (
+              <AtomCanvas atoms={after.atoms} box={after.box} label="Structure after cascade" />
+            ) : (
+              <div className="viz structure-viz empty-viz">No trajectory dump</div>
+            )}
+            {afterFrames.length > 1 && (
+              <label className="scrubber">
+                <span>
+                  Timestep index {afterIdx + 1} / {afterFrames.length}
+                  {after ? ` · t = ${after.timestep}` : ""}
+                </span>
+                <input
+                  type="range"
+                  min={0}
+                  max={afterFrames.length - 1}
+                  value={afterIdx}
+                  onChange={(e) => void scrub(Number(e.target.value))}
+                  aria-label="Trajectory timestep"
+                />
+              </label>
+            )}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
