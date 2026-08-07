@@ -438,16 +438,25 @@ class JobManager:
                 self._update(job_id, status=JobStatus.ANNEALING, message="KART anneal")
                 with log_path.open("a", encoding="utf-8") as log:
                     log.write("[Aegis] starting KART anneal path\n")
-                kart_summary = run_anneal_stub_or_real(
-                    job_dir,
-                    temperature_K=float(req.get("kart_temperature_K", 600)),
-                    max_events=int(req.get("kart_max_events", 1000)),
-                    max_wall_s=float(req.get("kart_max_wall_s", 600)),
-                    max_kmc_time_s=float(req.get("kart_max_kmc_time_s", 1.0)),
-                    temperatures=req.get("kart_anneal_temperatures"),
-                    material=material.model_dump(mode="json"),
-                    potential=potential.model_dump(mode="json"),
-                )
+                try:
+                    kart_summary = run_anneal_stub_or_real(
+                        job_dir,
+                        temperature_K=float(req.get("kart_temperature_K", 600)),
+                        max_events=int(req.get("kart_max_events", 1000)),
+                        max_wall_s=float(req.get("kart_max_wall_s", 600)),
+                        max_kmc_time_s=float(req.get("kart_max_kmc_time_s", 1.0)),
+                        temperatures=req.get("kart_anneal_temperatures"),
+                        material=material.model_dump(mode="json"),
+                        potential=potential.model_dump(mode="json"),
+                    )
+                except Exception as anneal_exc:  # noqa: BLE001
+                    # Keep cascade COMPLETED — mirror POST /kart/anneal semantics
+                    with log_path.open("a", encoding="utf-8") as log:
+                        log.write(f"[Aegis] KART anneal failed (cascade kept): {anneal_exc}\n")
+                    kart_summary = {
+                        "error": str(anneal_exc),
+                        "anneal_failed": True,
+                    }
 
             if self._is_cancelled(job_id):
                 return
@@ -457,19 +466,27 @@ class JobManager:
                 self._update(job_id, status=JobStatus.ANNEALING, message="MMonCa OKMC")
                 with log_path.open("a", encoding="utf-8") as log:
                     log.write("[Aegis] starting optional MMonCa OKMC path\n")
-                mmonca_summary = run_okmc_stub_or_real(
-                    job_dir,
-                    temperature_K=float(req.get("mmonca_temperature_K", 600)),
-                    max_events=int(req.get("mmonca_max_events", 1000)),
-                )
+                try:
+                    mmonca_summary = run_okmc_stub_or_real(
+                        job_dir,
+                        temperature_K=float(req.get("mmonca_temperature_K", 600)),
+                        max_events=int(req.get("mmonca_max_events", 1000)),
+                    )
+                except Exception as okmc_exc:  # noqa: BLE001
+                    with log_path.open("a", encoding="utf-8") as log:
+                        log.write(f"[Aegis] MMonCa failed (cascade kept): {okmc_exc}\n")
+                    mmonca_summary = {"error": str(okmc_exc), "okmc_failed": True}
 
             if self._is_cancelled(job_id):
                 return
 
+            msg = "completed"
+            if isinstance(kart_summary, dict) and kart_summary.get("anneal_failed"):
+                msg = f"cascade completed; anneal failed: {kart_summary.get('error')}"
             self._update(
                 job_id,
                 status=JobStatus.COMPLETED,
-                message="completed",
+                message=msg,
                 defect_summary=summary.get("summary"),
                 kart_summary=kart_summary,
                 mmonca_summary=mmonca_summary,

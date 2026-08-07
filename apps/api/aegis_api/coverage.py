@@ -5,16 +5,26 @@ from __future__ import annotations
 from typing import Any
 
 
+def normalize_symbol(symbol: str) -> str:
+    """Canonical element token: strip + element-style capitalization (Fe, He, W)."""
+    s = str(symbol or "").strip()
+    if not s:
+        return ""
+    if len(s) == 1:
+        return s.upper()
+    return s[0].upper() + s[1:].lower()
+
+
 def host_symbols(material: Any) -> list[str]:
     comps = getattr(material, "composition", None) or []
     out: list[str] = []
     for c in comps:
         if isinstance(c, dict):
             pct = float(c.get("atomic_percent") or 0)
-            sym = str(c.get("symbol") or "").strip()
+            sym = normalize_symbol(str(c.get("symbol") or ""))
         else:
             pct = float(getattr(c, "atomic_percent", 0) or 0)
-            sym = str(getattr(c, "symbol", "") or "").strip()
+            sym = normalize_symbol(str(getattr(c, "symbol", "") or ""))
         if pct > 0 and sym:
             out.append(sym)
     return out
@@ -37,11 +47,15 @@ def required_species(material: Any, params: Any) -> list[str]:
     mode = _mode_value(params)
     extra: list[str] = []
     if mode == "cascade":
-        extra.append(str(_param_get(params, "pka_species") or (hosts[0] if hosts else "W")))
+        extra.append(
+            normalize_symbol(
+                str(_param_get(params, "pka_species") or (hosts[0] if hosts else "W"))
+            )
+        )
     elif mode in {"implant", "surface"}:
-        extra.append(str(_param_get(params, "ion_type") or "He"))
+        extra.append(normalize_symbol(str(_param_get(params, "ion_type") or "He")))
     elif mode == "interstitial":
-        extra.append(str(_param_get(params, "interstitial_species") or "He"))
+        extra.append(normalize_symbol(str(_param_get(params, "interstitial_species") or "He")))
     seen: set[str] = set()
     ordered: list[str] = []
     for sym in [*hosts, *extra]:
@@ -60,7 +74,7 @@ def validate_potential_coverage(material: Any, potential: Any, params: Any) -> N
     if bool(getattr(potential, "is_placeholder", False)):
         return
     pot_elems = getattr(potential, "elements", None) or []
-    pot = {str(e).lower() for e in pot_elems}
+    pot = {normalize_symbol(str(e)).lower() for e in pot_elems}
     need = required_species(material, params)
     missing = [s for s in need if s.lower() not in pot]
     if missing:
@@ -78,7 +92,7 @@ def validate_cascade_pka(material: Any, params: Any) -> None:
     hosts = host_symbols(material)
     if not hosts:
         raise ValueError("Material composition is empty — cannot place a cascade PKA")
-    pka = str(_param_get(params, "pka_species") or "").strip()
+    pka = normalize_symbol(str(_param_get(params, "pka_species") or ""))
     if not pka:
         raise ValueError("Cascade mode requires pka_species")
     if pka.lower() not in {h.lower() for h in hosts}:

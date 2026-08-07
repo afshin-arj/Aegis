@@ -10,7 +10,7 @@ from typing import Any
 def _read_last_dump_atoms(
     job_dir: Path,
 ) -> tuple[list[dict[str, Any]], tuple[float, float, float]]:
-    """Prefer cascade/implant dumps over dump.initial."""
+    """Prefer cascade/implant dumps over dump.initial and dump.stage bookmarks."""
     patterns = (
         "dump.cascade.*.lammpstrj",
         "dump.implant.*.lammpstrj",
@@ -22,8 +22,12 @@ def _read_last_dump_atoms(
     for pat in patterns:
         files.extend(job_dir.glob(pat))
     uniq = sorted({p.resolve(): p for p in files}.values(), key=lambda p: p.name)
-    non_initial = [p for p in uniq if "initial" not in p.name.lower()]
-    dumps = non_initial or uniq
+    non_initial = [
+        p
+        for p in uniq
+        if "initial" not in p.name.lower() and not p.name.startswith("dump.stage")
+    ]
+    dumps = non_initial or [p for p in uniq if not p.name.startswith("dump.stage")] or uniq
     if not dumps:
         return [], (0.0, 0.0, 0.0)
     path = dumps[-1]
@@ -126,14 +130,43 @@ def build_kart_package(
             {"id": 2, "type": 1, "x": a / 2, "y": a / 2, "z": a / 2},
         ]
 
+    def _norm(sym: str) -> str:
+        s = str(sym or "").strip()
+        if not s:
+            return ""
+        if len(s) == 1:
+            return s.upper()
+        return s[0].upper() + s[1:].lower()
+
     elems = [
-        c["symbol"]
+        _norm(c["symbol"])
         for c in material.get("composition", [{"symbol": "W", "atomic_percent": 100}])
-        if c.get("atomic_percent", 0) > 0
+        if c.get("atomic_percent", 0) > 0 and _norm(c.get("symbol", ""))
     ] or ["W"]
+
+    # Extend type map from run_params / potential so implant ions are not padded as Xn
+    run_params: dict[str, Any] = {}
+    rp_path = job_dir / "run_params.json"
+    if rp_path.exists():
+        try:
+            run_params = json.loads(rp_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            run_params = {}
+    for key in ("ion_type", "interstitial_species", "pka_species"):
+        extra = _norm(str(run_params.get(key) or ""))
+        if extra and extra.lower() not in {e.lower() for e in elems}:
+            elems.append(extra)
+    for pe in potential.get("elements") or []:
+        extra = _norm(str(pe))
+        if extra and extra.lower() not in {e.lower() for e in elems}:
+            elems.append(extra)
+
     ntypes = max((int(a["type"]) for a in atoms), default=len(elems))
-    while len(elems) < ntypes:
-        elems.append(f"X{len(elems) + 1}")
+    if len(elems) < ntypes:
+        raise ValueError(
+            f"KART handoff: dump has {ntypes} atom types but only mapped {len(elems)} "
+            f"({', '.join(elems)}). Set ion_type/interstitial_species or potential.elements."
+        )
 
     # LAMMPS data file (conf.lammps) for ENERGY_CALC=LAM path
     data_lines = [

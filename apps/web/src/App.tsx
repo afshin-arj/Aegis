@@ -272,7 +272,7 @@ function normalizeComposition(rows: ElementFraction[]): ElementFraction[] {
   const total = rows.reduce((sum, row) => sum + Math.max(0, Number(row.atomic_percent) || 0), 0);
   if (total <= 0) throw new Error("Composition must contain a positive atomic fraction.");
   return rows.map((row) => ({
-    symbol: row.symbol.trim(),
+    symbol: normalizeSymbol(row.symbol),
     atomic_percent: (Math.max(0, Number(row.atomic_percent) || 0) / total) * 100,
   }));
 }
@@ -289,24 +289,53 @@ function resolveLatticeC(m: Material | null | undefined, override: number | null
 const ATOMIC_MASS: Record<string, number> = {
   H: 1.008,
   D: 2.014,
+  T: 3.016,
   He: 4.0026,
+  Be: 9.0122,
+  B: 10.81,
   C: 12.011,
+  N: 14.007,
+  O: 15.999,
+  Ne: 20.18,
+  Al: 26.982,
+  Si: 28.085,
+  Ar: 39.948,
+  Ti: 47.867,
   V: 50.942,
   Cr: 51.996,
   Fe: 55.845,
+  Ni: 58.693,
+  Cu: 63.546,
   Mo: 95.95,
   Ta: 180.95,
   W: 183.84,
   Re: 186.21,
+  Os: 190.23,
 };
 
+function normalizeSymbol(symbol: string): string {
+  const s = symbol.trim();
+  if (!s) return "";
+  if (s.length === 1) return s.toUpperCase();
+  return s[0].toUpperCase() + s.slice(1).toLowerCase();
+}
+
+function massOfOrNull(symbol: string): number | null {
+  const key = normalizeSymbol(symbol);
+  return ATOMIC_MASS[key] ?? null;
+}
+
 function massOf(symbol: string): number {
-  return ATOMIC_MASS[symbol.trim()] || 1;
+  const m = massOfOrNull(symbol);
+  if (m == null) {
+    throw new Error(`unknown atomic mass for '${symbol}' — switch to at% or add the element mass`);
+  }
+  return m;
 }
 
 /** Convert stored at% rows into editable wt% display values. */
 function atToWt(rows: ElementFraction[]): number[] {
-  const masses = rows.map((r) => (Number(r.atomic_percent) || 0) * massOf(r.symbol));
+  const masses = rows.map((r) => (Number(r.atomic_percent) || 0) * (massOfOrNull(r.symbol) ?? 0));
   const total = masses.reduce((s, m) => s + m, 0) || 1;
   return masses.map((m) => (m / total) * 100);
 }
@@ -315,10 +344,13 @@ function atToWt(rows: ElementFraction[]): number[] {
 function wtEditToAt(rows: ElementFraction[], idx: number, wtValue: number): ElementFraction[] {
   const wts = atToWt(rows);
   wts[idx] = Math.max(0, wtValue);
-  const moles = rows.map((r, i) => wts[i] / massOf(r.symbol));
+  const moles = rows.map((r, i) => {
+    const m = massOfOrNull(r.symbol);
+    return m && m > 0 ? wts[i] / m : 0;
+  });
   const total = moles.reduce((s, m) => s + m, 0) || 1;
   return rows.map((r, i) => ({
-    symbol: r.symbol,
+    symbol: normalizeSymbol(r.symbol) || r.symbol,
     atomic_percent: (moles[i] / total) * 100,
   }));
 }
@@ -534,12 +566,18 @@ export default function App() {
   const loadJobReq = useRef(0);
   const potReq = useRef(0);
   const campReq = useRef(0);
+  const libReq = useRef(0);
+  const watchedJobId = useRef<string | null>(null);
   const modeDirty = useRef(false);
   const [logEpoch, setLogEpoch] = useState(0);
 
   const material = useMemo(() => materials.find((m) => m.id === materialId), [materials, materialId]);
   const selectedPot = useMemo(() => potentials.find((p) => p.id === potentialId), [potentials, potentialId]);
   const scenario = useMemo(() => scenarios.find((s) => s.id === scenarioId), [scenarios, scenarioId]);
+
+  useEffect(() => {
+    watchedJobId.current = job?.id ?? null;
+  }, [job?.id]);
   const projectNames = useMemo(() => {
     const names = new Set<string>();
     for (const j of jobs) {
@@ -610,16 +648,26 @@ export default function App() {
     if (needsC && !(effectiveLatticeC != null && effectiveLatticeC > 0)) {
       list.push("HCP/hex materials need a positive lattice c");
     }
-    const hosts = composition.filter((e) => e.atomic_percent > 0).map((e) => e.symbol);
+    const hosts = composition
+      .filter((e) => e.atomic_percent > 0)
+      .map((e) => normalizeSymbol(e.symbol))
+      .filter(Boolean);
     if (params.mode === "cascade" && params.pka_species && hosts.length) {
-      if (!hosts.some((h) => h.toLowerCase() === params.pka_species.toLowerCase())) {
-        list.push(
-          `Cascade PKA '${params.pka_species}' must be a host species (${hosts.join(", ")})`,
-        );
+      const pka = normalizeSymbol(params.pka_species);
+      if (!hosts.some((h) => h.toLowerCase() === pka.toLowerCase())) {
+        list.push(`Cascade PKA '${params.pka_species}' must be a host species (${hosts.join(", ")})`);
       }
     }
-    const potElems = new Set((selectedPot?.elements || []).map((s) => s.toLowerCase()));
-    const covers = (sym: string) => potElems.has(sym.toLowerCase());
+    if (compUnit === "wt%") {
+      for (const e of composition) {
+        if (!(normalizeSymbol(e.symbol) in ATOMIC_MASS)) {
+          list.push(`Unknown mass for '${e.symbol}' — use at% or fix the symbol`);
+          break;
+        }
+      }
+    }
+    const potElems = new Set((selectedPot?.elements || []).map((s) => normalizeSymbol(s).toLowerCase()));
+    const covers = (sym: string) => potElems.has(normalizeSymbol(sym).toLowerCase());
     if (params.mode === "interstitial" && selectedPot) {
       const need = [...hosts, params.interstitial_species].filter(Boolean);
       if (!need.every(covers)) {
@@ -659,6 +707,7 @@ export default function App() {
     crystalInfo,
     latticeC,
     effectiveLatticeC,
+    compUnit,
   ]);
 
   const verdict = blockers.length
@@ -752,24 +801,30 @@ export default function App() {
     const qs = new URLSearchParams({ material_id: materialId });
     if (libQuery) qs.set("q", libQuery);
     if (libSource) qs.set("source", libSource);
+    const libId = ++libReq.current;
     api<PotentialLibraryEntry[]>(`/api/potentials/library?${qs}`)
       .then((lib) => {
-        if (reqId === potReq.current) setLibrary(lib);
+        if (reqId === potReq.current && libId === libReq.current) setLibrary(lib);
       })
       .catch(() => {
-        if (reqId === potReq.current) setLibrary([]);
+        if (reqId === potReq.current && libId === libReq.current) setLibrary([]);
       });
   }, [materialId]);
 
   useEffect(() => {
     if (tab !== "potential" || !materialId) return;
     const handle = window.setTimeout(() => {
+      const reqId = ++libReq.current;
       const qs = new URLSearchParams({ material_id: materialId });
       if (libQuery) qs.set("q", libQuery);
       if (libSource) qs.set("source", libSource);
       api<PotentialLibraryEntry[]>(`/api/potentials/library?${qs}`)
-        .then(setLibrary)
-        .catch(() => setLibrary([]));
+        .then((lib) => {
+          if (reqId === libReq.current) setLibrary(lib);
+        })
+        .catch(() => {
+          if (reqId === libReq.current) setLibrary([]);
+        });
     }, 200);
     return () => window.clearTimeout(handle);
   }, [tab, materialId, libQuery, libSource]);
@@ -783,10 +838,13 @@ export default function App() {
         delete defaults.mode;
         delete defaults.boundary;
       } else {
-        // Non-surface scenarios must clear sticky free-surface boundaries
+        // Non-surface/implant scenarios must clear sticky free-surface boundaries
         const nextMode = String(defaults.mode ?? prev.mode);
-        if (nextMode !== "surface" && defaults.boundary == null) {
+        if (nextMode !== "surface" && nextMode !== "implant" && defaults.boundary == null) {
           defaults.boundary = "p p p";
+        }
+        if (nextMode === "implant" && defaults.boundary == null) {
+          defaults.boundary = "p p s";
         }
       }
       return { ...prev, ...defaults } as RunParams;
@@ -1000,13 +1058,22 @@ export default function App() {
   }
 
   async function refreshPotentials(selectId?: string) {
-    const p = await api<Potential[]>(`/api/potentials?material_id=${materialId}`);
+    const mat = materialId;
+    const reqId = ++potReq.current;
+    const p = await api<Potential[]>(`/api/potentials?material_id=${mat}`);
+    if (reqId !== potReq.current) return;
     setPotentials(p);
-    if (selectId) setPotentialId(selectId);
-    const qs = new URLSearchParams({ material_id: materialId });
+    if (selectId) {
+      setPotentialId(selectId);
+    } else {
+      setPotentialId((prev) => (prev && p.some((x) => x.id === prev) ? prev : p[0]?.id || ""));
+    }
+    const qs = new URLSearchParams({ material_id: mat });
     if (libQuery) qs.set("q", libQuery);
     if (libSource) qs.set("source", libSource);
-    setLibrary(await api<PotentialLibraryEntry[]>(`/api/potentials/library?${qs}`).catch(() => []));
+    const libId = ++libReq.current;
+    const lib = await api<PotentialLibraryEntry[]>(`/api/potentials/library?${qs}`).catch(() => []);
+    if (reqId === potReq.current && libId === libReq.current) setLibrary(lib);
   }
 
   async function uploadPotential() {
@@ -1176,7 +1243,6 @@ export default function App() {
       setTab("run");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
-      setLogEpoch((n) => n + 1);
     } finally {
       setBusy(false);
     }
@@ -1184,11 +1250,12 @@ export default function App() {
 
   async function cancelJob() {
     if (!job) return;
+    const jobId = job.id;
     setBusy(true);
     setError("");
     try {
-      const cancelled = await api<JobInfo>(`/api/jobs/${job.id}/cancel`, { method: "POST" });
-      setJob(cancelled);
+      const cancelled = await api<JobInfo>(`/api/jobs/${jobId}/cancel`, { method: "POST" });
+      setJob((prev) => (prev?.id === jobId ? cancelled : prev));
       setJobs((history) => [cancelled, ...history.filter((item) => item.id !== cancelled.id)]);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -1210,6 +1277,7 @@ export default function App() {
 
   async function reannealDoe() {
     if (!job) return;
+    const jobId = job.id;
     setBusy(true);
     setError("");
     try {
@@ -1217,7 +1285,7 @@ export default function App() {
         .split(/[\s,]+/)
         .map((x) => Number(x))
         .filter((x) => Number.isFinite(x) && x > 0);
-      const summary = await api<KartSummary>(`/api/jobs/${job.id}/kart/anneal`, {
+      const summary = await api<KartSummary>(`/api/jobs/${jobId}/kart/anneal`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1228,8 +1296,9 @@ export default function App() {
           temperatures: doe.length ? doe : [kartTemperatureK],
         }),
       });
+      const info = await api<JobInfo>(`/api/jobs/${jobId}`);
+      if (watchedJobId.current !== jobId) return;
       setKartSummary(summary);
-      const info = await api<JobInfo>(`/api/jobs/${job.id}`);
       setJob(info);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -1538,6 +1607,7 @@ export default function App() {
                 type="button"
                 className="secondary"
                 onClick={() => {
+                  loadJobReq.current += 1;
                   setProjectName("untitled");
                   setProjectFilter("");
                   setJob(null);
@@ -1944,6 +2014,11 @@ export default function App() {
                     onChange={(e) => {
                       const next = [...composition];
                       next[idx] = { ...row, symbol: e.target.value };
+                      setComposition(next);
+                    }}
+                    onBlur={(e) => {
+                      const next = [...composition];
+                      next[idx] = { ...row, symbol: normalizeSymbol(e.target.value) };
                       setComposition(next);
                     }}
                   />
@@ -2390,9 +2465,12 @@ export default function App() {
                       modeDirty.current = true;
                       setParams((p) => {
                         const patch: Partial<RunParams> = { mode: next };
-                        if (next === "surface") {
+                        if (next === "surface" || next === "implant") {
                           patch.boundary = "p p s";
-                        } else if (p.mode === "surface" && (p.boundary || "").trim() === "p p s") {
+                        } else if (
+                          (p.mode === "surface" || p.mode === "implant") &&
+                          (p.boundary || "").trim() === "p p s"
+                        ) {
                           patch.boundary = "p p p";
                         }
                         return { ...p, ...patch };
@@ -3275,9 +3353,11 @@ export default function App() {
                     disabled={!job || busy}
                     onClick={async () => {
                       if (!job) return;
+                      const jobId = job.id;
                       setBusy(true);
                       try {
-                        setDxaSummary(await api(`/api/jobs/${job.id}/dxa?refresh=true`));
+                        const dxa = await api<Record<string, unknown>>(`/api/jobs/${jobId}/dxa?refresh=true`);
+                        if (watchedJobId.current === jobId) setDxaSummary(dxa);
                         setEngines(await api<EngineStatus>("/api/engines/status"));
                       } catch (err) {
                         setError(err instanceof Error ? err.message : String(err));

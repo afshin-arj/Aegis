@@ -10,8 +10,38 @@ from lammps import crystal as crystal_reg
 from lammps.polycrystal import build_polycrystal_meta, polycrystal_lammps_comment
 
 
+def _norm_sym(symbol: str) -> str:
+    s = str(symbol or "").strip()
+    if not s:
+        return ""
+    if len(s) == 1:
+        return s.upper()
+    return s[0].upper() + s[1:].lower()
+
+
 def _elements_line(composition: list[dict[str, Any]]) -> list[str]:
-    return [c["symbol"] for c in composition if c.get("atomic_percent", 0) > 0]
+    out: list[str] = []
+    for c in composition:
+        if float(c.get("atomic_percent", 0) or 0) <= 0:
+            continue
+        sym = _norm_sym(str(c.get("symbol") or ""))
+        if sym:
+            out.append(sym)
+    return out
+
+
+def _elem_index(elems: list[str], symbol: str) -> int:
+    """1-based type index; case-insensitive match."""
+    want = _norm_sym(symbol).lower()
+    for i, e in enumerate(elems):
+        if e.lower() == want:
+            return i + 1
+    raise ValueError(f"species '{symbol}' not in type list ({', '.join(elems)})")
+
+
+def _has_elem(elems: list[str], symbol: str) -> bool:
+    want = _norm_sym(symbol).lower()
+    return any(e.lower() == want for e in elems)
 
 
 def render_pair_coeff(template: str, file_path: str, elements: list[str]) -> str:
@@ -213,10 +243,10 @@ def write_cascade_input(
 ) -> Path:
     """Write a LAMMPS cascade input from UI run parameters."""
     elems = _elements_line(material["composition"])
-    primary = str(params.get("pka_species") or (elems[0] if elems else "W"))
+    primary = _norm_sym(str(params.get("pka_species") or (elems[0] if elems else "W")))
     if not elems:
         raise ValueError("Material composition is empty — cannot write cascade input")
-    if primary not in elems:
+    if not _has_elem(elems, primary):
         raise ValueError(
             f"Cascade pka_species '{primary}' is not in host composition ({', '.join(elems)})"
         )
@@ -297,7 +327,7 @@ def write_cascade_input(
         # Sphere large enough to catch one BCC atom at the snapped site
         rad = 0.45
         # Type index is 1-based; mass/speed already use this species — kick only that type.
-        pka_type = elems.index(primary) + 1 if primary in elems else 1
+        pka_type = _elem_index(elems, primary)
         pka_blocks.append(
             textwrap.dedent(
                 f"""\
@@ -307,12 +337,21 @@ def write_cascade_input(
                 group pka_reg_{i} region pka_pick_{i}
                 group pka_type_{i} type {pka_type}
                 group pka_{i} intersect pka_reg_{i} pka_type_{i}
-                # Fallback if FP miss: expand once, still type-filtered
+                # Expand search if FP miss; abort if still empty (alloy minority PKA)
                 variable npka_{i} equal count(pka_{i})
                 if "${{npka_{i}}} == 0" then &
                   "region pka_pick_{i} sphere {sx:.6f} {sy:.6f} {sz:.6f} 0.85 units lattice" &
                   "group pka_reg_{i} region pka_pick_{i}" &
                   "group pka_{i} intersect pka_reg_{i} pka_type_{i}"
+                variable npka_{i} equal count(pka_{i})
+                if "${{npka_{i}}} == 0" then &
+                  "region pka_pick_{i} sphere {sx:.6f} {sy:.6f} {sz:.6f} 2.5 units lattice" &
+                  "group pka_reg_{i} region pka_pick_{i}" &
+                  "group pka_{i} intersect pka_reg_{i} pka_type_{i}"
+                variable npka_{i} equal count(pka_{i})
+                if "${{npka_{i}}} == 0" then &
+                  "print 'Aegis ERROR: no type-{pka_type} ({primary}) atom near PKA site {i+1}'" &
+                  "quit 1"
                 velocity pka_{i} set {dvx * speed:.6f} {dvy * speed:.6f} {dvz * speed:.6f} units box
                 """
             )
@@ -468,8 +507,8 @@ def write_implant_input(
     potential_file: str,
 ) -> Path:
     elems = _elements_line(material["composition"])
-    ion = str(params.get("ion_type", "He"))
-    if ion not in elems:
+    ion = _norm_sym(str(params.get("ion_type", "He")))
+    if not _has_elem(elems, ion):
         elems = elems + [ion]
     a = float(material.get("lattice_constant_A", 3.165))
     nx, ny, nz = int(params["nx"]), int(params["ny"]), int(params["nz"])
@@ -495,8 +534,8 @@ def write_implant_input(
     vz = -speed * math.cos(angle)
 
     masses = "\n".join(f"mass {i+1} {_approx_mass(sym)}" for i, sym in enumerate(elems))
-    ion_type = elems.index(ion) + 1
-    host_elems = [e for e in elems if e != ion] or elems[:1]
+    ion_type = _elem_index(elems, ion)
+    host_elems = [e for e in elems if e.lower() != ion.lower()] or elems[:1]
     create = _create_atoms_block(material, host_elems)
     ensemble = _ensemble_fix(params)
     dump, dump_mod = _dump_command(params, "dump.implant.*.lammpstrj")
@@ -579,8 +618,8 @@ def write_surface_input(
 ) -> Path:
     """Low-E He/D free-surface MD with vacuum slab (Phase-3 fuzz/erosion proxy)."""
     elems = _elements_line(material["composition"])
-    ion = str(params.get("ion_type", "He"))
-    if ion not in elems:
+    ion = _norm_sym(str(params.get("ion_type", "He")))
+    if not _has_elem(elems, ion):
         elems = elems + [ion]
     a = float(material.get("lattice_constant_A", 3.165))
     nx, ny, nz = int(params["nx"]), int(params["ny"]), int(params["nz"])
@@ -607,8 +646,8 @@ def write_surface_input(
     vz = -speed * math.cos(angle)
 
     masses = "\n".join(f"mass {i+1} {_approx_mass(sym)}" for i, sym in enumerate(elems))
-    ion_type = elems.index(ion) + 1
-    host_elems = [e for e in elems if e != ion] or elems[:1]
+    ion_type = _elem_index(elems, ion)
+    host_elems = [e for e in elems if e.lower() != ion.lower()] or elems[:1]
     create_host = (
         f"region substrate block 0 {nx} 0 {ny} 0 {nz} units lattice\n"
         f"{_create_atoms_block(material, host_elems, region='substrate')}"
@@ -732,9 +771,9 @@ def write_interstitial_input(
     host_elems = _elements_line(material["composition"])
     if not host_elems:
         host_elems = ["W"]
-    species = str(params.get("interstitial_species") or "He")
+    species = _norm_sym(str(params.get("interstitial_species") or "He"))
     elems = list(host_elems)
-    if species not in elems:
+    if not _has_elem(elems, species):
         elems.append(species)
 
     a = float(material.get("lattice_constant_A", 3.165))
@@ -780,7 +819,7 @@ def write_interstitial_input(
         a=a,
         offset_A=offset_A,
     )
-    ityp = elems.index(species) + 1
+    ityp = _elem_index(elems, species)
     insert_lines = [
         f"create_atoms {ityp} single {x:.6f} {y:.6f} {z:.6f} units lattice"
         for x, y, z, _kind in sites
