@@ -262,7 +262,7 @@ export default function StructureViewer({ jobId, refreshKey }: Props) {
       <div className="empty">
         <div className="empty-kicker">Structure</div>
         <h3>No job selected</h3>
-        <p className="hint">Complete a run to compare lattice before cascade and dumped timesteps after.</p>
+        <p className="hint">Select a completed job to compare the initial lattice with post-cascade dump frames.</p>
       </div>
     );
   }
@@ -284,15 +284,15 @@ export default function StructureViewer({ jobId, refreshKey }: Props) {
   return (
     <div className="stack structure-panel">
       <div className="panel-head">
-        <h2>Structure (OVITO-style)</h2>
+        <h2>Structure viewer</h2>
         <span className="chip">
           <span className="chip-k">frames</span>
           <span className="chip-v">{index?.n_frames ?? 0}</span>
         </span>
       </div>
       <p className="hint">
-        Atom colors by LAMMPS type. Drag to rotate. Large cells are stride-downsampled for interactive viewing —
-        not a substitute for OVITO production analysis.
+        Atom color = LAMMPS type. Drag to rotate. Large cells are stride-sampled for interactive viewing; use OVITO for
+        production analysis.
       </p>
       {err && (
         <div className="alert alert-fail" role="alert">
@@ -301,7 +301,7 @@ export default function StructureViewer({ jobId, refreshKey }: Props) {
       )}
       {scrubErr && (
         <div className="alert alert-warn" role="status">
-          Scrub failed: {scrubErr}
+          Failed to load frame: {scrubErr}
         </div>
       )}
       {busy && <p className="hint">Loading frame…</p>}
@@ -328,9 +328,9 @@ export default function StructureViewer({ jobId, refreshKey }: Props) {
               </span>
             </div>
             {before ? (
-              <AtomCanvas atoms={before.atoms} box={before.box} label="Structure before cascade" />
+              <AtomCanvas atoms={before.atoms} box={before.box} label="Initial lattice" />
             ) : (
-              <div className="viz structure-viz empty-viz">No initial dump</div>
+              <div className="viz structure-viz empty-viz">No initial dump file</div>
             )}
           </div>
           <div className="stack">
@@ -354,9 +354,9 @@ export default function StructureViewer({ jobId, refreshKey }: Props) {
               )}
             </div>
             {after ? (
-              <AtomCanvas atoms={after.atoms} box={after.box} label="Structure after cascade" />
+              <AtomCanvas atoms={after.atoms} box={after.box} label="Post-cascade lattice" />
             ) : (
-              <div className="viz structure-viz empty-viz">No trajectory dump</div>
+              <div className="viz structure-viz empty-viz">No cascade dump file</div>
             )}
             {afterFrames.length > 1 && (
               <label className="scrubber">

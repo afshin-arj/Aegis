@@ -164,7 +164,7 @@ type TabId = "projects" | "doe" | "material" | "potential" | "scenario" | "param
 
 const TABS: { id: TabId; step: string; label: string }[] = [
   { id: "projects", step: "01", label: "Projects" },
-  { id: "doe", step: "02", label: "DOE" },
+  { id: "doe", step: "02", label: "Campaigns" },
   { id: "material", step: "03", label: "Material" },
   { id: "potential", step: "04", label: "Potential" },
   { id: "scenario", step: "05", label: "Scenario" },
@@ -531,7 +531,7 @@ export default function App() {
   } | null>(null);
   const [campaigns, setCampaigns] = useState<DoeCampaign[]>([]);
   const [campaign, setCampaign] = useState<DoeCampaign | null>(null);
-  const [doeName, setDoeName] = useState("DEMO-energy-T");
+  const [doeName, setDoeName] = useState("energy-T-sweep");
   const [doeAxisX, setDoeAxisX] = useState("pka_energy_eV");
   const [doeValuesX, setDoeValuesX] = useState("5000,10000,20000");
   const [doeAxisY, setDoeAxisY] = useState("temperature_K");
@@ -640,7 +640,7 @@ export default function App() {
     if (largeCell && !params.confirm_large) list.push("Large cell (>20³) — confirm in LAMMPS tab");
     if (material?.metadata_only) list.push("Material is metadata-only (no runnable lattice recipe)");
     if (material && !crystalSupported && !selectedPot?.is_placeholder) {
-      list.push(`Crystal ${material.crystal} needs a placeholder/dry-run potential or a supported lattice`);
+      list.push(`Crystal ${material.crystal} requires a supported lattice or a placeholder potential for verification runs`);
     }
     const needsC =
       crystalInfo?.needs_c ||
@@ -715,14 +715,18 @@ export default function App() {
     : potIsDemo || !engines?.lammps_found || !crystalSupported
       ? {
           tone: "warn" as const,
-          label: "Ready · dry-run",
+          label: "Ready · verification",
           msg: !crystalSupported
-            ? `Crystal ${material?.crystal} — dry-run demo only until supported.`
+            ? `Lattice ${material?.crystal} is not production-supported — jobs emit synthetic trajectory dumps.`
             : potIsDemo
-              ? "Placeholder potential — demo dumps only. Upload a published potential for real MD."
-              : "LAMMPS not on PATH — job will write demo dumps for pipeline testing.",
+              ? "Placeholder potential selected — attach a published potential for production MD."
+              : "LAMMPS executable not found — jobs emit synthetic dumps for workflow verification.",
         }
-      : { tone: "ready" as const, label: "Ready", msg: "Material, potential, and parameters look runnable." };
+      : {
+          tone: "ready" as const,
+          label: "Ready",
+          msg: "Material, potential, and parameters are consistent for submission.",
+        };
 
   useEffect(() => {
     Promise.all([
@@ -1489,23 +1493,24 @@ export default function App() {
 
       <header className="topbar">
         <div className="brand-block">
-          <p className="eyebrow">PFM radiation damage workbench</p>
+          <p className="eyebrow">Plasma-facing materials · radiation damage</p>
           <h1 className="brand">Aegis</h1>
           <p className="brand-sub">
-            Cascade MD → defect analysis → optional k-ART. D–D / D–T are scenario presets, not plasma transport.
+            Cascade MD, defect analysis, and optional k-ART annealing. D–D / D–T are irradiation presets, not plasma
+            transport.
           </p>
         </div>
         <div className="kpi-row" aria-label="Engine status">
           <div className="kpi">
             <span className="kpi-k">LAMMPS</span>
             <span className={`kpi-v ${engines?.lammps_found ? "tone-ok" : "tone-warn"}`}>
-              {engines?.lammps_found ? "found" : "dry-run"}
+              {engines?.lammps_found ? "found" : "unavailable"}
             </span>
           </div>
           <div className="kpi">
-            <span className="kpi-k">KART</span>
+            <span className="kpi-k">k-ART</span>
             <span className={`kpi-v ${engines?.kart_found ? "tone-ok" : "tone-warn"}`}>
-              {engines?.kart_found ? "found" : "stub"}
+              {engines?.kart_found ? "found" : "not installed"}
             </span>
           </div>
           <div className="kpi">
@@ -1523,9 +1528,9 @@ export default function App() {
             className="primary-run"
             disabled={busy || blockers.length > 0}
             onClick={runJob}
-            aria-label="Queue LAMMPS job"
+            aria-label="Submit LAMMPS job"
           >
-            {busy ? "Working…" : "Run job"}
+            {busy ? "Working…" : "Submit"}
           </button>
         </div>
       </header>
@@ -1575,8 +1580,8 @@ export default function App() {
               </span>
             </div>
             <p className="hint">
-              Group runs by study name. Opening a job loads its status, log, and results without changing the current recipe
-              until you re-run.
+              Group jobs by study name. Opening a job restores its status, log, and results; the current recipe is
+              unchanged until you submit again.
             </p>
             <div className="row">
               <Field label="Active project" htmlFor="proj-active">
@@ -1621,7 +1626,7 @@ export default function App() {
                 New study
               </button>
               <button type="button" className="secondary" onClick={() => setTab("doe")}>
-                Open DOE sweeps
+                Open parameter sweeps
               </button>
               <button type="button" className="secondary" onClick={() => setTab("material")}>
                 Continue to Material
@@ -1631,8 +1636,8 @@ export default function App() {
             {projectJobs.length === 0 ? (
               <div className="empty">
                 <div className="empty-kicker">No runs yet</div>
-                <h3>Start a cascade</h3>
-                <p className="hint">Configure material → potential → scenario → LAMMPS, then Run.</p>
+                <h3>No jobs in this study</h3>
+                <p className="hint">Configure material, potential, scenario, and LAMMPS parameters, then submit.</p>
               </div>
             ) : (
               <div className="stack">
@@ -1661,7 +1666,7 @@ export default function App() {
                   <select id="hpc-sched-proj" value={hpcScheduler} onChange={(e) => setHpcScheduler(e.target.value)}>
                     <option value="slurm">Slurm</option>
                     <option value="pbs">PBS</option>
-                    <option value="none">files only</option>
+                    <option value="none">Input files only</option>
                   </select>
                 </Field>
                 <Field label="Cores" htmlFor="hpc-cores-proj">
@@ -1690,15 +1695,15 @@ export default function App() {
         {tab === "doe" && (
           <section className="panel stack">
             <div className="panel-head">
-              <h2>DEMO DOE sweeps</h2>
+              <h2>Parameter sweeps (DOE)</h2>
               <span className="chip">
                 <span className="chip-k">campaigns</span>
                 <span className="chip-v">{campaigns.length}</span>
               </span>
             </div>
             <p className="hint">
-              Cartesian sweeps (energy × T, etc.) using the current Material / Potential / LAMMPS recipe as the base
-              case. Local runs execute serially and auto-refresh; uncheck local to prepare inputs for an HPC zip.
+              Cartesian sweeps over the current material / potential / LAMMPS recipe. Local execution is serial with
+              auto-refresh; disable local run to prepare an HPC bundle instead.
             </p>
             <Field label="Campaign name" htmlFor="doe-name">
               <input id="doe-name" value={doeName} onChange={(e) => setDoeName(e.target.value)} />
@@ -1709,7 +1714,7 @@ export default function App() {
                   <option value="pka_energy_eV">PKA energy (eV)</option>
                   <option value="ion_energy_eV">Ion energy (eV)</option>
                   <option value="temperature_K">Temperature (K)</option>
-                  <option value="n_pkas">n PKAs</option>
+                  <option value="n_pkas">Number of PKAs</option>
                   <option value="ion_count">Ion count</option>
                   <option value="surface_fluence_ions">Surface fluence</option>
                   <option value="interstitial_count">Interstitial count</option>
@@ -1774,7 +1779,7 @@ export default function App() {
                 <select id="hpc-sched-doe" value={hpcScheduler} onChange={(e) => setHpcScheduler(e.target.value)}>
                   <option value="slurm">Slurm</option>
                   <option value="pbs">PBS</option>
-                  <option value="none">files only</option>
+                    <option value="none">Input files only</option>
                 </select>
               </Field>
               <Field label="Cores" htmlFor="hpc-cores-doe">
@@ -1928,7 +1933,7 @@ export default function App() {
             {material && crystalInfo && (
               <div className={`alert ${crystalSupported ? "alert-ok" : "alert-warn"}`} role="status">
                 {crystalInfo.label}: {crystalInfo.notes}
-                {!crystalSupported ? " — dry-run only." : ""}
+                {!crystalSupported ? " — synthetic dumps only (lattice not production-supported)." : ""}
               </div>
             )}
             {Math.abs(compositionTotal - 100) > 0.05 && compositionTotal > 0 && (
@@ -2141,8 +2146,8 @@ export default function App() {
                 </span>
               </div>
               <p className="hint">
-                Select a potential that is on disk (●). Missing curated slots (○) and placeholders (◇) need a NIST
-                download or manual upload — Aegis never invents coefficients.
+                Select a potential with a file on disk (●). Curated slots without files (○) and placeholders (◇)
+                need a NIST download or upload — missing coefficients are never synthesized.
               </p>
               <Field label="Compatible potentials" htmlFor="pot-select">
                 <select id="pot-select" value={potentialId} onChange={(e) => setPotentialId(e.target.value)}>
@@ -2211,13 +2216,13 @@ export default function App() {
                   ))}
                   {selectedPot.is_placeholder && (
                     <div className="alert alert-warn" role="status">
-                      Demo placeholder — jobs use dry-run dumps. Download Zhou04 W from NIST below or upload a published
-                      file.
+                      Catalog placeholder — runs use synthetic dumps until a published potential is attached (NIST
+                      Zhou04 W below, or upload).
                     </div>
                   )}
                   {!selectedPot.available && !selectedPot.is_placeholder && (
                     <div className="alert alert-fail" role="alert">
-                      Unavailable for MD: download from NIST / libraries or upload a file and attach it to this entry.
+                      Potential file missing — download from NIST / libraries or upload and attach to this entry.
                     </div>
                   )}
                 </div>
@@ -2279,7 +2284,7 @@ export default function App() {
                             {entry.installed ? "Installed" : "Download"}
                           </button>
                         ) : (
-                          <span className="hint">browse</span>
+                          <span className="hint">browse only</span>
                         )}
                       </div>
                     </div>
@@ -2447,9 +2452,9 @@ export default function App() {
             <div className="panel-head">
               <h2>LAMMPS parameters</h2>
               <span className="chip">
-                <span className="chip-k">atoms proxy</span>
+                <span className="chip-k">≈ sites</span>
                 <span className="chip-v">
-                  ~{cellVolume * atomsPerCell} {crystalInfo?.label || "lattice"} sites
+                  ~{cellVolume * atomsPerCell} {crystalInfo?.label || "lattice"}
                 </span>
               </span>
             </div>
@@ -2477,10 +2482,10 @@ export default function App() {
                       });
                     }}
                   >
-                    <option value="cascade">cascade / PKA</option>
-                    <option value="implant">ion implant (bulk)</option>
-                    <option value="surface">low-E surface (fuzz proxy)</option>
-                    <option value="interstitial">interstitial insert (lattice dirs)</option>
+                    <option value="cascade">Displacement cascade (PKA)</option>
+                    <option value="implant">Ion implantation (bulk)</option>
+                    <option value="surface">Low-energy surface irradiation</option>
+                    <option value="interstitial">Interstitial insertion</option>
                   </select>
                 </Field>
                 <Field label="Temperature" unit="K" htmlFor="T">
@@ -2587,7 +2592,7 @@ export default function App() {
                     checked={params.run_dxa}
                     onChange={(e) => setParam("run_dxa", e.target.checked)}
                   />
-                  Run OVITO DXA after job (if installed)
+                  Run OVITO DXA after MD (if installed)
                 </label>
               </div>
               {params.structure_kind === "polycrystal" && (
@@ -2627,7 +2632,7 @@ export default function App() {
               <legend>Cascade / PKA</legend>
               <p className="hint">
                 Pick PKA energy, direction, and lattice site. With auto stages on, Aegis densifies dumps through
-                growth → peak → quench → residual so OVITO can scrub each regime (see{" "}
+                growth → peak → quench → residual for regime-resolved dumps (see{" "}
                 <code>cascade_stages_OVITO.txt</code> in the job folder).
               </p>
               <div className="row">
@@ -2771,9 +2776,9 @@ export default function App() {
             </fieldset>
             {params.mode === "surface" && (
               <fieldset className="fieldset">
-                <legend>Surface MD (Phase-3)</legend>
+                <legend>Surface slab MD</legend>
                 <p className="hint">
-                  Free-surface slab with vacuum; low-E He/D fluence is a discrete ion-count proxy — not a plasma sheath.
+                  Free surface with vacuum. Ion count approximates fluence; not a plasma-sheath model.
                 </p>
                 <div className="row">
                   <Field label="Vacuum layers" unit="lattice" htmlFor="vac-layers">
@@ -2990,17 +2995,17 @@ export default function App() {
             </label>
             <label className="check-row">
               <input type="checkbox" checked={runKart} onChange={(e) => setRunKart(e.target.checked)} />
-              Queue KART anneal after MD
-              {!engines?.kart_found && <span className="unit"> · will stub if binary missing</span>}
+              Queue k-ART anneal after MD
+              {!engines?.kart_found && <span className="unit"> · skipped if binary not found</span>}
             </label>
             <label className="check-row">
               <input type="checkbox" checked={runMmonca} onChange={(e) => setRunMmonca(e.target.checked)} />
               Queue MMonCa OKMC (optional comparison)
-              {!engines?.mmonca_found && <span className="unit"> · stubs if binary missing</span>}
+              {!engines?.mmonca_found && <span className="unit"> · skipped if binary not found</span>}
             </label>
             {runKart && (
               <fieldset className="fieldset">
-                <legend>k-ART anneal (Phase-2)</legend>
+                <legend>k-ART annealing</legend>
                 <div className="row">
                   <Field label="Anneal temperature" unit="K" htmlFor="kart-temperature">
                     <input
@@ -3053,7 +3058,7 @@ export default function App() {
               </fieldset>
             )}
             <button type="button" disabled={busy || blockers.length > 0} onClick={runJob}>
-              Run job
+              Submit job
             </button>
           </section>
         )}
@@ -3101,7 +3106,7 @@ export default function App() {
                     <select id="hpc-sched-run" value={hpcScheduler} onChange={(e) => setHpcScheduler(e.target.value)}>
                       <option value="slurm">Slurm</option>
                       <option value="pbs">PBS</option>
-                      <option value="none">files only</option>
+                      <option value="none">Input files only</option>
                     </select>
                   </Field>
                   <Field label="Cores" htmlFor="hpc-cores-run">
@@ -3131,12 +3136,12 @@ export default function App() {
             ) : (
               <div className="empty">
                 <div className="empty-kicker">No active job</div>
-                <h3>Queue a cascade or implant</h3>
-                <p className="hint">Configure material → potential → scenario → LAMMPS, then Run.</p>
+                <h3>No job selected</h3>
+                <p className="hint">Configure material, potential, scenario, and LAMMPS parameters, then submit.</p>
                 <ol>
-                  <li>Pick a potential with a file on disk</li>
-                  <li>Review cell size and PKA/He energy</li>
-                  <li>Use the top-bar Run job control</li>
+                  <li>Select a potential with a local parameter file</li>
+                  <li>Review cell size and PKA / ion energy</li>
+                  <li>Use <strong>Submit</strong> in the top bar</li>
                 </ol>
               </div>
             )}
@@ -3183,9 +3188,9 @@ export default function App() {
                   </table>
                 </div>
                 <p className="hint">
-                  OVITO: load <code>dump.initial.lammpstrj</code>, then <code>dump.cascade.*.lammpstrj</code>; stage
-                  bookmarks are <code>dump.stage.*.lammpstrj</code>. Use <strong>Download cascade GIF</strong> for a
-                  quick 2D preview of the dump series (also written as <code>animation.gif</code> in the job folder).
+                  In OVITO desktop: load <code>dump.initial.lammpstrj</code>, then{" "}
+                  <code>dump.cascade.*.lammpstrj</code>. Stage bookmarks are <code>dump.stage.*.lammpstrj</code>. Export
+                  the cascade animation for a 2D preview (also written as <code>animation.gif</code> in the job folder).
                 </p>
               </section>
             )}
@@ -3209,13 +3214,13 @@ export default function App() {
                       a.click();
                     }}
                   >
-                    Download cascade GIF
+                    Export cascade animation
                   </button>
                 </div>
               </div>
               <div className="alert alert-warn">
-                SIA/vacancy counts use a Wigner–Seitz proxy. Validate production conclusions against the trajectory,
-                reference lattice, and a domain-standard analysis workflow.
+                Vacancy / SIA counts use a Wigner–Seitz reference-lattice proxy. Confirm production conclusions against
+                the trajectory and a domain-standard analysis workflow (e.g. OVITO).
               </div>
               {defects?.summary ? (
                 <table className="table">
@@ -3232,13 +3237,13 @@ export default function App() {
                 <div className="empty">
                   <div className="empty-kicker">Awaiting analysis</div>
                   <h3>No defect products yet</h3>
-                  <p className="hint">Complete a run to populate Wigner–Seitz proxy metrics.</p>
+                  <p className="hint">Complete a job to populate Wigner–Seitz defect metrics.</p>
                 </div>
               )}
               {job?.surface_summary && (
                 <>
-                  <h3>Surface / fuzz proxies</h3>
-                  <p className="hint">Phase-3 engineering metrics — not calibrated sputtering yields.</p>
+                  <h3>Surface irradiation metrics</h3>
+                  <p className="hint">Approximate surface statistics — not calibrated sputtering yields.</p>
                   <div className="chip-row">
                     {Object.entries(job.surface_summary).map(([k, v]) => (
                       <span className="chip" key={k}>
@@ -3263,7 +3268,7 @@ export default function App() {
               </div>
               {(kartSummary || job?.kart_summary) && (
                 <>
-                  <h3>KART anneal</h3>
+                  <h3>k-ART anneal</h3>
                   {(() => {
                     const ks = kartSummary || (job?.kart_summary as KartSummary);
                     const runs = ks?.runs?.length ? ks.runs : null;
@@ -3340,12 +3345,14 @@ export default function App() {
             <section className="panel stack">
               <h2>Defect markers</h2>
               <DefectViz points={defects?.points || []} />
-              <p className="hint">Vacancy = red · interstitial = copper · other = green. WS proxy markers (not full atoms).</p>
+              <p className="hint">
+                Vacancy = red · interstitial = copper · other = green. Wigner–Seitz markers (not full atom spheres).
+              </p>
             </section>
           </div>
             <section className="panel stack">
               <div className="panel-head">
-                <h2>OVITO DXA</h2>
+                <h2>Dislocation analysis (DXA)</h2>
                 <div className="chip-row">
                   <button
                     type="button"
@@ -3377,7 +3384,7 @@ export default function App() {
               </div>
               <p className="hint">
                 {engines?.ovito_message ||
-                  "Install with pip install -U ovito (or set AEGIS_OVITO_BIN). Aegis never fabricates dislocation networks."}
+                  "Install with pip install -U ovito (or set AEGIS_OVITO_BIN). DXA is not fabricated when OVITO is absent."}
               </p>
               {dxaSummary ? (
                 <>
@@ -3444,7 +3451,7 @@ export default function App() {
                   </details>
                 </>
               ) : (
-                <p className="hint">No DXA summary yet — enable “Run OVITO DXA after job” or click Run / refresh.</p>
+                <p className="hint">No DXA summary yet — enable “Run OVITO DXA after MD” or click Run / refresh DXA.</p>
               )}
             </section>
           </div>
@@ -3510,7 +3517,7 @@ export default function App() {
                 <p className="hint">{engines?.ase_message}</p>
               </div>
               <div className="stack">
-                <h3>OVITO DXA</h3>
+                <h3>Dislocation analysis (DXA)</h3>
                 <div className="chip-row">
                   <span className="chip">
                     <span className="chip-k">OVITO</span>

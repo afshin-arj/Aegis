@@ -2,11 +2,11 @@
 
 **Local workbench for microscopic radiation damage in tokamak plasma-facing materials (PFMs).**
 
-Configure material and composition → select a published interatomic potential → apply D–D / D–T scenario defaults → run configurable LAMMPS cascade or He implantation → inspect defects → optionally anneal with k-ART (KART).
+Select material and composition → attach a published interatomic potential → apply D–D / D–T irradiation presets → run LAMMPS cascade or He implantation → inspect defects → optionally anneal with k-ART.
 
-![Aegis — PFM radiation damage workbench](docs/assets/aegis-banner.png)
+![Aegis — radiation damage MD for PFMs](docs/assets/aegis-banner.png)
 
-> **Scale honesty:** Aegis runs **cascade / implant MD** and optional **KMC annealing**. Fuel choices (D–D / D–T) are **irradiation scenario presets** (energies, temperature, labels)—not a full plasma transport or neutronics code.
+> **Scale honesty:** Aegis runs **cascade / implant MD** and optional **KMC annealing**. Fuel choices (D–D / D–T) are **irradiation scenario presets** (energies, temperature, labels)—not plasma transport or neutronics.
 
 ---
 
