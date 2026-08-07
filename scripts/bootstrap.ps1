@@ -287,7 +287,7 @@ function Ensure-PythonDeps {
 }
 
 function Ensure-Ovito {
-  Write-Step "OVITO (optional DXA)"
+  Write-Step "OVITO (DXA - first-run install, soft-fail)"
   $venvPy = Join-Path $Root ".venv\Scripts\python.exe"
   if (-not (Test-Path $venvPy)) {
     Write-Warn "No .venv - skip OVITO"
@@ -309,17 +309,30 @@ function Ensure-Ovito {
     Write-Ok ("OVITO Python module present ({0})" -f $ver)
     return
   }
-  if ($env:AEGIS_INSTALL_OVITO -eq "1") {
-    Write-Info "pip install -U ovito (AEGIS_INSTALL_OVITO=1)..."
-    & $venvPy -m pip install -U ovito
-    if ($LASTEXITCODE -eq 0) {
-      Write-Ok "OVITO installed - Engines tab / DXA ready"
-    } else {
-      Write-Warn "OVITO pip install failed - use Engines -> Install OVITO or see docs\ovito.md"
-    }
-  } else {
-    Write-Info "OVITO not installed (optional). Later: Engines -> Install OVITO, or set AEGIS_INSTALL_OVITO=1"
+  # Opt out: set AEGIS_INSTALL_OVITO=0 to skip the first-run pip attempt.
+  if ($env:AEGIS_INSTALL_OVITO -eq "0") {
+    Write-Info "OVITO install skipped (AEGIS_INSTALL_OVITO=0). Engines tab / docs\ovito.md later."
+    return
   }
+  Write-Info "OVITO not found - pip install -U ovito (first-run; soft-fail if it fails)..."
+  $prevEap = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  & $venvPy -m pip install -U ovito
+  $pipCode = $LASTEXITCODE
+  $ErrorActionPreference = $prevEap
+  if ($pipCode -eq 0) {
+    $ErrorActionPreference = "Continue"
+    $probeOut = & $venvPy -c 'import ovito; print(getattr(ovito, "version", "ok"))' 2>&1
+    $probeCode = $LASTEXITCODE
+    $ErrorActionPreference = $prevEap
+    if ($probeCode -eq 0) {
+      $ver = ($probeOut | Select-Object -Last 1)
+      Write-Ok ("OVITO installed ({0}) - Engines / DXA ready" -f $ver)
+      return
+    }
+  }
+  Write-Warn "OVITO pip install failed or module still missing - continuing without DXA."
+  Write-Warn "Later: Engines -> Install OVITO, or see docs\ovito.md (cascades still run)."
 }
 
 function Ensure-NodeDeps {

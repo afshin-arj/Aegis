@@ -6,7 +6,11 @@ Aegis uses [OVITO’s Python API](https://docs.ovito.org/python/) for optional d
 
 ## Easiest path (recommended)
 
-In the Aegis virtualenv (same Python that runs the API):
+`setup_and_run.cmd` / `scripts/bootstrap.ps1` **tries** `pip install -U ovito` into `.venv` on first run when the module is missing. Failure is a **soft warning** — Aegis still launches; DXA stays unavailable until install succeeds.
+
+Skip the attempt with `AEGIS_INSTALL_OVITO=0`.
+
+Manual install in the Aegis virtualenv:
 
 ```bash
 .venv\Scripts\python.exe -m pip install -U ovito
