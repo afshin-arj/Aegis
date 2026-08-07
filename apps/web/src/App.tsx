@@ -333,6 +333,36 @@ function massOf(symbol: string): number {
   return m;
 }
 
+/**
+ * Recommend cubic unit-cell count so a centered cascade is unlikely to wrap under PBC.
+ * Fit inspired by published BCC Mo cascade cell sizes (≈28³ @ 1 keV … ≈93³ @ 40 keV):
+ * n ≈ 28 × (E_keV)^0.32, clamped to schema limits [8, 64].
+ * Heuristic only — channeling / direction / potential can still require larger cells.
+ */
+function recommendCascadeCell(energy_eV: number, lattice_A: number): {
+  n: number;
+  raw: number;
+  side_A: number;
+  atomsHint: number;
+  capped: boolean;
+  undersized: (nx: number, ny: number, nz: number) => boolean;
+} {
+  const eV = Number.isFinite(energy_eV) && energy_eV > 0 ? energy_eV : 1;
+  const EkeV = eV / 1000;
+  const raw = 28 * Math.pow(Math.max(EkeV, 0.05), 0.32);
+  const capped = raw > 64;
+  const n = Math.min(64, Math.max(8, Math.ceil(raw)));
+  const a = lattice_A > 0 ? lattice_A : 3.165;
+  return {
+    n,
+    raw,
+    side_A: n * a,
+    atomsHint: n * n * n * 2, // BCC-ish order of magnitude; UI multiplies by atomsPerCell when shown
+    capped,
+    undersized: (nx, ny, nz) => Math.min(nx, ny, nz) < n,
+  };
+}
+
 /** Convert stored at% rows into editable wt% display values. */
 function atToWt(rows: ElementFraction[]): number[] {
   const masses = rows.map((r) => (Number(r.atomic_percent) || 0) * (massOfOrNull(r.symbol) ?? 0));
@@ -623,6 +653,11 @@ export default function App() {
     () => resolveLatticeC(material, latticeC, lattice),
     [material, latticeC, lattice],
   );
+
+  const cascadeCellRec = useMemo(() => {
+    if (params.mode !== "cascade") return null;
+    return recommendCascadeCell(params.pka_energy_eV, lattice);
+  }, [params.mode, params.pka_energy_eV, lattice]);
 
   const blockers = useMemo(() => {
     const list: string[] = [];
@@ -2575,6 +2610,61 @@ export default function App() {
                   </select>
                 </Field>
               </div>
+              {cascadeCellRec && (
+                <div className="stack" style={{ marginTop: "0.75rem" }}>
+                  <div className="chip-row">
+                    <span className="chip">
+                      <span className="chip-k">PKA cell guide</span>
+                      <span className="chip-v">
+                        ≥{cascadeCellRec.n}³ (~{cascadeCellRec.side_A.toFixed(0)} Å)
+                      </span>
+                    </span>
+                    <span className="chip">
+                      <span className="chip-k">≈ atoms</span>
+                      <span className="chip-v">
+                        ~
+                        {(
+                          cascadeCellRec.n *
+                          cascadeCellRec.n *
+                          cascadeCellRec.n *
+                          atomsPerCell
+                        ).toLocaleString()}
+                      </span>
+                    </span>
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={() => {
+                        const n = cascadeCellRec.n;
+                        setParams((p) => ({
+                          ...p,
+                          nx: n,
+                          ny: n,
+                          nz: n,
+                          confirm_large: n * n * n > 20 * 20 * 20 ? true : p.confirm_large,
+                        }));
+                      }}
+                    >
+                      Apply recommended cell
+                    </button>
+                  </div>
+                  {cascadeCellRec.undersized(params.nx, params.ny, params.nz) ? (
+                    <div className="alert alert-warn" role="status">
+                      Current cell {params.nx}×{params.ny}×{params.nz} may be too small for{" "}
+                      {(params.pka_energy_eV / 1000).toLocaleString()} keV — the cascade can re-enter via periodic
+                      boundaries. Recommended ≥{cascadeCellRec.n}³ for a centered PKA
+                      {cascadeCellRec.capped
+                        ? " (clamped to 64³; higher energies need HPC / larger schema limits)."
+                        : "."}
+                    </div>
+                  ) : (
+                    <p className="hint">
+                      Guide: n ≈ 28 × (E/keV)^0.32 unit cells/side (BCC Mo cascade literature scaling). Verify no PBC
+                      wrap in OVITO; channeling directions may need a larger cell.
+                    </p>
+                  )}
+                </div>
+              )}
               <div className="row">
                 <Field label="Structure" htmlFor="struct-kind">
                   <select
@@ -2631,8 +2721,8 @@ export default function App() {
             <fieldset className="fieldset">
               <legend>Cascade / PKA</legend>
               <p className="hint">
-                Pick PKA energy, direction, and lattice site. With auto stages on, Aegis densifies dumps through
-                growth → peak → quench → residual for regime-resolved dumps (see{" "}
+                Pick PKA energy, direction, and lattice site. Cell size should contain the cascade (see System → PKA
+                cell guide). With auto stages on, Aegis densifies dumps through growth → peak → quench → residual (see{" "}
                 <code>cascade_stages_OVITO.txt</code> in the job folder).
               </p>
               <div className="row">
