@@ -15,7 +15,20 @@ def _elements_line(composition: list[dict[str, Any]]) -> list[str]:
 
 
 def render_pair_coeff(template: str, file_path: str, elements: list[str]) -> str:
-    return template.format(file=file_path.replace("\\", "/"), elements=" ".join(elements))
+    """Format pair_coeff, always mapping types to the live element list order."""
+    import re
+
+    file_norm = file_path.replace("\\", "/")
+    elems_str = " ".join(elements)
+    if "{elements}" in template:
+        return template.format(file=file_norm, elements=elems_str)
+    # Catalog entries often bake tokens like ``... {file} W He`` — replace trailing
+    # element names with the live type order so implant/surface ions stay consistent.
+    formatted = template.format(file=file_norm)
+    m = re.match(r"^(pair_coeff\s+\S+\s+\S+\s+\S+)\s*(.*)$", formatted.strip())
+    if m:
+        return f"{m.group(1)} {elems_str}".rstrip() if elems_str else m.group(1)
+    return f"{formatted} {elems_str}".strip() if elems_str else formatted
 
 
 def _direction_unit(direction: str, seed: int, crystal: str = "bcc") -> tuple[float, float, float]:
@@ -201,6 +214,12 @@ def write_cascade_input(
     """Write a LAMMPS cascade input from UI run parameters."""
     elems = _elements_line(material["composition"])
     primary = str(params.get("pka_species") or (elems[0] if elems else "W"))
+    if not elems:
+        raise ValueError("Material composition is empty — cannot write cascade input")
+    if primary not in elems:
+        raise ValueError(
+            f"Cascade pka_species '{primary}' is not in host composition ({', '.join(elems)})"
+        )
     a = float(material.get("lattice_constant_A", 3.165))
     nx, ny, nz = int(params["nx"]), int(params["ny"]), int(params["nz"])
     seed = int(params["seed"])
@@ -277,16 +296,23 @@ def write_cascade_input(
         site_notes.append(f"PKA{i+1}: frac≈({fx:.3f},{fy:.3f},{fz:.3f}) → lattice ({sx:.3f},{sy:.3f},{sz:.3f})")
         # Sphere large enough to catch one BCC atom at the snapped site
         rad = 0.45
+        # Type index is 1-based; mass/speed already use this species — kick only that type.
+        pka_type = elems.index(primary) + 1 if primary in elems else 1
         pka_blocks.append(
             textwrap.dedent(
                 f"""\
-                # PKA event {i + 1}/{n_pkas} species={primary} site={site_mode}
-                # Target lattice site ({sx:.6f} {sy:.6f} {sz:.6f}); pick nearest atom in a small sphere
+                # PKA event {i + 1}/{n_pkas} species={primary} type={pka_type} site={site_mode}
+                # Target lattice site ({sx:.6f} {sy:.6f} {sz:.6f}); pick nearest host atom of PKA type
                 region pka_pick_{i} sphere {sx:.6f} {sy:.6f} {sz:.6f} {rad:.4f} units lattice
-                group pka_{i} region pka_pick_{i}
-                # Fallback if FP miss: expand once
+                group pka_reg_{i} region pka_pick_{i}
+                group pka_type_{i} type {pka_type}
+                group pka_{i} intersect pka_reg_{i} pka_type_{i}
+                # Fallback if FP miss: expand once, still type-filtered
                 variable npka_{i} equal count(pka_{i})
-                if "${{npka_{i}}} == 0" then "region pka_pick_{i} sphere {sx:.6f} {sy:.6f} {sz:.6f} 0.85 units lattice" "group pka_{i} region pka_pick_{i}"
+                if "${{npka_{i}}} == 0" then &
+                  "region pka_pick_{i} sphere {sx:.6f} {sy:.6f} {sz:.6f} 0.85 units lattice" &
+                  "group pka_reg_{i} region pka_pick_{i}" &
+                  "group pka_{i} intersect pka_reg_{i} pka_type_{i}"
                 velocity pka_{i} set {dvx * speed:.6f} {dvy * speed:.6f} {dvz * speed:.6f} units box
                 """
             )
@@ -488,13 +514,18 @@ def write_implant_input(
         )
     insert_block = "\n".join(insert_lines)
 
+    # Free Z avoids periodic wrap of injected ions (same default as surface mode).
+    boundary = str(params.get("boundary") or "p p s")
+    if boundary.strip() == "p p p":
+        boundary = "p p s"
+
     script = textwrap.dedent(
         f"""\
         # Aegis-generated ion implant input
         {crystal_note}
         units metal
         dimension 3
-        boundary {params.get("boundary", "p p p")}
+        boundary {boundary}
         atom_style atomic
 
         {lattice_cmd}
@@ -861,8 +892,10 @@ def _approx_mass(symbol: str) -> float:
         "C": 12.011,
         "N": 14.007,
         "O": 15.999,
+        "Ne": 20.180,
         "Al": 26.982,
         "Si": 28.085,
+        "Ar": 39.948,
         "Ti": 47.867,
         "V": 50.942,
         "Cr": 51.996,
@@ -875,4 +908,9 @@ def _approx_mass(symbol: str) -> float:
         "Re": 186.21,
         "Os": 190.23,
     }
-    return table.get(symbol, 1.0)
+    mass = table.get(symbol)
+    if mass is None:
+        raise ValueError(
+            f"unknown atomic mass for species '{symbol}' — add it to the Aegis mass table or fix the symbol"
+        )
+    return mass

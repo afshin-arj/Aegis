@@ -62,18 +62,34 @@ def _read_last_dump_atoms(
 def _mass(symbol: str) -> float:
     table = {
         "H": 1.008,
+        "D": 2.014,
+        "T": 3.016,
         "He": 4.0026,
+        "Be": 9.0122,
+        "B": 10.81,
         "C": 12.011,
+        "N": 14.007,
+        "O": 15.999,
+        "Ne": 20.180,
+        "Al": 26.982,
         "Si": 28.085,
+        "Ar": 39.948,
+        "Ti": 47.867,
         "V": 50.942,
         "Cr": 51.996,
         "Fe": 55.845,
+        "Ni": 58.693,
+        "Cu": 63.546,
         "Mo": 95.95,
         "Ta": 180.95,
         "W": 183.84,
         "Re": 186.21,
+        "Os": 190.23,
     }
-    return table.get(symbol, 1.0)
+    mass = table.get(symbol)
+    if mass is None:
+        raise ValueError(f"unknown atomic mass for species '{symbol}'")
+    return mass
 
 
 def build_kart_package(

@@ -501,6 +501,8 @@ async def upload_potential(
 
 @app.post("/api/jobs", response_model=JobInfo)
 def create_job(body: JobCreate) -> JobInfo:
+    from aegis_api.coverage import validate_cascade_pka, validate_potential_coverage
+
     material = body.material_override or store.get_material(body.material_id)
     if not material:
         raise HTTPException(404, "material not found")
@@ -521,6 +523,11 @@ def create_job(body: JobCreate) -> JobInfo:
             400,
             "Selected potential is not runnable. Upload a published potential file.",
         )
+    try:
+        validate_potential_coverage(material, potential, body.run_params)
+        validate_cascade_pka(material, body.run_params)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     # Large cell guard
     cells = body.run_params.nx * body.run_params.ny * body.run_params.nz
     if cells > 20 * 20 * 20 and not body.run_params.confirm_large:
@@ -540,6 +547,8 @@ def list_jobs() -> list[JobInfo]:
 
 @app.post("/api/campaigns", response_model=DoeCampaignInfo)
 def create_campaign(body: DoeCampaignCreate) -> DoeCampaignInfo:
+    from aegis_api.coverage import validate_cascade_pka, validate_potential_coverage
+
     material = body.base.material_override or store.get_material(body.base.material_id)
     if not material:
         raise HTTPException(404, "material not found")
@@ -554,6 +563,11 @@ def create_campaign(body: DoeCampaignCreate) -> DoeCampaignInfo:
         raise HTTPException(400, "Selected potential has no file on disk.")
     if not potential.available and not potential.is_placeholder:
         raise HTTPException(400, "Selected potential is not runnable.")
+    try:
+        validate_potential_coverage(material, potential, body.base.run_params)
+        validate_cascade_pka(material, body.base.run_params)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     # Large cell guard (same as single-job path; campaigns auto-confirm in create otherwise)
     cells = body.base.run_params.nx * body.base.run_params.ny * body.base.run_params.nz
     if cells > 20 * 20 * 20 and not body.base.run_params.confirm_large:
@@ -731,7 +745,19 @@ def post_kart_anneal(job_id: str, body: KartAnnealRequest) -> dict[str, Any]:
         )
         return summary
     except Exception as exc:  # noqa: BLE001
-        jobs._update(job_id, status=JobStatus.FAILED, message=f"anneal failed: {exc}")
+        # Keep cascade COMPLETED — anneal is a post-step; surface error on kart_summary only.
+        err_summary = {
+            **(info.kart_summary or {}),
+            "error": str(exc),
+            "anneal_failed": True,
+        }
+        jobs._update(
+            job_id,
+            status=JobStatus.COMPLETED,
+            message=f"cascade completed; anneal failed: {exc}",
+            kart_summary=err_summary,
+            defect_summary=info.defect_summary,
+        )
         raise HTTPException(500, str(exc)) from exc
 
 

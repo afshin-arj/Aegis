@@ -122,6 +122,8 @@ class JobManager:
 
     def prepare_inputs(self, job_id: str) -> Path:
         """Write in.aegis + copy potential without launching LAMMPS (HPC export packs)."""
+        from aegis_api.coverage import validate_cascade_pka, validate_potential_coverage
+
         job_dir = self.runs_root / job_id
         material = Material(**json.loads((job_dir / "material.json").read_text(encoding="utf-8")))
         potential = Potential(**json.loads((job_dir / "potential.json").read_text(encoding="utf-8")))
@@ -139,6 +141,8 @@ class JobManager:
                 f"crystal '{cry}' is not supported for real LAMMPS inputs. "
                 "Use bcc/fcc/hcp/diamond/hex, or a placeholder potential for dry-run stubs."
             )
+        validate_potential_coverage(material, potential, params)
+        validate_cascade_pka(material, params)
 
         local_pot = job_dir / pot_file.name
         shutil.copy2(pot_file, local_pot)
@@ -241,6 +245,11 @@ class JobManager:
             pot_file = self.store.resolve_potential_file(potential)
             if not pot_file:
                 raise FileNotFoundError("potential file missing — upload a published file or place under data/potentials/curated/")
+
+            from aegis_api.coverage import validate_cascade_pka, validate_potential_coverage
+
+            validate_potential_coverage(material, potential, params)
+            validate_cascade_pka(material, params)
 
             # Copy potential into job dir for portability
             local_pot = job_dir / pot_file.name

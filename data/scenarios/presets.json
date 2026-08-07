@@ -50,7 +50,7 @@
     "description": "High-energy He-ion style defaults aligned with bulk bubble/loop studies (energies ≫ Ed).",
     "defaults": {
       "mode": "implant",
-      "boundary": "p p p",
+      "boundary": "p p s",
       "temperature_K": 300,
       "ion_type": "He",
       "ion_energy_eV": 10000,

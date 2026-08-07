@@ -532,6 +532,8 @@ export default function App() {
   const [compUnit, setCompUnit] = useState<"at%" | "wt%">("at%");
   const [projectFilter, setProjectFilter] = useState<string>("");
   const loadJobReq = useRef(0);
+  const potReq = useRef(0);
+  const campReq = useRef(0);
   const modeDirty = useRef(false);
   const [logEpoch, setLogEpoch] = useState(0);
 
@@ -587,6 +589,9 @@ export default function App() {
   const blockers = useMemo(() => {
     const list: string[] = [];
     if (!potentialId) list.push("Select a potential");
+    if (potentialId && !selectedPot) {
+      list.push("Selected potential is not in the list — reselect after changing material");
+    }
     if (selectedPot && !selectedPot.available && !selectedPot.is_placeholder) {
       list.push("Potential file missing — upload or place under data/potentials/curated/");
     }
@@ -605,13 +610,18 @@ export default function App() {
     if (needsC && !(effectiveLatticeC != null && effectiveLatticeC > 0)) {
       list.push("HCP/hex materials need a positive lattice c");
     }
+    const hosts = composition.filter((e) => e.atomic_percent > 0).map((e) => e.symbol);
+    if (params.mode === "cascade" && params.pka_species && hosts.length) {
+      if (!hosts.some((h) => h.toLowerCase() === params.pka_species.toLowerCase())) {
+        list.push(
+          `Cascade PKA '${params.pka_species}' must be a host species (${hosts.join(", ")})`,
+        );
+      }
+    }
     const potElems = new Set((selectedPot?.elements || []).map((s) => s.toLowerCase()));
     const covers = (sym: string) => potElems.has(sym.toLowerCase());
     if (params.mode === "interstitial" && selectedPot) {
-      const need = [
-        ...composition.filter((e) => e.atomic_percent > 0).map((e) => e.symbol),
-        params.interstitial_species,
-      ].filter(Boolean);
+      const need = [...hosts, params.interstitial_species].filter(Boolean);
       if (!need.every(covers)) {
         list.push(
           `Potential must cover host + interstitial species (${need.join(", ")}); current covers ${selectedPot.elements.join(" ")}`,
@@ -620,7 +630,7 @@ export default function App() {
     }
     if (selectedPot && ["cascade", "implant", "surface"].includes(params.mode)) {
       const need = [
-        ...composition.filter((e) => e.atomic_percent > 0).map((e) => e.symbol),
+        ...hosts,
         params.mode === "cascade" ? params.pka_species : params.ion_type,
       ].filter(Boolean);
       if (!need.every(covers)) {
@@ -724,19 +734,31 @@ export default function App() {
 
   useEffect(() => {
     if (!materialId) return;
+    const reqId = ++potReq.current;
     api<Potential[]>(`/api/potentials?material_id=${materialId}`)
       .then((p) => {
+        if (reqId !== potReq.current) return;
         setPotentials(p);
-        const avail = p.find((x) => x.available) || p.find((x) => x.is_placeholder) || p[0];
-        setPotentialId(avail?.id || "");
+        setPotentialId((prev) => {
+          if (prev && p.some((x) => x.id === prev)) return prev;
+          const avail = p.find((x) => x.available) || p.find((x) => x.is_placeholder) || p[0];
+          return avail?.id || "";
+        });
       })
-      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+      .catch((err) => {
+        if (reqId !== potReq.current) return;
+        setError(err instanceof Error ? err.message : String(err));
+      });
     const qs = new URLSearchParams({ material_id: materialId });
     if (libQuery) qs.set("q", libQuery);
     if (libSource) qs.set("source", libSource);
     api<PotentialLibraryEntry[]>(`/api/potentials/library?${qs}`)
-      .then(setLibrary)
-      .catch(() => setLibrary([]));
+      .then((lib) => {
+        if (reqId === potReq.current) setLibrary(lib);
+      })
+      .catch(() => {
+        if (reqId === potReq.current) setLibrary([]);
+      });
   }, [materialId]);
 
   useEffect(() => {
@@ -887,14 +909,15 @@ export default function App() {
     const reqId = ++loadJobReq.current;
     setBusy(true);
     setError("");
-    setLog("");
-    setDefects(null);
-    setKartSummary(null);
-    setCascadeTimeline(null);
-    setDxaSummary(null);
     try {
       const info = await api<JobInfo>(`/api/jobs/${jobId}`);
       if (reqId !== loadJobReq.current) return;
+      // Clear panes only after a confirmed job identity change
+      setLog("");
+      setDefects(null);
+      setKartSummary(null);
+      setCascadeTimeline(null);
+      setDxaSummary(null);
       setJob(info);
       // Bump after setJob so the log effect does not briefly re-sub the previous id.
       setLogEpoch((n) => n + 1);
@@ -937,7 +960,11 @@ export default function App() {
         }
       }
     } catch (err) {
-      if (reqId === loadJobReq.current) setError(err instanceof Error ? err.message : String(err));
+      if (reqId === loadJobReq.current) {
+        setError(err instanceof Error ? err.message : String(err));
+        // Re-subscribe WS for the still-selected job if a prior clear left the log empty
+        setLogEpoch((n) => n + 1);
+      }
     } finally {
       if (reqId === loadJobReq.current) setBusy(false);
     }
@@ -1096,13 +1123,10 @@ export default function App() {
       setError(blockers.join(" · "));
       return;
     }
+    // Invalidate any in-flight loadJob so it cannot clobber this new run
+    loadJobReq.current += 1;
     setBusy(true);
     setError("");
-    setLog("");
-    setDefects(null);
-    setKartSummary(null);
-    setCascadeTimeline(null);
-    setDxaSummary(null);
     try {
       const normalized = normalizeComposition(composition);
       setComposition(normalized);
@@ -1141,11 +1165,18 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
+      setLog("");
+      setDefects(null);
+      setKartSummary(null);
+      setCascadeTimeline(null);
+      setDxaSummary(null);
       setJob(info);
+      setLogEpoch((n) => n + 1);
       setJobs((history) => [info, ...history.filter((item) => item.id !== info.id)]);
       setTab("run");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      setLogEpoch((n) => n + 1);
     } finally {
       setBusy(false);
     }
@@ -1269,6 +1300,7 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
+      campReq.current += 1;
       setCampaign(camp);
       setCampaigns((cs) => [camp, ...cs.filter((c) => c.id !== camp.id)]);
       setTab("doe");
@@ -1280,10 +1312,13 @@ export default function App() {
   }
 
   async function refreshCampaign(id: string) {
+    const reqId = ++campReq.current;
     const camp = await api<DoeCampaign>(`/api/campaigns/${id}`);
+    if (reqId !== campReq.current) return;
     setCampaign(camp);
     setCampaigns((cs) => [camp, ...cs.filter((c) => c.id !== camp.id)]);
     const history = await api<JobInfo[]>("/api/jobs");
+    if (reqId !== campReq.current) return;
     setJobs(history);
   }
 
