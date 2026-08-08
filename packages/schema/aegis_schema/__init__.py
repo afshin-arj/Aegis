@@ -36,6 +36,9 @@ class CrystalSystem(str, Enum):
 class StructureKind(str, Enum):
     SINGLE_CRYSTAL = "single_crystal"
     POLYCRYSTAL = "polycrystal"
+    VOID = "void"
+    POLYCRYSTAL_VOID = "polycrystal_void"
+    IMPORT = "import"
 
 
 class ElementFraction(BaseModel):
@@ -204,11 +207,17 @@ class LammpsRunParams(BaseModel):
     interstitial_geometry: str = "octahedral"
     interstitial_offset_A: float | None = None  # dumbbell/crowdion half-separation; default ~0.25 a
     interstitial_energy_eV: float = 0.0  # optional kick along the lattice direction after insert
-    # Polycrystal (Phase D)
+    # Structure builder (single crystal | polycrystal | nano-void | import)
     structure_kind: StructureKind = StructureKind.SINGLE_CRYSTAL
     poly_n_grains: int = Field(4, ge=2, le=64)
     poly_seed: int = 42
     poly_texture: str = "random"  # random | fiber
+    void_radius_A: float = Field(5.0, ge=0.5, le=200.0)
+    void_count: int = Field(1, ge=1, le=64)
+    void_center_frac_x: float = Field(0.5, ge=0.0, le=1.0)
+    void_center_frac_y: float = Field(0.5, ge=0.0, le=1.0)
+    void_center_frac_z: float = Field(0.5, ge=0.0, le=1.0)
+    structure_import_path: str | None = None  # relative to job dir or absolute for import kind
     timestep_fs: float = 0.001
     max_steps: int = 20000
     neighbor_skin: float = 2.0

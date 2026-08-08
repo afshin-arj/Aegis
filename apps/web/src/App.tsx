@@ -147,6 +147,12 @@ type RunParams = {
   poly_n_grains: number;
   poly_seed: number;
   poly_texture: string;
+  void_radius_A: number;
+  void_count: number;
+  void_center_frac_x: number;
+  void_center_frac_y: number;
+  void_center_frac_z: number;
+  structure_import_path: string | null;
   timestep_fs: number;
   max_steps: number;
   neighbor_skin: number;
@@ -222,6 +228,12 @@ const defaultParams: RunParams = {
   poly_n_grains: 4,
   poly_seed: 42,
   poly_texture: "random",
+  void_radius_A: 5,
+  void_count: 1,
+  void_center_frac_x: 0.5,
+  void_center_frac_y: 0.5,
+  void_center_frac_z: 0.5,
+  structure_import_path: null,
   timestep_fs: 0.001,
   max_steps: 20000,
   neighbor_skin: 2,
@@ -2673,7 +2685,10 @@ export default function App() {
                     onChange={(e) => setParam("structure_kind", e.target.value)}
                   >
                     <option value="single_crystal">single crystal</option>
-                    <option value="polycrystal">polycrystal (Voronoi seeds)</option>
+                    <option value="polycrystal">polycrystal</option>
+                    <option value="void">nano-void</option>
+                    <option value="polycrystal_void">polycrystal + void</option>
+                    <option value="import">import LAMMPS data</option>
                   </select>
                 </Field>
                 <label className="check-row">
@@ -2685,7 +2700,15 @@ export default function App() {
                   Run OVITO DXA after MD (if installed)
                 </label>
               </div>
-              {params.structure_kind === "polycrystal" && (
+              {params.structure_kind !== "single_crystal" && (
+                <p className="hint">
+                  Nanostructures are built to <code>structure.data</code> (ASE, or Atomsk when installed) and loaded with{" "}
+                  <code>read_data</code> — not a single-crystal lattice stub. Preview needs ASE (
+                  {engines?.ase_found ? "found" : "missing — Engines / setup_and_run.cmd"}).
+                </p>
+              )}
+              {(params.structure_kind === "polycrystal" ||
+                params.structure_kind === "polycrystal_void") && (
                 <div className="row">
                   <Field label="Grains" htmlFor="poly-n">
                     <input
@@ -2715,6 +2738,124 @@ export default function App() {
                       onChange={(e) => setParam("poly_seed", Number(e.target.value))}
                     />
                   </Field>
+                </div>
+              )}
+              {(params.structure_kind === "void" || params.structure_kind === "polycrystal_void") && (
+                <div className="row">
+                  <Field label="Void radius (Å)" htmlFor="void-r">
+                    <input
+                      id="void-r"
+                      type="number"
+                      min={0.5}
+                      step={0.5}
+                      value={params.void_radius_A}
+                      onChange={(e) => setParam("void_radius_A", Number(e.target.value))}
+                    />
+                  </Field>
+                  <Field label="Void count" htmlFor="void-n">
+                    <input
+                      id="void-n"
+                      type="number"
+                      min={1}
+                      max={64}
+                      value={params.void_count}
+                      onChange={(e) => setParam("void_count", Number(e.target.value))}
+                    />
+                  </Field>
+                  <Field label="Center x (frac)" htmlFor="void-x">
+                    <input
+                      id="void-x"
+                      type="number"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      value={params.void_center_frac_x}
+                      onChange={(e) => setParam("void_center_frac_x", Number(e.target.value))}
+                    />
+                  </Field>
+                </div>
+              )}
+              {params.structure_kind === "import" && (
+                <div className="row">
+                  <Field label="Import path" htmlFor="struct-import">
+                    <input
+                      id="struct-import"
+                      value={params.structure_import_path || ""}
+                      onChange={(e) => setParam("structure_import_path", e.target.value || null)}
+                      placeholder="absolute path or upload below"
+                    />
+                  </Field>
+                  <label className="btn secondary">
+                    Upload…
+                    <input
+                      type="file"
+                      hidden
+                      onChange={async (e) => {
+                        const f = e.target.files?.[0];
+                        if (!f) return;
+                        setBusy(true);
+                        setError("");
+                        try {
+                          const fd = new FormData();
+                          fd.append("file", f);
+                          const r = await fetch("/api/structure/import", { method: "POST", body: fd });
+                          const data = await r.json();
+                          if (!r.ok) throw new Error(formatApiError(data, "import failed"));
+                          setParam("structure_import_path", String(data.path || ""));
+                        } catch (err) {
+                          setError(err instanceof Error ? err.message : String(err));
+                        } finally {
+                          setBusy(false);
+                          e.target.value = "";
+                        }
+                      }}
+                    />
+                  </label>
+                </div>
+              )}
+              {params.structure_kind !== "single_crystal" && params.structure_kind !== "import" && (
+                <div className="chip-row">
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={busy || !materialId}
+                    onClick={async () => {
+                      setBusy(true);
+                      setError("");
+                      try {
+                        const r = await api<{
+                          atom_count?: number;
+                          backend?: string;
+                          note?: string;
+                          void_atoms_removed?: number;
+                        }>("/api/structure/preview", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({
+                            material_id: materialId,
+                            params: {
+                              ...params,
+                              nx: Math.min(params.nx, 10),
+                              ny: Math.min(params.ny, 10),
+                              nz: Math.min(params.nz, 10),
+                            },
+                          }),
+                        });
+                        setError("");
+                        window.alert(
+                          `Preview OK — backend=${r.backend || "?"} atoms=${r.atom_count ?? "?"} ` +
+                            (r.void_atoms_removed != null ? `void_removed=${r.void_atoms_removed} ` : "") +
+                            (r.note || ""),
+                        );
+                      } catch (err) {
+                        setError(err instanceof Error ? err.message : String(err));
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
+                  >
+                    Preview structure
+                  </button>
                 </div>
               )}
             </fieldset>
@@ -3681,15 +3822,18 @@ export default function App() {
                     </span>
                   </span>
                 </div>
-                <p className="hint">{engines?.atomsk_path || "Polycrystal seeds work without Atomsk"}</p>
+                <p className="hint">
+                  {engines?.atomsk_path ||
+                    "Optional — ASE Voronoi builds polycrystal without Atomsk. Set AEGIS_ATOMSK_BIN for Atomsk GB builds."}
+                </p>
               </div>
             </div>
             <pre className="log" style={{ height: "auto" }}>
-{`# Prefer setup_and_run.cmd (installs LAMMPS + clones KART if missing)
+{`# Prefer setup_and_run.cmd (LAMMPS + ASE + optional OVITO/Atomsk)
 
 # Crystal-aware lattices: bcc | fcc | hcp | diamond | hex(WC)
-# OVITO DXA (easiest): pip install -U ovito   OR set AEGIS_OVITO_BIN=…/ovitos.exe
-# Optional: pip install ase · atomsk for GB rebuilds`}
+# Nanostructures: ASE (required) · Atomsk optional — see docs/structures.md
+# OVITO DXA: pip install -U ovito   OR set AEGIS_OVITO_BIN=…/ovitos.exe`}
             </pre>
           </section>
         )}

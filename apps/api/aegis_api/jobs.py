@@ -28,6 +28,79 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _approx_mass_sym(sym: str) -> float:
+    table = {
+        "H": 1.008,
+        "D": 2.014,
+        "He": 4.003,
+        "C": 12.011,
+        "N": 14.007,
+        "O": 15.999,
+        "Al": 26.982,
+        "Si": 28.085,
+        "Ti": 47.867,
+        "V": 50.942,
+        "Cr": 51.996,
+        "Fe": 55.845,
+        "Ni": 58.693,
+        "Cu": 63.546,
+        "Mo": 95.95,
+        "W": 183.84,
+        "Ta": 180.95,
+        "Re": 186.21,
+    }
+    return float(table.get(sym[:1].upper() + sym[1:], table.get(sym, 1.0)))
+
+
+def _prepare_structure_file(
+    job_dir: Path,
+    *,
+    material: Material,
+    params: dict[str, Any],
+    mode: str,
+    log: Any | None = None,
+) -> str | None:
+    """Build structure.data when needed; return filename or None for single crystal."""
+    from lammps.structure import build_structure, needs_structure_file
+    from lammps.structure.data_patch import ensure_atom_types
+
+    if not needs_structure_file(params):
+        return None
+    mat_dict = material.model_dump(mode="json")
+    meta = build_structure(job_dir, material=mat_dict, params=params)
+    if log is not None:
+        log.write(
+            f"[Aegis] structure_kind={meta.get('kind')} backend={meta.get('backend')} "
+            f"atoms={meta.get('atom_count')} → structure.data\n"
+        )
+        if meta.get("atomsk_fallback_reason"):
+            log.write(f"[Aegis] Atomsk fallback: {meta['atomsk_fallback_reason']}\n")
+        if meta.get("artificial_void"):
+            log.write(f"[Aegis] void removed {meta.get('void_atoms_removed')} atoms\n")
+
+    # Implant / surface / interstitial may create_atoms with an extra species type.
+    def _sym(s: str) -> str:
+        s = (s or "").strip()
+        return s[:1].upper() + s[1:] if s else s
+
+    elems = [
+        _sym(str(c.get("symbol")))
+        for c in (mat_dict.get("composition") or [])
+        if float(c.get("atomic_percent") or 0) > 0
+    ]
+    extra: str | None = None
+    if mode in {"implant", "surface"}:
+        extra = _sym(str(params.get("ion_type") or "He"))
+    elif mode == "interstitial":
+        extra = _sym(str(params.get("interstitial_species") or "He"))
+    if extra and not any(e.lower() == extra.lower() for e in elems):
+        elems.append(extra)
+    if len(elems) > 1:
+        masses = {i + 1: _approx_mass_sym(s) for i, s in enumerate(elems)}
+        ensure_atom_types(job_dir / "structure.data", len(elems), masses)
+    return "structure.data"
+
+
 class JobManager:
     def __init__(self, runs_root: Path, store: Any) -> None:
         self.runs_root = runs_root
@@ -161,38 +234,24 @@ class JobManager:
             self._update(job_id, message="stub inputs prepared (unsupported crystal or placeholder)")
             return in_path
 
+        structure_file = _prepare_structure_file(
+            job_dir, material=material, params=params, mode=mode
+        )
+        write_kw = dict(
+            material=mat_dict,
+            potential=pot_dict,
+            params=params,
+            potential_file=local_pot.name,
+            structure_file=structure_file,
+        )
         if mode == "surface":
-            write_surface_input(
-                in_path,
-                material=mat_dict,
-                potential=pot_dict,
-                params=params,
-                potential_file=local_pot.name,
-            )
+            write_surface_input(in_path, **write_kw)
         elif mode == "implant":
-            write_implant_input(
-                in_path,
-                material=mat_dict,
-                potential=pot_dict,
-                params=params,
-                potential_file=local_pot.name,
-            )
+            write_implant_input(in_path, **write_kw)
         elif mode == "interstitial":
-            write_interstitial_input(
-                in_path,
-                material=mat_dict,
-                potential=pot_dict,
-                params=params,
-                potential_file=local_pot.name,
-            )
+            write_interstitial_input(in_path, **write_kw)
         else:
-            write_cascade_input(
-                in_path,
-                material=mat_dict,
-                potential=pot_dict,
-                params=params,
-                potential_file=local_pot.name,
-            )
+            write_cascade_input(in_path, **write_kw)
         self._update(job_id, message="inputs prepared for HPC export")
         return in_path
 
@@ -332,38 +391,28 @@ class JobManager:
                         self._write_demo_dump(job_dir, material)
                     log.write("[Aegis] demo dump written for analysis.\n")
                 else:
+                    structure_file = _prepare_structure_file(
+                        job_dir,
+                        material=material,
+                        params=params,
+                        mode=mode,
+                        log=log,
+                    )
+                    write_kw = dict(
+                        material=mat_dict,
+                        potential=pot_dict,
+                        params=params,
+                        potential_file=local_pot.name,
+                        structure_file=structure_file,
+                    )
                     if mode == "surface":
-                        write_surface_input(
-                            in_path,
-                            material=mat_dict,
-                            potential=pot_dict,
-                            params=params,
-                            potential_file=local_pot.name,
-                        )
+                        write_surface_input(in_path, **write_kw)
                     elif mode == "implant":
-                        write_implant_input(
-                            in_path,
-                            material=mat_dict,
-                            potential=pot_dict,
-                            params=params,
-                            potential_file=local_pot.name,
-                        )
+                        write_implant_input(in_path, **write_kw)
                     elif mode == "interstitial":
-                        write_interstitial_input(
-                            in_path,
-                            material=mat_dict,
-                            potential=pot_dict,
-                            params=params,
-                            potential_file=local_pot.name,
-                        )
+                        write_interstitial_input(in_path, **write_kw)
                     else:
-                        write_cascade_input(
-                            in_path,
-                            material=mat_dict,
-                            potential=pot_dict,
-                            params=params,
-                            potential_file=local_pot.name,
-                        )
+                        write_cascade_input(in_path, **write_kw)
                     log.write(f"[Aegis] launching {lmp_path} -in {in_path.name}\n")
                     log.flush()
                     proc = subprocess.Popen(

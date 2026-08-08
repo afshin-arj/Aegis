@@ -164,6 +164,82 @@ def lattice_relax(material_id: str) -> dict[str, Any]:
     return try_ase_relax(m.model_dump())
 
 
+@app.post("/api/structure/preview")
+def structure_preview(payload: dict[str, Any]) -> dict[str, Any]:
+    """Build a temporary structure.data and return metadata (atom count, backend, box)."""
+    material_id = str(payload.get("material_id") or "")
+    params = dict(payload.get("params") or {})
+    m = store.get_material(material_id) if material_id else None
+    if payload.get("material"):
+        try:
+            m = Material(**payload["material"])
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(400, f"invalid material: {exc}") from exc
+    if not m:
+        raise HTTPException(400, "material_id or material required")
+    kind = str(
+        getattr(params.get("structure_kind"), "value", params.get("structure_kind"))
+        or "single_crystal"
+    ).lower()
+    if kind in {"", "single_crystal"}:
+        return {
+            "kind": "single_crystal",
+            "backend": "lammps_lattice",
+            "atom_count": None,
+            "note": "Single crystal uses LAMMPS lattice + create_atoms (no structure.data).",
+        }
+    import tempfile
+
+    from lammps.structure import build_structure, needs_structure_file
+
+    if not needs_structure_file(params):
+        raise HTTPException(400, f"structure_kind={kind} does not build a file")
+    # Defaults for preview cell
+    params.setdefault("nx", 6)
+    params.setdefault("ny", 6)
+    params.setdefault("nz", 6)
+    params.setdefault("seed", 42)
+    try:
+        with tempfile.TemporaryDirectory(prefix="aegis-struct-") as tmp:
+            meta = build_structure(Path(tmp), material=m.model_dump(mode="json"), params=params)
+            return meta
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, f"structure preview failed: {exc}") from exc
+
+
+@app.post("/api/structure/import")
+async def structure_import(file: UploadFile = File(...)) -> dict[str, Any]:
+    """Upload a LAMMPS data / ASE-readable structure for structure_kind=import."""
+    imports = DATA_ROOT / "imports"
+    imports.mkdir(parents=True, exist_ok=True)
+    safe = Path(file.filename or "structure.data").name.replace("..", "_")
+    dest = imports / f"{uuid.uuid4().hex[:10]}_{safe}"
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "empty upload")
+    dest.write_bytes(raw)
+    # Validate by importing into a temp structure.data
+    import tempfile
+
+    from lammps.structure.import_backend import import_structure
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="aegis-import-") as tmp:
+            meta = import_structure(dest, Path(tmp) / "structure.data")
+    except ValueError as exc:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(400, str(exc)) from exc
+    return {
+        "path": str(dest),
+        "filename": dest.name,
+        "atom_count": meta.get("atom_count"),
+        "note": meta.get("note"),
+        "hint": "Set structure_kind=import and structure_import_path to this path (or relative under the job dir after copy).",
+    }
+
+
 @app.get("/api/materials/{material_id}/export-poscar")
 def export_material_poscar(material_id: str, nx: int = 1, ny: int = 1, nz: int = 1) -> Response:
     m = store.get_material(material_id)

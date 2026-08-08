@@ -125,21 +125,39 @@ def _snap_lattice_site(
 
 
 def _poly_preamble(path: Path, material: dict[str, Any], params: dict[str, Any]) -> str:
-    kind = str(getattr(params.get("structure_kind"), "value", params.get("structure_kind", "single_crystal"))).lower()
-    if kind != "polycrystal":
+    """Comment block for nanostructures. Real atoms come from structure.data when built."""
+    kind = str(
+        getattr(params.get("structure_kind"), "value", params.get("structure_kind", "single_crystal"))
+    ).lower()
+    if kind in {"", "single_crystal"}:
         return ""
-    meta = build_polycrystal_meta(
-        path.parent,
-        nx=int(params["nx"]),
-        ny=int(params["ny"]),
-        nz=int(params["nz"]),
-        n_grains=int(params.get("poly_n_grains", 4)),
-        seed=int(params.get("poly_seed", params.get("seed", 42))),
-        texture=str(params.get("poly_texture", "random")),
-        crystal=str(material.get("crystal", "bcc")),
-        a=float(material.get("lattice_constant_A", 3.165)),
-    )
-    return polycrystal_lammps_comment(meta)
+    meta_path = path.parent / "structure_meta.json"
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            backend = meta.get("backend", "?")
+            natoms = meta.get("natoms", meta.get("n_atoms", "?"))
+            return (
+                f"# structure_kind={kind} via {backend} → read_data structure.data "
+                f"(natoms≈{natoms}; see structure_meta.json)\n"
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    if kind == "polycrystal":
+        # Legacy seed metadata only — not a substitute for structure.data
+        meta = build_polycrystal_meta(
+            path.parent,
+            nx=int(params["nx"]),
+            ny=int(params["ny"]),
+            nz=int(params["nz"]),
+            n_grains=int(params.get("poly_n_grains", 4)),
+            seed=int(params.get("poly_seed", params.get("seed", 42))),
+            texture=str(params.get("poly_texture", "random")),
+            crystal=str(material.get("crystal", "bcc")),
+            a=float(material.get("lattice_constant_A", 3.165)),
+        )
+        return polycrystal_lammps_comment(meta)
+    return f"# structure_kind={kind} — expect structure.data from Aegis builder\n"
 
 
 def plan_cascade_stages(
@@ -233,6 +251,37 @@ def plan_cascade_stages(
     }
 
 
+def _geometry_block(
+    *,
+    material: dict[str, Any],
+    params: dict[str, Any],
+    elems: list[str],
+    structure_file: str | None,
+) -> str:
+    """Lattice+create_atoms, or read_data for prebuilt nanostructures."""
+    nx, ny, nz = int(params["nx"]), int(params["ny"]), int(params["nz"])
+    masses = "\n".join(f"mass {i+1} {_approx_mass(sym)}" for i, sym in enumerate(elems))
+    if structure_file:
+        return textwrap.dedent(
+            f"""\
+            # Prebuilt nanostructure (ASE/Atomsk/import)
+            read_data {structure_file}
+            {masses}
+            """
+        )
+    lattice_cmd = _lattice_line(material, params)
+    create = _create_atoms_block(material, elems)
+    return textwrap.dedent(
+        f"""\
+        {lattice_cmd}
+        region box block 0 {nx} 0 {ny} 0 {nz} units lattice
+        create_box {len(elems)} box
+        {create}
+        {masses}
+        """
+    )
+
+
 def write_cascade_input(
     path: Path,
     *,
@@ -240,6 +289,7 @@ def write_cascade_input(
     potential: dict[str, Any],
     params: dict[str, Any],
     potential_file: str,
+    structure_file: str | None = None,
 ) -> Path:
     """Write a LAMMPS cascade input from UI run parameters."""
     elems = _elements_line(material["composition"])
@@ -262,6 +312,7 @@ def write_cascade_input(
     site_mode = str(params.get("pka_site") or "center").strip().lower()
     auto_stages = bool(params.get("cascade_auto_stages", True))
     dump_every = int(params.get("dump_every", 1000))
+    use_box_units = bool(structure_file)
 
     pair_style = potential["lammps_pair_style"]
     pair_coeff = render_pair_coeff(
@@ -270,13 +321,13 @@ def write_cascade_input(
     mass_pka = _approx_mass(primary)
     speed = math.sqrt(2.0 * E / mass_pka) * 98.226947
 
-    masses = "\n".join(f"mass {i+1} {_approx_mass(sym)}" for i, sym in enumerate(elems))
-    create = _create_atoms_block(material, elems)
     ensemble = _ensemble_fix(params)
     restart = _restart_block(params)
     crystal_note = _crystal_comment(material)
     poly_note = _poly_preamble(path, material, params)
-    lattice_cmd = _lattice_line(material, params)
+    geometry = _geometry_block(
+        material=material, params=params, elems=elems, structure_file=structure_file
+    )
 
     schedule = plan_cascade_stages(
         energy_eV=E,
@@ -323,29 +374,40 @@ def write_cascade_input(
                 fz = 0.5
 
         sx, sy, sz = _snap_lattice_site(material, fx, fy, fz, nx, ny, nz)
-        site_notes.append(f"PKA{i+1}: frac≈({fx:.3f},{fy:.3f},{fz:.3f}) → lattice ({sx:.3f},{sy:.3f},{sz:.3f})")
-        # Sphere large enough to catch one BCC atom at the snapped site
-        rad = 0.45
-        # Type index is 1-based; mass/speed already use this species — kick only that type.
+        # Prebuilt structures have no active lattice; use box Å (cubic approx a*nx).
+        if use_box_units:
+            cx, cy, cz = sx * a, sy * a, sz * a
+            rad, rad2, rad3 = 0.45 * a, 0.85 * a, 2.5 * a
+            units = "box"
+            site_notes.append(
+                f"PKA{i+1}: frac≈({fx:.3f},{fy:.3f},{fz:.3f}) → box Å ({cx:.3f},{cy:.3f},{cz:.3f})"
+            )
+        else:
+            cx, cy, cz = sx, sy, sz
+            rad, rad2, rad3 = 0.45, 0.85, 2.5
+            units = "lattice"
+            site_notes.append(
+                f"PKA{i+1}: frac≈({fx:.3f},{fy:.3f},{fz:.3f}) → lattice ({sx:.3f},{sy:.3f},{sz:.3f})"
+            )
         pka_type = _elem_index(elems, primary)
         pka_blocks.append(
             textwrap.dedent(
                 f"""\
                 # PKA event {i + 1}/{n_pkas} species={primary} type={pka_type} site={site_mode}
-                # Target lattice site ({sx:.6f} {sy:.6f} {sz:.6f}); pick nearest host atom of PKA type
-                region pka_pick_{i} sphere {sx:.6f} {sy:.6f} {sz:.6f} {rad:.4f} units lattice
+                # Target ({cx:.6f} {cy:.6f} {cz:.6f}) units {units}; nearest host of PKA type
+                region pka_pick_{i} sphere {cx:.6f} {cy:.6f} {cz:.6f} {rad:.4f} units {units}
                 group pka_reg_{i} region pka_pick_{i}
                 group pka_type_{i} type {pka_type}
                 group pka_{i} intersect pka_reg_{i} pka_type_{i}
                 # Expand search if FP miss; abort if still empty (alloy minority PKA)
                 variable npka_{i} equal count(pka_{i})
                 if "${{npka_{i}}} == 0" then &
-                  "region pka_pick_{i} sphere {sx:.6f} {sy:.6f} {sz:.6f} 0.85 units lattice" &
+                  "region pka_pick_{i} sphere {cx:.6f} {cy:.6f} {cz:.6f} {rad2:.4f} units {units}" &
                   "group pka_reg_{i} region pka_pick_{i}" &
                   "group pka_{i} intersect pka_reg_{i} pka_type_{i}"
                 variable npka_{i} equal count(pka_{i})
                 if "${{npka_{i}}} == 0" then &
-                  "region pka_pick_{i} sphere {sx:.6f} {sy:.6f} {sz:.6f} 2.5 units lattice" &
+                  "region pka_pick_{i} sphere {cx:.6f} {cy:.6f} {cz:.6f} {rad3:.4f} units {units}" &
                   "group pka_reg_{i} region pka_pick_{i}" &
                   "group pka_{i} intersect pka_reg_{i} pka_type_{i}"
                 variable npka_{i} equal count(pka_{i})
@@ -420,11 +482,7 @@ def write_cascade_input(
         boundary {params.get("boundary", "p p p")}
         atom_style atomic
 
-        {lattice_cmd}
-        region box block 0 {nx} 0 {ny} 0 {nz} units lattice
-        create_box {len(elems)} box
-        {create}
-        {masses}
+        {geometry}
 
         pair_style {pair_style}
         {pair_coeff}
@@ -505,6 +563,7 @@ def write_implant_input(
     potential: dict[str, Any],
     params: dict[str, Any],
     potential_file: str,
+    structure_file: str | None = None,
 ) -> Path:
     elems = _elements_line(material["composition"])
     ion = _norm_sym(str(params.get("ion_type", "He")))
@@ -533,24 +592,58 @@ def write_implant_input(
     vy = 0.0
     vz = -speed * math.cos(angle)
 
-    masses = "\n".join(f"mass {i+1} {_approx_mass(sym)}" for i, sym in enumerate(elems))
     ion_type = _elem_index(elems, ion)
     host_elems = [e for e in elems if e.lower() != ion.lower()] or elems[:1]
-    create = _create_atoms_block(material, host_elems)
     ensemble = _ensemble_fix(params)
     dump, dump_mod = _dump_command(params, "dump.implant.*.lammpstrj")
     restart = _restart_block(params)
     crystal_note = _crystal_comment(material)
-    lattice_cmd = _lattice_line(material, params)
+    geometry = _geometry_block(
+        material=material, params=params, elems=host_elems, structure_file=structure_file
+    )
+    # Extra type for ion when host-only geometry used single-crystal create_box size
+    if structure_file:
+        # read_data already created the box; ensure ion type mass + lattice for inserts
+        lattice_cmd = _lattice_line(material, params)
+        geometry = (
+            geometry
+            + f"mass {ion_type} {_approx_mass(ion)}\n"
+            + f"{lattice_cmd}\n"
+        )
+    else:
+        # Recreate with full type count including ion
+        geometry = _geometry_block(
+            material=material, params=params, elems=elems, structure_file=None
+        )
+        # Replace host-only create with host create inside full box
+        create = _create_atoms_block(material, host_elems)
+        masses = "\n".join(f"mass {i+1} {_approx_mass(sym)}" for i, sym in enumerate(elems))
+        lattice_cmd = _lattice_line(material, params)
+        geometry = textwrap.dedent(
+            f"""\
+            {lattice_cmd}
+            region box block 0 {nx} 0 {ny} 0 {nz} units lattice
+            create_box {len(elems)} box
+            {create}
+            {masses}
+            """
+        )
 
     insert_lines = []
     for i in range(ion_count):
         # Spread ions slightly in xy for multi-ion proxy
         fx = 0.5 + 0.05 * ((i % 3) - 1)
         fy = 0.5 + 0.05 * (((i // 3) % 3) - 1)
-        insert_lines.append(
-            f"create_atoms {ion_type} single {fx:.3f} {fy:.3f} {nz - 0.5} units lattice"
-        )
+        if structure_file:
+            # Box Å above estimated top of nx*a × ny*a × nz*a cell
+            bx, by, bz = fx * nx * a, fy * ny * a, (nz - 0.5) * a
+            insert_lines.append(
+                f"create_atoms {ion_type} single {bx:.4f} {by:.4f} {bz:.4f} units box"
+            )
+        else:
+            insert_lines.append(
+                f"create_atoms {ion_type} single {fx:.3f} {fy:.3f} {nz - 0.5} units lattice"
+            )
     insert_block = "\n".join(insert_lines)
 
     # Free Z avoids periodic wrap of injected ions (same default as surface mode).
@@ -567,11 +660,7 @@ def write_implant_input(
         boundary {boundary}
         atom_style atomic
 
-        {lattice_cmd}
-        region box block 0 {nx} 0 {ny} 0 {nz} units lattice
-        create_box {len(elems)} box
-        {create}
-        {masses}
+        {geometry}
 
         pair_style {pair_style}
         {pair_coeff}
@@ -615,6 +704,7 @@ def write_surface_input(
     potential: dict[str, Any],
     params: dict[str, Any],
     potential_file: str,
+    structure_file: str | None = None,
 ) -> Path:
     """Low-E He/D free-surface MD with vacuum slab (Phase-3 fuzz/erosion proxy)."""
     elems = _elements_line(material["composition"])
@@ -648,10 +738,31 @@ def write_surface_input(
     masses = "\n".join(f"mass {i+1} {_approx_mass(sym)}" for i, sym in enumerate(elems))
     ion_type = _elem_index(elems, ion)
     host_elems = [e for e in elems if e.lower() != ion.lower()] or elems[:1]
-    create_host = (
-        f"region substrate block 0 {nx} 0 {ny} 0 {nz} units lattice\n"
-        f"{_create_atoms_block(material, host_elems, region='substrate')}"
-    )
+    lattice_cmd = _lattice_line(material, params)
+    if structure_file:
+        geometry = textwrap.dedent(
+            f"""\
+            # Prebuilt nanostructure (+ vacuum via change_box)
+            read_data {structure_file}
+            {masses}
+            {lattice_cmd}
+            change_box all z final 0 {(nz_box) * a:.6f} units box
+            """
+        )
+    else:
+        create_host = (
+            f"region substrate block 0 {nx} 0 {ny} 0 {nz} units lattice\n"
+            f"{_create_atoms_block(material, host_elems, region='substrate')}"
+        )
+        geometry = textwrap.dedent(
+            f"""\
+            {lattice_cmd}
+            region box block 0 {nx} 0 {ny} 0 {nz_box} units lattice
+            create_box {len(elems)} box
+            {create_host}
+            {masses}
+            """
+        )
 
     boundary = str(params.get("boundary") or "p p s")
     if boundary.strip() == "p p p":
@@ -660,15 +771,20 @@ def write_surface_input(
     dump, dump_mod = _dump_command(params, "dump.surface.*.lammpstrj")
     restart = _restart_block(params)
     crystal_note = _crystal_comment(material)
-    lattice_cmd = _lattice_line(material, params)
 
     insert_lines = []
     for i in range(n_impacts):
         fx = 0.3 + 0.4 * ((i * 0.37) % 1.0)
         fy = 0.3 + 0.4 * ((i * 0.61) % 1.0)
-        insert_lines.append(
-            f"create_atoms {ion_type} single {fx:.4f} {fy:.4f} {nz + 0.8} units lattice"
-        )
+        if structure_file:
+            bx, by, bz = fx * nx * a, fy * ny * a, (nz + 0.8) * a
+            insert_lines.append(
+                f"create_atoms {ion_type} single {bx:.4f} {by:.4f} {bz:.4f} units box"
+            )
+        else:
+            insert_lines.append(
+                f"create_atoms {ion_type} single {fx:.4f} {fy:.4f} {nz + 0.8} units lattice"
+            )
     insert_block = "\n".join(insert_lines)
 
     script = textwrap.dedent(
@@ -682,11 +798,7 @@ def write_surface_input(
         boundary {boundary}
         atom_style atomic
 
-        {lattice_cmd}
-        region box block 0 {nx} 0 {ny} 0 {nz_box} units lattice
-        create_box {len(elems)} box
-        {create_host}
-        {masses}
+        {geometry}
 
         pair_style {pair_style}
         {pair_coeff}
@@ -761,6 +873,7 @@ def write_interstitial_input(
     potential: dict[str, Any],
     params: dict[str, Any],
     potential_file: str,
+    structure_file: str | None = None,
 ) -> Path:
     """Insert interstitial impurities / SIA seeds along crystal-aware lattice directions.
 
@@ -799,13 +912,31 @@ def write_interstitial_input(
         elems,
     )
     masses = "\n".join(f"mass {i+1} {_approx_mass(sym)}" for i, sym in enumerate(elems))
-    create = _create_atoms_block(material, host_elems)
     ensemble = _ensemble_fix(params)
     dump, dump_mod = _dump_command(params, "dump.interstitial.*.lammpstrj")
     restart = _restart_block(params)
     crystal_note = _crystal_comment(material)
     poly_note = _poly_preamble(path, material, params)
     lattice_cmd = _lattice_line(material, params)
+    if structure_file:
+        geometry_block = textwrap.dedent(
+            f"""\
+            read_data {structure_file}
+            {masses}
+            {lattice_cmd}
+            """
+        )
+    else:
+        create = _create_atoms_block(material, host_elems)
+        geometry_block = textwrap.dedent(
+            f"""\
+            {lattice_cmd}
+            region box block 0 {nx} 0 {ny} 0 {nz} units lattice
+            create_box {len(elems)} box
+            {create}
+            {masses}
+            """
+        )
 
     ux, uy, uz = _lattice_direction_unit(direction_s, seed, crystal)
     sites = _interstitial_sites_lattice(
@@ -820,10 +951,16 @@ def write_interstitial_input(
         offset_A=offset_A,
     )
     ityp = _elem_index(elems, species)
-    insert_lines = [
-        f"create_atoms {ityp} single {x:.6f} {y:.6f} {z:.6f} units lattice"
-        for x, y, z, _kind in sites
-    ]
+    if structure_file:
+        insert_lines = [
+            f"create_atoms {ityp} single {x * a:.6f} {y * a:.6f} {z * a:.6f} units box"
+            for x, y, z, _kind in sites
+        ]
+    else:
+        insert_lines = [
+            f"create_atoms {ityp} single {x:.6f} {y:.6f} {z:.6f} units lattice"
+            for x, y, z, _kind in sites
+        ]
     insert_block = "\n".join(insert_lines)
 
     kick_block = ""
@@ -851,11 +988,7 @@ def write_interstitial_input(
         boundary {params.get("boundary", "p p p")}
         atom_style atomic
 
-        {lattice_cmd}
-        region box block 0 {nx} 0 {ny} 0 {nz} units lattice
-        create_box {len(elems)} box
-        {create}
-        {masses}
+        {geometry_block}
 
         pair_style {pair_style}
         {pair_coeff}

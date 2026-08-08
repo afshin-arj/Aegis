@@ -21,8 +21,23 @@ def discover_ase() -> dict[str, Any]:
 
 
 def discover_atomsk() -> dict[str, Any]:
-    path = shutil.which("atomsk")
-    return {"atomsk_found": bool(path), "atomsk_path": path}
+    import os
+
+    env = (os.environ.get("AEGIS_ATOMSK_BIN") or "").strip()
+    if env and Path(env).exists():
+        return {"atomsk_found": True, "atomsk_path": env}
+    path = shutil.which("atomsk") or shutil.which("atomsk.exe")
+    if path:
+        return {"atomsk_found": True, "atomsk_path": path}
+    # Repo-local bootstrap install
+    root = Path(__file__).resolve().parents[3]
+    for cand in (
+        root / "third_party" / "atomsk" / "atomsk.exe",
+        root / "third_party" / "atomsk" / "atomsk",
+    ):
+        if cand.exists():
+            return {"atomsk_found": True, "atomsk_path": str(cand)}
+    return {"atomsk_found": False, "atomsk_path": None}
 
 
 def export_poscar(material: dict[str, Any], *, nx: int = 1, ny: int = 1, nz: int = 1) -> str:

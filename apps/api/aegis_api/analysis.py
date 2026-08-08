@@ -61,7 +61,7 @@ def analyze_job_dir(
     cutoff = float(cluster_cutoff_A) if cluster_cutoff_A is not None else 0.9 * a_ref
     cry = crystal_reg.normalize_crystal(crystal)
     c_ref = float(lattice_c_A) if lattice_c_A else None
-    poly = str(structure_kind).lower() == "polycrystal"
+    poly = str(structure_kind).lower() in {"polycrystal", "polycrystal_void"}
 
     dumps = _prefer_analysis_dumps(job_dir)
     if not dumps:
