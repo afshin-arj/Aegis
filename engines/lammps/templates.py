@@ -123,6 +123,55 @@ def _snap_lattice_site(
     )
 
 
+def _elems_for_script(
+    path: Path,
+    material: dict[str, Any],
+    params: dict[str, Any],
+    *,
+    structure_file: str | None,
+    mode: str,
+) -> list[str]:
+    """Composition / structure type order for pair_coeff (matches structure.data)."""
+    if structure_file:
+        meta_path = path.parent / "structure_meta.json"
+        if meta_path.exists():
+            try:
+                ts = json.loads(meta_path.read_text(encoding="utf-8")).get("type_symbols")
+                if isinstance(ts, list) and ts:
+                    return [_norm_sym(str(s)) for s in ts if str(s).strip()]
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            from lammps.structure.types import structure_type_symbols
+
+            return structure_type_symbols(material, params, mode=mode)
+        except Exception:  # noqa: BLE001
+            pass
+    elems = _elements_line(material["composition"])
+    kind = str(
+        getattr(params.get("structure_kind"), "value", params.get("structure_kind")) or ""
+    ).lower()
+    if kind == "precipitate":
+        ppt = _norm_sym(str(params.get("precipitate_species") or "Re"))
+        if ppt and not _has_elem(elems, ppt):
+            elems = elems + [ppt]
+    return elems
+
+
+def _nanowire_boundary(params: dict[str, Any]) -> str | None:
+    kind = str(
+        getattr(params.get("structure_kind"), "value", params.get("structure_kind")) or ""
+    ).lower()
+    if kind != "nanowire":
+        return None
+    axis = str(params.get("nanowire_axis") or "z").strip().lower()
+    if axis == "x":
+        return "p s s"
+    if axis == "y":
+        return "s p s"
+    return "s s p"  # z wire: free x/y, periodic z
+
+
 def _structure_box_A(
     path: Path,
     material: dict[str, Any],
@@ -302,7 +351,8 @@ def write_cascade_input(
     structure_file: str | None = None,
 ) -> Path:
     """Write a LAMMPS cascade input from UI run parameters."""
-    elems = _elements_line(material["composition"])
+    mode = "cascade"
+    elems = _elems_for_script(path, material, params, structure_file=structure_file, mode=mode)
     primary = _norm_sym(str(params.get("pka_species") or (elems[0] if elems else "W")))
     if not elems:
         raise ValueError("Material composition is empty — cannot write cascade input")
@@ -338,6 +388,13 @@ def write_cascade_input(
     geometry = _geometry_block(
         material=material, params=params, elems=elems, structure_file=structure_file
     )
+    nw_bound = _nanowire_boundary(params)
+    boundary = nw_bound or str(params.get("boundary", "p p p"))
+    if nw_bound and str(params.get("boundary", "")).strip() and str(params.get("boundary")).strip() != nw_bound:
+        poly_note = (poly_note or "") + (
+            f"# nanowire: overriding boundary '{params.get('boundary')}' → '{nw_bound}' "
+            f"(free transverse surfaces)\n"
+        )
 
     schedule = plan_cascade_stages(
         energy_eV=E,
@@ -491,7 +548,7 @@ def write_cascade_input(
 {sites_comment}
         units metal
         dimension 3
-        boundary {params.get("boundary", "p p p")}
+        boundary {boundary}
         atom_style atomic
 
         {geometry}
@@ -577,7 +634,7 @@ def write_implant_input(
     potential_file: str,
     structure_file: str | None = None,
 ) -> Path:
-    elems = _elements_line(material["composition"])
+    elems = _elems_for_script(path, material, params, structure_file=structure_file, mode="implant")
     ion = _norm_sym(str(params.get("ion_type", "He")))
     if not _has_elem(elems, ion):
         elems = elems + [ion]
@@ -719,7 +776,7 @@ def write_surface_input(
     structure_file: str | None = None,
 ) -> Path:
     """Low-E He/D free-surface MD with vacuum slab (Phase-3 fuzz/erosion proxy)."""
-    elems = _elements_line(material["composition"])
+    elems = _elems_for_script(path, material, params, structure_file=structure_file, mode="surface")
     ion = _norm_sym(str(params.get("ion_type", "He")))
     if not _has_elem(elems, ion):
         elems = elems + [ion]

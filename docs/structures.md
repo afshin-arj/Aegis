@@ -65,4 +65,8 @@ Substitutional proxy on the **host lattice** — not a second crystal structure.
 
 ## Integrity rule
 
-Non–single-crystal kinds **must not** silently fall back to a perfect single crystal for real MD. Dry-run still builds `structure.data` when possible and warns that demo dumps are SC proxies. Builder failure → clear error (install ASE / fix params).
+Non–single-crystal kinds **must not** silently fall back to a perfect single crystal for real MD. Dry-run still builds `structure.data` when possible, stamps `demo_structure_proxy` on Results, and warns that demo dumps are SC proxies. Builder failure → clear error (install ASE / fix params).
+
+**HPC export** refuses dry-run/placeholder stubs. Nanowire cascade uses free transverse boundaries (`s s p` for z-wire). Nanowire + surface/implant is blocked in the UI until beam geometry is axis-aware. Crystal orientation applies to single crystal only.
+
+**Precipitate types:** `structure.data` uses composition order (+ precipitate species) as ASE `specorder` so `pair_coeff` types match.

@@ -754,7 +754,7 @@ export default function App() {
     }
     const potElems = new Set((selectedPot?.elements || []).map((s) => normalizeSymbol(s).toLowerCase()));
     const covers = (sym: string) => potElems.has(normalizeSymbol(sym).toLowerCase());
-    if (params.mode === "interstitial" && selectedPot) {
+    if (selectedPot && !selectedPot.is_placeholder && params.mode === "interstitial") {
       const need = [...hosts, params.interstitial_species].filter(Boolean);
       if (!need.every(covers)) {
         list.push(
@@ -762,7 +762,7 @@ export default function App() {
         );
       }
     }
-    if (selectedPot && ["cascade", "implant", "surface"].includes(params.mode)) {
+    if (selectedPot && !selectedPot.is_placeholder && ["cascade", "implant", "surface"].includes(params.mode)) {
       const need = [
         ...hosts,
         params.mode === "cascade" ? params.pka_species : params.ion_type,
@@ -773,13 +773,21 @@ export default function App() {
         );
       }
     }
-    if (selectedPot && params.structure_kind === "precipitate") {
+    if (selectedPot && !selectedPot.is_placeholder && params.structure_kind === "precipitate") {
       const need = [...hosts, params.precipitate_species].filter(Boolean);
       if (!need.every(covers)) {
         list.push(
           `Precipitate species must be covered by the potential (${need.join(", ")}); current covers ${selectedPot.elements.join(" ")}`,
         );
       }
+    }
+    if (
+      params.structure_kind === "nanowire" &&
+      (params.mode === "surface" || params.mode === "implant")
+    ) {
+      list.push(
+        "Nanowire + surface/implant is not supported yet — use cascade mode (or single crystal for surface/implant)",
+      );
     }
     return list;
   }, [
@@ -2652,6 +2660,12 @@ export default function App() {
                 <Field label="Crystal orientation" unit="x-axis" htmlFor="orient">
                   <select
                     id="orient"
+                    disabled={params.structure_kind !== "single_crystal"}
+                    title={
+                      params.structure_kind !== "single_crystal"
+                        ? "Orientation applies to single-crystal lattice create only; ASE nanostructures use default axes"
+                        : undefined
+                    }
                     value={
                       (crystalInfo?.orients || [{ id: "100" }, { id: "110" }, { id: "111" }]).some(
                         (o) => o.id === params.crystal_orient,
@@ -2926,35 +2940,72 @@ export default function App() {
                 </div>
               )}
               {params.structure_kind === "precipitate" && (
-                <div className="row">
-                  <Field label="Species" htmlFor="ppt-sp">
-                    <input
-                      id="ppt-sp"
-                      value={params.precipitate_species}
-                      onChange={(e) => setParam("precipitate_species", e.target.value)}
-                    />
-                  </Field>
-                  <Field label="Radius (Å)" htmlFor="ppt-r">
-                    <input
-                      id="ppt-r"
-                      type="number"
-                      min={0.5}
-                      step={0.5}
-                      value={params.precipitate_radius_A}
-                      onChange={(e) => setParam("precipitate_radius_A", Number(e.target.value))}
-                    />
-                  </Field>
-                  <Field label="Count" htmlFor="ppt-n">
-                    <input
-                      id="ppt-n"
-                      type="number"
-                      min={1}
-                      max={64}
-                      value={params.precipitate_count}
-                      onChange={(e) => setParam("precipitate_count", Number(e.target.value))}
-                    />
-                  </Field>
-                </div>
+                <>
+                  <div className="row">
+                    <Field label="Species" htmlFor="ppt-sp">
+                      <input
+                        id="ppt-sp"
+                        value={params.precipitate_species}
+                        onChange={(e) => setParam("precipitate_species", e.target.value)}
+                      />
+                    </Field>
+                    <Field label="Radius (Å)" htmlFor="ppt-r">
+                      <input
+                        id="ppt-r"
+                        type="number"
+                        min={0.5}
+                        step={0.5}
+                        value={params.precipitate_radius_A}
+                        onChange={(e) => setParam("precipitate_radius_A", Number(e.target.value))}
+                      />
+                    </Field>
+                    <Field label="Count" htmlFor="ppt-n">
+                      <input
+                        id="ppt-n"
+                        type="number"
+                        min={1}
+                        max={64}
+                        value={params.precipitate_count}
+                        onChange={(e) => setParam("precipitate_count", Number(e.target.value))}
+                      />
+                    </Field>
+                  </div>
+                  <div className="row">
+                    <Field label="Center x" htmlFor="ppt-x">
+                      <input
+                        id="ppt-x"
+                        type="number"
+                        min={0}
+                        max={1}
+                        step={0.05}
+                        value={params.precipitate_center_frac_x}
+                        onChange={(e) => setParam("precipitate_center_frac_x", Number(e.target.value))}
+                      />
+                    </Field>
+                    <Field label="Center y" htmlFor="ppt-y">
+                      <input
+                        id="ppt-y"
+                        type="number"
+                        min={0}
+                        max={1}
+                        step={0.05}
+                        value={params.precipitate_center_frac_y}
+                        onChange={(e) => setParam("precipitate_center_frac_y", Number(e.target.value))}
+                      />
+                    </Field>
+                    <Field label="Center z" htmlFor="ppt-z">
+                      <input
+                        id="ppt-z"
+                        type="number"
+                        min={0}
+                        max={1}
+                        step={0.05}
+                        value={params.precipitate_center_frac_z}
+                        onChange={(e) => setParam("precipitate_center_frac_z", Number(e.target.value))}
+                      />
+                    </Field>
+                  </div>
+                </>
               )}
               {params.structure_kind === "void_lattice" && (
                 <>
@@ -3686,6 +3737,12 @@ export default function App() {
                 Vacancy / SIA counts use a Wigner–Seitz reference-lattice proxy. Confirm production conclusions against
                 the trajectory and a domain-standard analysis workflow (e.g. OVITO).
               </div>
+              {Boolean((defects?.summary as { demo_structure_proxy?: boolean } | undefined)?.demo_structure_proxy) && (
+                <div className="alert alert-warn">
+                  Dry-run demo dumps are single-crystal proxies — nanostructure <code>structure.data</code> may exist
+                  in the job folder, but these WS numbers are not from that geometry.
+                </div>
+              )}
               {defects?.summary ? (
                 <table className="table">
                   <tbody>
@@ -4102,7 +4159,15 @@ export default function App() {
           </div>
           <div>
             <dt>Structure</dt>
-            <dd>{params.structure_kind.replace(/_/g, " ")}</dd>
+            <dd>
+              {params.structure_kind.replace(/_/g, " ")}
+              {params.structure_kind === "nanowire"
+                ? ` · r=${params.nanowire_radius_A}Å · ${params.nanowire_axis}`
+                : ""}
+              {params.structure_kind === "precipitate"
+                ? ` · ${params.precipitate_species} r=${params.precipitate_radius_A}Å`
+                : ""}
+            </dd>
           </div>
           <div>
             <dt>Cell</dt>

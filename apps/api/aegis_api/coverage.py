@@ -42,7 +42,7 @@ def _mode_value(params: Any) -> str:
 
 
 def required_species(material: Any, params: Any) -> list[str]:
-    """Host composition plus mode-specific projectile / insert species."""
+    """Host composition plus mode-specific projectile / insert / precipitate species."""
     hosts = host_symbols(material)
     mode = _mode_value(params)
     extra: list[str] = []
@@ -56,6 +56,12 @@ def required_species(material: Any, params: Any) -> list[str]:
         extra.append(normalize_symbol(str(_param_get(params, "ion_type") or "He")))
     elif mode == "interstitial":
         extra.append(normalize_symbol(str(_param_get(params, "interstitial_species") or "He")))
+    sk = str(
+        getattr(_param_get(params, "structure_kind"), "value", _param_get(params, "structure_kind"))
+        or "single_crystal"
+    ).strip().lower()
+    if sk == "precipitate":
+        extra.append(normalize_symbol(str(_param_get(params, "precipitate_species") or "Re")))
     seen: set[str] = set()
     ordered: list[str] = []
     for sym in [*hosts, *extra]:

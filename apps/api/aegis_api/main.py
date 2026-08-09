@@ -677,13 +677,30 @@ def export_job_hpc(job_id: str, body: HpcExportRequest) -> FileResponse:
     if not info:
         raise HTTPException(404, "job not found")
     job_dir = RUNS_ROOT / job_id
-    if not (job_dir / "in.aegis").exists():
+    in_path = job_dir / "in.aegis"
+    need_prepare = True
+    if in_path.exists():
+        head = in_path.read_text(encoding="utf-8", errors="replace")[:240]
+        # Re-prepare if dry-run / HPC stub so packs are not silent SC/stub only
+        if "Aegis dry-run stub" in head or "Aegis HPC stub" in head:
+            need_prepare = True
+        else:
+            need_prepare = False
+    if need_prepare:
         try:
             jobs.prepare_inputs(job_id)
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(400, f"could not prepare inputs: {exc}") from exc
     if not (job_dir / "in.aegis").exists():
         raise HTTPException(400, "job has no in.aegis yet — wait until the run starts preparing inputs")
+    # Refuse shipping an HPC stub as if it were production-ready
+    head = (job_dir / "in.aegis").read_text(encoding="utf-8", errors="replace")[:240]
+    if "Aegis HPC stub" in head or "Aegis dry-run stub" in head:
+        raise HTTPException(
+            400,
+            "HPC export refused: inputs are still a dry-run/placeholder stub. "
+            "Upload a published potential (and supported crystal) then export again.",
+        )
     pack_dir = job_dir / "hpc_pack"
     if pack_dir.exists():
         shutil.rmtree(pack_dir)

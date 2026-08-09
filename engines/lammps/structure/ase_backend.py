@@ -24,7 +24,20 @@ def _crystal_name(material: dict[str, Any]) -> str:
 
 
 def _ase_crystal(cry: str) -> str:
-    return {"bcc": "bcc", "fcc": "fcc", "hcp": "hcp", "diamond": "diamond", "hex": "hcp"}.get(cry, "bcc")
+    """Map Aegis crystal id to ASE bulk name. Refuse silent wrong lattices."""
+    key = (cry or "bcc").strip().lower()
+    if key == "hex":
+        raise ValueError(
+            "structure builders do not support crystal=hex (WC) yet — use bcc/fcc/hcp/diamond, "
+            "or structure_kind=import with a WC cell."
+        )
+    mapping = {"bcc": "bcc", "fcc": "fcc", "hcp": "hcp", "diamond": "diamond"}
+    if key not in mapping:
+        raise ValueError(
+            f"structure builders do not support crystal='{cry}' — use bcc/fcc/hcp/diamond "
+            "(or import a LAMMPS data file)."
+        )
+    return mapping[key]
 
 
 def _make_bulk(material: dict[str, Any], nx: int, ny: int, nz: int):
@@ -471,19 +484,42 @@ def _precipitates(material: dict[str, Any], params: dict[str, Any], rng: random.
     return atoms, meta
 
 
-def _write_lammps_data(atoms, path: Path, symbol: str | None = None) -> int:
+def _write_lammps_data(
+    atoms,
+    path: Path,
+    symbol: str | None = None,
+    *,
+    specorder: list[str] | None = None,
+) -> int:
     from ase.io import write
 
     atoms = atoms.copy()
     if symbol is not None:
         atoms.set_chemical_symbols([symbol] * len(atoms))
     path.parent.mkdir(parents=True, exist_ok=True)
-    write(str(path), atoms, format="lammps-data", atom_style="atomic", masses=True)
+    kwargs: dict[str, Any] = {"format": "lammps-data", "atom_style": "atomic", "masses": True}
+    if specorder:
+        kwargs["specorder"] = list(specorder)
+    write(str(path), atoms, **kwargs)
     return len(atoms)
 
 
+def _precipitate_specorder(material: dict[str, Any], params: dict[str, Any], atoms) -> list[str]:
+    from lammps.structure.types import structure_type_symbols
+
+    order = structure_type_symbols(material, params)
+    # Ensure every symbol present in the atoms object is in specorder
+    present = {str(s) for s in set(atoms.get_chemical_symbols())}
+    for s in present:
+        if s and s not in order:
+            order.append(s)
+    return order
+
+
 def build_with_ase(out_data: Path, *, material: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
-    kind = str(getattr(params.get("structure_kind"), "value", params.get("structure_kind")) or "void").lower()
+    kind = str(getattr(params.get("structure_kind"), "value", params.get("structure_kind")) or "").lower()
+    if not kind:
+        raise ValueError("structure_kind is required for ASE builder")
     seed = int(params.get("poly_seed") or params.get("seed") or 42)
     rng = random.Random(seed)
     sym = _host_symbol(material)
@@ -532,7 +568,12 @@ def build_with_ase(out_data: Path, *, material: dict[str, Any], params: dict[str
                 "Increase void_radius_A or cell size."
             )
 
-    n = _write_lammps_data(atoms, out_data, sym if force_mono else None)
+    n = _write_lammps_data(
+        atoms,
+        out_data,
+        sym if force_mono else None,
+        specorder=None if force_mono else _precipitate_specorder(material, params, atoms),
+    )
     cell = atoms.get_cell()
     box_A = [float(cell[0, 0]), float(cell[1, 1]), float(cell[2, 2])]
     note = "ASE structure builder"

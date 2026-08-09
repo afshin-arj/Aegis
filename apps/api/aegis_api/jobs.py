@@ -61,8 +61,10 @@ def _prepare_structure_file(
     log: Any | None = None,
 ) -> str | None:
     """Build structure.data when needed; return filename or None for single crystal."""
-    from lammps.structure import build_structure, needs_structure_file, structure_kind_value
+    from lammps.structure import build_structure, needs_structure_file
     from lammps.structure.data_patch import ensure_atom_types
+    from lammps.structure.types import structure_type_symbols
+    from lammps.templates import _approx_mass
 
     if not needs_structure_file(params):
         return None
@@ -78,30 +80,18 @@ def _prepare_structure_file(
         if meta.get("artificial_void"):
             log.write(f"[Aegis] void removed {meta.get('void_atoms_removed')} atoms\n")
 
-    # Implant / surface / interstitial may create_atoms with an extra species type.
-    def _sym(s: str) -> str:
-        s = (s or "").strip()
-        return s[:1].upper() + s[1:] if s else s
-
-    elems = [
-        _sym(str(c.get("symbol")))
-        for c in (mat_dict.get("composition") or [])
-        if float(c.get("atomic_percent") or 0) > 0
-    ]
-    extra: str | None = None
-    if mode in {"implant", "surface"}:
-        extra = _sym(str(params.get("ion_type") or "He"))
-    elif mode == "interstitial":
-        extra = _sym(str(params.get("interstitial_species") or "He"))
-    if extra and not any(e.lower() == extra.lower() for e in elems):
-        elems.append(extra)
-    if structure_kind_value(params) == "precipitate":
-        ppt = _sym(str(params.get("precipitate_species") or "Re"))
-        if ppt and not any(e.lower() == ppt.lower() for e in elems):
-            elems.append(ppt)
+    elems = structure_type_symbols(mat_dict, params, mode=mode)
     if len(elems) > 1:
-        masses = {i + 1: _approx_mass_sym(s) for i, s in enumerate(elems)}
+        masses = {i + 1: float(_approx_mass(s)) for i, s in enumerate(elems)}
         ensure_atom_types(job_dir / "structure.data", len(elems), masses)
+    # Persist type order for templates / debugging
+    meta_path = job_dir / "structure_meta.json"
+    try:
+        meta2 = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else dict(meta)
+        meta2["type_symbols"] = elems
+        meta_path.write_text(json.dumps(meta2, indent=2), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
     return "structure.data"
 
 
@@ -229,10 +219,20 @@ class JobManager:
         mode = str(getattr(params.get("mode"), "value", params.get("mode")) or "cascade")
 
         if not crystal_reg.is_supported(cry) or is_placeholder:
-            # Honest stub for HPC packs that still need a file present
+            # Still build structure.data for honesty when nano kinds are selected
+            from lammps.structure import needs_structure_file
+
+            if needs_structure_file(params):
+                try:
+                    _prepare_structure_file(job_dir, material=material, params=params, mode=mode)
+                except Exception as exc:  # noqa: BLE001
+                    raise ValueError(
+                        f"HPC pack needs a successful structure build for this kind ({exc})"
+                    ) from exc
             in_path.write_text(
                 f"# Aegis HPC stub (crystal={cry}, placeholder={is_placeholder})\n"
-                f"# Replace with a supported crystal + published potential before submitting.\n",
+                f"# NOT ready for production MD — replace with a published potential + supported crystal.\n"
+                f"# structure.data may be present for inspection; do not submit this stub as-is.\n",
                 encoding="utf-8",
             )
             self._update(job_id, message="stub inputs prepared (unsupported crystal or placeholder)")
@@ -268,7 +268,14 @@ class JobManager:
                 return info
             proc = self._procs.get(job_id)
             if proc and proc.poll() is None:
-                proc.terminate()
+                try:
+                    proc.terminate()
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    proc.kill()
+                except Exception:  # noqa: BLE001
+                    pass
             info.status = JobStatus.CANCELLED
             info.message = "cancelled by user"
             info.updated_at = _now()
@@ -421,6 +428,8 @@ class JobManager:
                         self._write_demo_dump(job_dir, material)
                     log.write("[Aegis] demo dump written for analysis.\n")
                 else:
+                    if self._is_cancelled(job_id):
+                        return
                     structure_file = _prepare_structure_file(
                         job_dir,
                         material=material,
@@ -428,6 +437,8 @@ class JobManager:
                         mode=mode,
                         log=log,
                     )
+                    if self._is_cancelled(job_id):
+                        return
                     write_kw = dict(
                         material=mat_dict,
                         potential=pot_dict,
@@ -443,6 +454,8 @@ class JobManager:
                         write_interstitial_input(in_path, **write_kw)
                     else:
                         write_cascade_input(in_path, **write_kw)
+                    if self._is_cancelled(job_id):
+                        return
                     log.write(f"[Aegis] launching {lmp_path} -in {in_path.name}\n")
                     log.flush()
                     proc = subprocess.Popen(
@@ -479,6 +492,18 @@ class JobManager:
                     getattr(params.get("structure_kind"), "value", params.get("structure_kind", "single_crystal"))
                 ),
             )
+            if use_dry_run:
+                summary.setdefault("summary", {})
+                summary["summary"]["demo_structure_proxy"] = True
+                sk = str(
+                    getattr(params.get("structure_kind"), "value", params.get("structure_kind"))
+                    or "single_crystal"
+                )
+                prev = summary["summary"].get("note") or ""
+                summary["summary"]["note"] = (
+                    f"{prev} Dry-run demo dumps are single-crystal proxies"
+                    f" (structure_kind={sk}; structure.data may exist separately)."
+                ).strip()
             (job_dir / "defects.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
             surface_summary = (summary.get("surface") or {}).get("summary")
 
