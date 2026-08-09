@@ -62,6 +62,19 @@ def analyze_job_dir(
     cry = crystal_reg.normalize_crystal(crystal)
     c_ref = float(lattice_c_A) if lattice_c_A else None
     poly = str(structure_kind).lower() in {"polycrystal", "polycrystal_void", "bicrystal"}
+    sk = str(structure_kind).lower()
+    voidish = sk in {"void", "void_lattice", "polycrystal_void"}
+    nano_note = ""
+    if voidish:
+        nano_note = (
+            "Ideal-lattice WS treats cavity volume as vacancies — interpret with care; "
+            "prefer OVITO DXA for void structures."
+        )
+    elif sk in {"nanowire", "precipitate", "import"}:
+        nano_note = (
+            f"structure_kind={sk}: WS assumes a perfect host lattice reference — "
+            "surface / second-phase atoms may appear as false defects."
+        )
 
     dumps = _prefer_analysis_dumps(job_dir)
     if not dumps:
@@ -160,6 +173,8 @@ def analyze_job_dir(
     note = ""
     if poly:
         note = "Polycrystal WS uses a single global lattice — approximate; prefer OVITO DXA per grain."
+    if nano_note:
+        note = f"{note} {nano_note}".strip() if note else nano_note
     summary: dict[str, Any] = {
         "summary": {
             "n_atoms": len(atoms),

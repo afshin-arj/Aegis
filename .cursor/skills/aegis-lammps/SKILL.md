@@ -8,8 +8,9 @@ description: LAMMPS cascade/implant conventions for Aegis — run parameters, du
 ## Layout
 
 - Crystal registry: `engines/lammps/crystal.py` (bcc/fcc/hcp/diamond/hex)
-- Polycrystal seeds: `engines/lammps/polycrystal.py`
-- Templates: `engines/lammps/templates.py`
+- Structure builders: `engines/lammps/structure/` (ASE / Atomsk / import → `structure.data`)
+- Legacy polycrystal seed helper: `engines/lammps/polycrystal.py` (not the MD path)
+- Templates: `engines/lammps/templates.py` (`read_data` when structure file present)
 - Jobs: `apps/api/aegis_api/jobs.py` — spawn `AEGIS_LAMMPS_BIN` (default `lmp`)
 - Params schema: `LammpsRunParams` in `packages/schema`
 - DXA: `apps/api/aegis_api/dxa.py` · lattice relax: `lattice_relax.py`

@@ -290,6 +290,9 @@ def write_hpc_pack(
         "potential.json",
         "run_params.json",
         "request.json",
+        "structure.data",
+        "structure_meta.json",
+        "cascade_timeline.json",
     ):
         src = job_dir / name
         if src.exists():
@@ -317,6 +320,7 @@ Generated for remote execution (Phase-4).
 
 ## Notes
 - Review pair_style / potential paths in `in.aegis` (files are copied beside the input).
+- If `structure.data` is present, `in.aegis` uses `read_data structure.data` — keep that file next to the input.
 - After MD, copy dumps back to your Aegis `runs/<job_id>/` and re-open Results, or point Aegis at the artifacts.
 - Do not commit cluster accounts or tokens into the Aegis repo.
 """

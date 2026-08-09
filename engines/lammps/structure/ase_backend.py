@@ -145,20 +145,41 @@ def _voronoi_polycrystal(material: dict[str, Any], params: dict[str, Any]):
     cry = _crystal_name(material)
     a = float(material.get("lattice_constant_A") or 3.165)
     name = _ase_crystal(cry)
-    lattice_name = "bcc" if name == "hcp" else name
+    lattice_name = name
+    # Prefer cubic prototypes for Voronoi clipping; HCP/hex keep hcp basis
+    if name == "diamond":
+        lattice_name = "diamond"
+    elif name == "hcp":
+        lattice_name = "hcp"
 
-    proto = bulk(sym, lattice_name, a=a, cubic=True).repeat((nx, ny, nz))
+    if lattice_name == "hcp":
+        c = material.get("lattice_c_A")
+        proto = bulk(sym, "hcp", a=a, c=float(c) if c else None).repeat((nx, ny, nz))
+    elif lattice_name == "diamond":
+        proto = bulk(sym, "diamond", a=a).repeat((nx, ny, nz))
+    else:
+        proto = bulk(sym, lattice_name, a=a, cubic=True).repeat((nx, ny, nz))
     cell = proto.get_cell()
     lx, ly, lz = float(cell[0, 0]), float(cell[1, 1]), float(cell[2, 2])
     seeds = [(rng.random() * lx, rng.random() * ly, rng.random() * lz) for _ in range(n_grains)]
+    texture = str(params.get("poly_texture") or "random").strip().lower()
 
     pieces: list[Atoms] = []
     for gi, (sx, sy, sz) in enumerate(seeds):
-        g = bulk(sym, lattice_name, a=a, cubic=True).repeat((nx + 2, ny + 2, nz + 2))
-        ang = rng.uniform(0, 360)
-        g.rotate(ang, "x", center="COP", rotate_cell=False)
-        g.rotate(rng.uniform(0, 360), "y", center="COP", rotate_cell=False)
-        g.rotate(rng.uniform(0, 360), "z", center="COP", rotate_cell=False)
+        if lattice_name == "hcp":
+            c = material.get("lattice_c_A")
+            g = bulk(sym, "hcp", a=a, c=float(c) if c else None).repeat((nx + 2, ny + 2, nz + 2))
+        elif lattice_name == "diamond":
+            g = bulk(sym, "diamond", a=a).repeat((nx + 2, ny + 2, nz + 2))
+        else:
+            g = bulk(sym, lattice_name, a=a, cubic=True).repeat((nx + 2, ny + 2, nz + 2))
+        if texture == "fiber":
+            # Fiber: random rotation about z only
+            g.rotate(rng.uniform(0, 360), "z", center="COP", rotate_cell=False)
+        else:
+            g.rotate(rng.uniform(0, 360), "x", center="COP", rotate_cell=False)
+            g.rotate(rng.uniform(0, 360), "y", center="COP", rotate_cell=False)
+            g.rotate(rng.uniform(0, 360), "z", center="COP", rotate_cell=False)
         g.translate(np.array([sx, sy, sz]) - g.get_center_of_mass())
         pos = g.get_positions()
         inside = (
@@ -194,7 +215,12 @@ def _voronoi_polycrystal(material: dict[str, Any], params: dict[str, Any]):
         get_duplicate_atoms(out, cutoff=0.35, delete=True)
     except Exception:
         pass
-    return out, {"n_grains": n_grains, "seeds_A": seeds, "method": "ase-voronoi-v1"}
+    return out, {
+        "n_grains": n_grains,
+        "seeds_A": seeds,
+        "texture": texture,
+        "method": "ase-voronoi-v1",
+    }
 
 
 def _parse_miller(s: str) -> tuple[int, int, int]:
@@ -320,11 +346,137 @@ def _bicrystal_tilt(material: dict[str, Any], params: dict[str, Any]):
     return out, meta
 
 
-def _write_lammps_data(atoms, path: Path, symbol: str) -> int:
+def _nanowire(material: dict[str, Any], params: dict[str, Any]):
+    """Cylindrical nanowire carved from bulk with transverse vacuum padding."""
+    nx = max(2, int(params.get("nx") or 8))
+    ny = max(2, int(params.get("ny") or 8))
+    nz = max(2, int(params.get("nz") or 8))
+    r = float(params.get("nanowire_radius_A") or 8.0)
+    vac = float(params.get("nanowire_vacuum_A") or 10.0)
+    axis = str(params.get("nanowire_axis") or "z").strip().lower()
+    if axis not in {"x", "y", "z"}:
+        axis = "z"
+    axis_i = {"x": 0, "y": 1, "z": 2}[axis]
+
+    atoms = _make_bulk(material, nx, ny, nz)
+    cell = np.array(atoms.get_cell(), dtype=float)
+    box0 = [float(cell[0, 0]), float(cell[1, 1]), float(cell[2, 2])]
+    pos = atoms.get_positions()
+    com = atoms.get_center_of_mass()
+    # Radial distance in the plane perpendicular to the wire axis
+    d2 = np.zeros(len(atoms))
+    for i in range(3):
+        if i == axis_i:
+            continue
+        d2 += (pos[:, i] - com[i]) ** 2
+    keep = d2 <= r * r
+    if int(np.sum(keep)) < 8:
+        raise ValueError(
+            f"Nanowire kept <8 atoms (radius={r} Å). Increase nanowire_radius_A or cell size."
+        )
+    del atoms[np.where(~keep)[0].tolist()]
+
+    # Expand transverse box with vacuum; keep wire length
+    new_box = list(box0)
+    for i in range(3):
+        if i != axis_i:
+            new_box[i] = max(new_box[i], 2.0 * r + 2.0 * vac)
+    # Center wire in the new box
+    pos = atoms.get_positions()
+    com = atoms.get_center_of_mass()
+    shift = np.zeros(3)
+    for i in range(3):
+        shift[i] = 0.5 * new_box[i] - com[i]
+    atoms.translate(shift)
+    atoms.set_cell(new_box, scale_atoms=False)
+    # Free surfaces transversely; periodic along wire
+    pbc = [False, False, False]
+    pbc[axis_i] = True
+    atoms.set_pbc(pbc)
+    atoms.wrap()
+    meta = {
+        "method": "ase-nanowire-cylinder-v1",
+        "radius_A": r,
+        "axis": axis,
+        "vacuum_A": vac,
+        "box_A": new_box,
+        "note": "Cylindrical nanowire carved from bulk with transverse vacuum (engineering proxy).",
+    }
+    return atoms, meta
+
+
+def _second_symbol(material: dict[str, Any], fallback: str = "Re") -> str:
+    comps = material.get("composition") or []
+    host = _host_symbol(material)
+    for c in comps:
+        sym = str(c.get("symbol") or "")
+        if sym and sym.lower() != host.lower() and float(c.get("atomic_percent") or 0) > 0:
+            return sym
+    return fallback
+
+
+def _precipitates(material: dict[str, Any], params: dict[str, Any], rng: random.Random):
+    """Spherical precipitates of a second species embedded in the host matrix."""
+    nx = max(2, int(params.get("nx") or 8))
+    ny = max(2, int(params.get("ny") or 8))
+    nz = max(2, int(params.get("nz") or 8))
+    r = float(params.get("precipitate_radius_A") or 5.0)
+    n = max(1, int(params.get("precipitate_count") or 1))
+    host = _host_symbol(material)
+    ppt = str(params.get("precipitate_species") or _second_symbol(material)).strip() or "Re"
+    ppt = ppt[:1].upper() + ppt[1:]
+
+    atoms = _make_bulk(material, nx, ny, nz)
+    cell = atoms.get_cell()
+    lx, ly, lz = float(cell[0, 0]), float(cell[1, 1]), float(cell[2, 2])
+    cx0 = float(params.get("precipitate_center_frac_x") or 0.5) * lx
+    cy0 = float(params.get("precipitate_center_frac_y") or 0.5) * ly
+    cz0 = float(params.get("precipitate_center_frac_z") or 0.5) * lz
+    centers: list[tuple[float, float, float]] = []
+    for i in range(n):
+        if i == 0:
+            centers.append((cx0, cy0, cz0))
+        else:
+            centers.append((rng.random() * lx, rng.random() * ly, rng.random() * lz))
+
+    pos = atoms.get_positions()
+    symbols = [host] * len(atoms)
+    changed = 0
+    for cx, cy, cz in centers:
+        d2 = (pos[:, 0] - cx) ** 2 + (pos[:, 1] - cy) ** 2 + (pos[:, 2] - cz) ** 2
+        hit = d2 < r * r
+        for idx in np.where(hit)[0].tolist():
+            if symbols[idx] != ppt:
+                symbols[idx] = ppt
+                changed += 1
+    if changed < 1:
+        raise ValueError(
+            f"Precipitate changed 0 atoms (radius={r} Å, species={ppt}). "
+            "Increase precipitate_radius_A or cell size."
+        )
+    atoms.set_chemical_symbols(symbols)
+    meta = {
+        "method": "ase-precipitate-sphere-v1",
+        "host_symbol": host,
+        "precipitate_species": ppt,
+        "radius_A": r,
+        "n_precipitates": n,
+        "atoms_converted": changed,
+        "centers_A": centers,
+        "note": (
+            f"Spherical {ppt} precipitates in {host} matrix (same crystal lattice; "
+            "substitutional proxy - not a second crystal structure)."
+        ),
+    }
+    return atoms, meta
+
+
+def _write_lammps_data(atoms, path: Path, symbol: str | None = None) -> int:
     from ase.io import write
 
     atoms = atoms.copy()
-    atoms.set_chemical_symbols([symbol] * len(atoms))
+    if symbol is not None:
+        atoms.set_chemical_symbols([symbol] * len(atoms))
     path.parent.mkdir(parents=True, exist_ok=True)
     write(str(path), atoms, format="lammps-data", atom_style="atomic", masses=True)
     return len(atoms)
@@ -344,12 +496,20 @@ def build_with_ase(out_data: Path, *, material: dict[str, Any], params: dict[str
     poly_meta: dict[str, Any] = {}
     gb_meta: dict[str, Any] = {}
     void_meta: dict[str, Any] = {}
+    wire_meta: dict[str, Any] = {}
+    ppt_meta: dict[str, Any] = {}
+    force_mono = True
 
     if kind in {"polycrystal", "polycrystal_void"}:
         atoms, poly_meta = _voronoi_polycrystal(material, params)
     elif kind == "bicrystal":
         atoms, gb_meta = _bicrystal_tilt(material, params)
         poly_meta = {"n_grains": 2, **gb_meta}
+    elif kind == "nanowire":
+        atoms, wire_meta = _nanowire(material, params)
+    elif kind == "precipitate":
+        atoms, ppt_meta = _precipitates(material, params, rng)
+        force_mono = False
     elif kind in {"void", "void_lattice"}:
         atoms = _make_bulk(material, nx, ny, nz)
     else:
@@ -372,13 +532,19 @@ def build_with_ase(out_data: Path, *, material: dict[str, Any], params: dict[str
                 "Increase void_radius_A or cell size."
             )
 
-    n = _write_lammps_data(atoms, out_data, sym)
+    n = _write_lammps_data(atoms, out_data, sym if force_mono else None)
     cell = atoms.get_cell()
+    box_A = [float(cell[0, 0]), float(cell[1, 1]), float(cell[2, 2])]
     note = "ASE structure builder"
     if kind == "bicrystal":
         note = gb_meta.get("note") or note
     elif kind == "void_lattice":
         note = void_meta.get("note") or note
+    elif kind == "nanowire":
+        note = wire_meta.get("note") or note
+        box_A = wire_meta.get("box_A") or box_A
+    elif kind == "precipitate":
+        note = ppt_meta.get("note") or note
     elif poly_meta:
         note = (
             "ASE Voronoi polycrystal is an engineering construction; "
@@ -387,11 +553,13 @@ def build_with_ase(out_data: Path, *, material: dict[str, Any], params: dict[str
     return {
         "atom_count": n,
         "host_symbol": sym,
-        "box_A": [float(cell[0, 0]), float(cell[1, 1]), float(cell[2, 2])],
+        "box_A": box_A,
         "artificial_void": artificial_void,
         "void_atoms_removed": removed,
         "poly": poly_meta,
         "gb": gb_meta,
         "void_lattice": void_meta,
+        "nanowire": wire_meta,
+        "precipitate": ppt_meta,
         "note": note,
     }

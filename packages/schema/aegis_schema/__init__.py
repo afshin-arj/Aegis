@@ -40,6 +40,8 @@ class StructureKind(str, Enum):
     VOID = "void"
     VOID_LATTICE = "void_lattice"
     POLYCRYSTAL_VOID = "polycrystal_void"
+    NANOWIRE = "nanowire"
+    PRECIPITATE = "precipitate"
     IMPORT = "import"
 
 
@@ -227,6 +229,17 @@ class LammpsRunParams(BaseModel):
     void_lattice_nx: int = Field(2, ge=1, le=16)
     void_lattice_ny: int = Field(2, ge=1, le=16)
     void_lattice_nz: int = Field(2, ge=1, le=16)
+    # Nanowire: cylindrical crystal along nanowire_axis with transverse vacuum
+    nanowire_radius_A: float = Field(8.0, ge=1.0, le=200.0)
+    nanowire_axis: str = "z"  # x | y | z
+    nanowire_vacuum_A: float = Field(10.0, ge=0.0, le=200.0)
+    # Precipitate(s): spherical second-phase regions (host + precipitate_species)
+    precipitate_species: str = "Re"
+    precipitate_radius_A: float = Field(5.0, ge=0.5, le=200.0)
+    precipitate_count: int = Field(1, ge=1, le=64)
+    precipitate_center_frac_x: float = Field(0.5, ge=0.0, le=1.0)
+    precipitate_center_frac_y: float = Field(0.5, ge=0.0, le=1.0)
+    precipitate_center_frac_z: float = Field(0.5, ge=0.0, le=1.0)
     structure_import_path: str | None = None  # relative to job dir or absolute for import kind
     timestep_fs: float = 0.001
     max_steps: int = 20000

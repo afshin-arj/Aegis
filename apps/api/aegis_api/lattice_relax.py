@@ -12,11 +12,11 @@ def discover_ase() -> dict[str, Any]:
     try:
         import ase  # type: ignore  # noqa: F401
 
-        return {"ase_found": True, "ase_message": f"ASE {getattr(ase, '__version__', '')} available"}
+        return {"ase_found": True, "ase_message": f"ASE {getattr(ase, '__version__', '')} — nanostructures + optional DFT relax"}
     except Exception:  # noqa: BLE001
         return {
             "ase_found": False,
-            "ase_message": "ASE not installed — export POSCAR for external DFT, or pip install ase",
+            "ase_message": "ASE not installed — required for nanostructure builders (pip install ase / setup_and_run.cmd)",
         }
 
 

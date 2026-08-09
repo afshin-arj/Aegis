@@ -158,6 +158,15 @@ type RunParams = {
   void_lattice_nx: number;
   void_lattice_ny: number;
   void_lattice_nz: number;
+  nanowire_radius_A: number;
+  nanowire_axis: string;
+  nanowire_vacuum_A: number;
+  precipitate_species: string;
+  precipitate_radius_A: number;
+  precipitate_count: number;
+  precipitate_center_frac_x: number;
+  precipitate_center_frac_y: number;
+  precipitate_center_frac_z: number;
   structure_import_path: string | null;
   timestep_fs: number;
   max_steps: number;
@@ -245,6 +254,15 @@ const defaultParams: RunParams = {
   void_lattice_nx: 2,
   void_lattice_ny: 2,
   void_lattice_nz: 2,
+  nanowire_radius_A: 8,
+  nanowire_axis: "z",
+  nanowire_vacuum_A: 10,
+  precipitate_species: "Re",
+  precipitate_radius_A: 5,
+  precipitate_count: 1,
+  precipitate_center_frac_x: 0.5,
+  precipitate_center_frac_y: 0.5,
+  precipitate_center_frac_z: 0.5,
   structure_import_path: null,
   timestep_fs: 0.001,
   max_steps: 20000,
@@ -717,6 +735,15 @@ export default function App() {
         list.push(`Cascade PKA '${params.pka_species}' must be a host species (${hosts.join(", ")})`);
       }
     }
+    const sk = (params.structure_kind || "single_crystal").toLowerCase();
+    const needsStructBuild =
+      sk !== "single_crystal" && sk !== "" && sk !== "import";
+    if (needsStructBuild && engines && engines.ase_found === false) {
+      list.push("Nanostructure kinds require ASE — run setup_and_run.cmd or pip install ase (Engines tab)");
+    }
+    if (sk === "import" && !(params.structure_import_path || "").trim()) {
+      list.push("Import structure: upload a file or set structure_import_path");
+    }
     if (compUnit === "wt%") {
       for (const e of composition) {
         if (!(normalizeSymbol(e.symbol) in ATOMIC_MASS)) {
@@ -746,6 +773,14 @@ export default function App() {
         );
       }
     }
+    if (selectedPot && params.structure_kind === "precipitate") {
+      const need = [...hosts, params.precipitate_species].filter(Boolean);
+      if (!need.every(covers)) {
+        list.push(
+          `Precipitate species must be covered by the potential (${need.join(", ")}); current covers ${selectedPot.elements.join(" ")}`,
+        );
+      }
+    }
     return list;
   }, [
     potentialId,
@@ -760,6 +795,9 @@ export default function App() {
     params.interstitial_species,
     params.pka_species,
     params.ion_type,
+    params.structure_kind,
+    params.structure_import_path,
+    params.precipitate_species,
     composition,
     material,
     crystalSupported,
@@ -767,6 +805,7 @@ export default function App() {
     latticeC,
     effectiveLatticeC,
     compUnit,
+    engines,
   ]);
 
   const verdict = blockers.length
@@ -2701,6 +2740,8 @@ export default function App() {
                     <option value="bicrystal">bicrystal (tilt GB)</option>
                     <option value="void">nano-void</option>
                     <option value="void_lattice">void lattice</option>
+                    <option value="nanowire">nanowire</option>
+                    <option value="precipitate">precipitate</option>
                     <option value="polycrystal_void">polycrystal + void</option>
                     <option value="import">import LAMMPS data</option>
                   </select>
@@ -2814,7 +2855,7 @@ export default function App() {
                       onChange={(e) => setParam("void_count", Number(e.target.value))}
                     />
                   </Field>
-                  <Field label="Center x (frac)" htmlFor="void-x">
+                  <Field label="Center x" htmlFor="void-x">
                     <input
                       id="void-x"
                       type="number"
@@ -2823,6 +2864,94 @@ export default function App() {
                       step={0.05}
                       value={params.void_center_frac_x}
                       onChange={(e) => setParam("void_center_frac_x", Number(e.target.value))}
+                    />
+                  </Field>
+                  <Field label="Center y" htmlFor="void-y">
+                    <input
+                      id="void-y"
+                      type="number"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      value={params.void_center_frac_y}
+                      onChange={(e) => setParam("void_center_frac_y", Number(e.target.value))}
+                    />
+                  </Field>
+                  <Field label="Center z" htmlFor="void-z">
+                    <input
+                      id="void-z"
+                      type="number"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      value={params.void_center_frac_z}
+                      onChange={(e) => setParam("void_center_frac_z", Number(e.target.value))}
+                    />
+                  </Field>
+                </div>
+              )}
+              {params.structure_kind === "nanowire" && (
+                <div className="row">
+                  <Field label="Wire radius (Å)" htmlFor="nw-r">
+                    <input
+                      id="nw-r"
+                      type="number"
+                      min={1}
+                      step={0.5}
+                      value={params.nanowire_radius_A}
+                      onChange={(e) => setParam("nanowire_radius_A", Number(e.target.value))}
+                    />
+                  </Field>
+                  <Field label="Axis" htmlFor="nw-ax">
+                    <select
+                      id="nw-ax"
+                      value={params.nanowire_axis}
+                      onChange={(e) => setParam("nanowire_axis", e.target.value)}
+                    >
+                      <option value="z">z</option>
+                      <option value="x">x</option>
+                      <option value="y">y</option>
+                    </select>
+                  </Field>
+                  <Field label="Vacuum (Å)" htmlFor="nw-vac">
+                    <input
+                      id="nw-vac"
+                      type="number"
+                      min={0}
+                      step={1}
+                      value={params.nanowire_vacuum_A}
+                      onChange={(e) => setParam("nanowire_vacuum_A", Number(e.target.value))}
+                    />
+                  </Field>
+                </div>
+              )}
+              {params.structure_kind === "precipitate" && (
+                <div className="row">
+                  <Field label="Species" htmlFor="ppt-sp">
+                    <input
+                      id="ppt-sp"
+                      value={params.precipitate_species}
+                      onChange={(e) => setParam("precipitate_species", e.target.value)}
+                    />
+                  </Field>
+                  <Field label="Radius (Å)" htmlFor="ppt-r">
+                    <input
+                      id="ppt-r"
+                      type="number"
+                      min={0.5}
+                      step={0.5}
+                      value={params.precipitate_radius_A}
+                      onChange={(e) => setParam("precipitate_radius_A", Number(e.target.value))}
+                    />
+                  </Field>
+                  <Field label="Count" htmlFor="ppt-n">
+                    <input
+                      id="ppt-n"
+                      type="number"
+                      min={1}
+                      max={64}
+                      value={params.precipitate_count}
+                      onChange={(e) => setParam("precipitate_count", Number(e.target.value))}
                     />
                   </Field>
                 </div>
@@ -3840,7 +3969,7 @@ export default function App() {
                 <p className="hint">{engines?.mmonca_message}</p>
               </div>
               <div className="stack">
-                <h3>ASE / DFT relax</h3>
+                <h3>ASE (structures + DFT)</h3>
                 <div className="chip-row">
                   <span className="chip">
                     <span className="chip-k">ASE</span>
@@ -3849,7 +3978,10 @@ export default function App() {
                     </span>
                   </span>
                 </div>
-                <p className="hint">{engines?.ase_message}</p>
+                <p className="hint">
+                  {engines?.ase_message ||
+                    "Required for polycrystal / void / nanowire / precipitate builders; also used for optional lattice relax"}
+                </p>
               </div>
               <div className="stack">
                 <h3>Dislocation analysis (DXA)</h3>
@@ -3967,6 +4099,10 @@ export default function App() {
           <div>
             <dt>Temperature</dt>
             <dd>{params.temperature_K.toLocaleString()} K</dd>
+          </div>
+          <div>
+            <dt>Structure</dt>
+            <dd>{params.structure_kind.replace(/_/g, " ")}</dd>
           </div>
           <div>
             <dt>Cell</dt>

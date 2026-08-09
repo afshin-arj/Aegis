@@ -61,7 +61,7 @@ def _prepare_structure_file(
     log: Any | None = None,
 ) -> str | None:
     """Build structure.data when needed; return filename or None for single crystal."""
-    from lammps.structure import build_structure, needs_structure_file
+    from lammps.structure import build_structure, needs_structure_file, structure_kind_value
     from lammps.structure.data_patch import ensure_atom_types
 
     if not needs_structure_file(params):
@@ -95,6 +95,10 @@ def _prepare_structure_file(
         extra = _sym(str(params.get("interstitial_species") or "He"))
     if extra and not any(e.lower() == extra.lower() for e in elems):
         elems.append(extra)
+    if structure_kind_value(params) == "precipitate":
+        ppt = _sym(str(params.get("precipitate_species") or "Re"))
+        if ppt and not any(e.lower() == ppt.lower() for e in elems):
+            elems.append(ppt)
     if len(elems) > 1:
         masses = {i + 1: _approx_mass_sym(s) for i, s in enumerate(elems)}
         ensure_atom_types(job_dir / "structure.data", len(elems), masses)
@@ -348,10 +352,16 @@ class JobManager:
                     log.write(f"[Aegis] crystal builder={cry}\n")
 
                 if use_dry_run:
+                    from lammps.structure import needs_structure_file
+
+                    sk = str(
+                        getattr(params.get("structure_kind"), "value", params.get("structure_kind"))
+                        or "single_crystal"
+                    )
                     # Stub input so job folder still has in.aegis without calling lattice_line
                     in_path.write_text(
                         f"# Aegis dry-run stub (crystal={cry}, placeholder={is_placeholder}, "
-                        f"lammps={'missing' if not lmp_path else 'skipped'})\n"
+                        f"lammps={'missing' if not lmp_path else 'skipped'}, structure_kind={sk})\n"
                         f"# Real MD inputs are written only when LAMMPS + non-placeholder potential + supported crystal.\n",
                         encoding="utf-8",
                     )
@@ -365,6 +375,26 @@ class JobManager:
                             "[Aegis] LAMMPS not found on PATH. Writing dry-run artifacts only.\n"
                             "Set AEGIS_LAMMPS_BIN or install LAMMPS to execute MD.\n"
                         )
+                    if needs_structure_file(params):
+                        # Build real structure.data for honesty, but demo dumps remain SC proxies
+                        try:
+                            _prepare_structure_file(
+                                job_dir,
+                                material=material,
+                                params=params,
+                                mode=mode,
+                                log=log,
+                            )
+                            log.write(
+                                "[Aegis] WARNING: dry-run demo dumps are single-crystal proxies; "
+                                f"structure.data was built for structure_kind={sk} but MD was not run. "
+                                "Upload a real potential + install LAMMPS for nanostructure MD.\n"
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            raise RuntimeError(
+                                f"structure_kind={sk} cannot be honored in dry-run without a successful "
+                                f"structure build ({exc}). Install ASE / fix params, or use single_crystal."
+                            ) from exc
                     # Cascade timeline so UI Results wiring works without write_cascade_input
                     if mode == "cascade":
                         from lammps.templates import plan_cascade_stages

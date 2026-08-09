@@ -61,8 +61,8 @@ def build_polycrystal_meta(
         "seed": seed,
         "grains": grains,
         "note": (
-            "Grain seeds for OVITO / Atomsk. Aegis single-crystal lattice fill is used "
-            "unless Atomsk rebuilds the cell; WS analysis on polycrystals is approximate."
+            "Legacy OVITO/Atomsk grain-seed helper only. Real polycrystal MD uses "
+            "engines/lammps/structure (ASE Voronoi or Atomsk) → structure.data + read_data."
         ),
     }
     path = job_dir / "polycrystal_meta.json"

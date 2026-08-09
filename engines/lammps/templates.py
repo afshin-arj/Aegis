@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 
 from lammps import crystal as crystal_reg
-from lammps.polycrystal import build_polycrystal_meta, polycrystal_lammps_comment
 
 
 def _norm_sym(symbol: str) -> str:
@@ -124,6 +123,28 @@ def _snap_lattice_site(
     )
 
 
+def _structure_box_A(
+    path: Path,
+    material: dict[str, Any],
+    params: dict[str, Any],
+) -> tuple[float, float, float]:
+    """Prefer structure_meta.json box_A; else nx*a estimate."""
+    meta_path = path.parent / "structure_meta.json"
+    if meta_path.exists():
+        try:
+            box = json.loads(meta_path.read_text(encoding="utf-8")).get("box_A")
+            if isinstance(box, (list, tuple)) and len(box) >= 3:
+                return float(box[0]), float(box[1]), float(box[2])
+        except Exception:  # noqa: BLE001
+            pass
+    a = float(material.get("lattice_constant_A", 3.165))
+    return (
+        float(params["nx"]) * a,
+        float(params["ny"]) * a,
+        float(params["nz"]) * a,
+    )
+
+
 def _poly_preamble(path: Path, material: dict[str, Any], params: dict[str, Any]) -> str:
     """Comment block for nanostructures. Real atoms come from structure.data when built."""
     kind = str(
@@ -136,28 +157,17 @@ def _poly_preamble(path: Path, material: dict[str, Any], params: dict[str, Any])
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
             backend = meta.get("backend", "?")
-            natoms = meta.get("natoms", meta.get("n_atoms", "?"))
+            natoms = meta.get("atom_count", meta.get("natoms", meta.get("n_atoms", "?")))
             return (
                 f"# structure_kind={kind} via {backend} → read_data structure.data "
                 f"(natoms≈{natoms}; see structure_meta.json)\n"
             )
         except Exception:  # noqa: BLE001
             pass
-    if kind == "polycrystal":
-        # Legacy seed metadata only — not a substitute for structure.data
-        meta = build_polycrystal_meta(
-            path.parent,
-            nx=int(params["nx"]),
-            ny=int(params["ny"]),
-            nz=int(params["nz"]),
-            n_grains=int(params.get("poly_n_grains", 4)),
-            seed=int(params.get("poly_seed", params.get("seed", 42))),
-            texture=str(params.get("poly_texture", "random")),
-            crystal=str(material.get("crystal", "bcc")),
-            a=float(material.get("lattice_constant_A", 3.165)),
-        )
-        return polycrystal_lammps_comment(meta)
-    return f"# structure_kind={kind} — expect structure.data from Aegis builder\n"
+    return (
+        f"# structure_kind={kind} — expect structure.data from Aegis builder "
+        f"(structure_meta.json missing at write time)\n"
+    )
 
 
 def plan_cascade_stages(
@@ -374,13 +384,15 @@ def write_cascade_input(
                 fz = 0.5
 
         sx, sy, sz = _snap_lattice_site(material, fx, fy, fz, nx, ny, nz)
-        # Prebuilt structures have no active lattice; use box Å (cubic approx a*nx).
+        # Prebuilt structures: place PKA in fractional box coords from structure_meta.
         if use_box_units:
-            cx, cy, cz = sx * a, sy * a, sz * a
+            bx, by, bz = _structure_box_A(path, material, params)
+            cx, cy, cz = fx * bx, fy * by, fz * bz
             rad, rad2, rad3 = 0.45 * a, 0.85 * a, 2.5 * a
             units = "box"
             site_notes.append(
-                f"PKA{i+1}: frac≈({fx:.3f},{fy:.3f},{fz:.3f}) → box Å ({cx:.3f},{cy:.3f},{cz:.3f})"
+                f"PKA{i+1}: frac≈({fx:.3f},{fy:.3f},{fz:.3f}) → box Å ({cx:.3f},{cy:.3f},{cz:.3f}) "
+                f"[box={bx:.2f}×{by:.2f}×{bz:.2f}]"
             )
         else:
             cx, cy, cz = sx, sy, sz
@@ -635,8 +647,8 @@ def write_implant_input(
         fx = 0.5 + 0.05 * ((i % 3) - 1)
         fy = 0.5 + 0.05 * (((i // 3) % 3) - 1)
         if structure_file:
-            # Box Å above estimated top of nx*a × ny*a × nz*a cell
-            bx, by, bz = fx * nx * a, fy * ny * a, (nz - 0.5) * a
+            Lx, Ly, Lz = _structure_box_A(path, material, params)
+            bx, by, bz = fx * Lx, fy * Ly, max(0.0, Lz - 0.5 * a)
             insert_lines.append(
                 f"create_atoms {ion_type} single {bx:.4f} {by:.4f} {bz:.4f} units box"
             )
@@ -740,13 +752,15 @@ def write_surface_input(
     host_elems = [e for e in elems if e.lower() != ion.lower()] or elems[:1]
     lattice_cmd = _lattice_line(material, params)
     if structure_file:
+        Lx, Ly, Lz = _structure_box_A(path, material, params)
+        z_top = Lz + float(vacuum) * a
         geometry = textwrap.dedent(
             f"""\
-            # Prebuilt nanostructure (+ vacuum via change_box)
+            # Prebuilt nanostructure (+ vacuum via change_box along z)
             read_data {structure_file}
             {masses}
             {lattice_cmd}
-            change_box all z final 0 {(nz_box) * a:.6f} units box
+            change_box all z final 0 {z_top:.6f} units box
             """
         )
     else:
@@ -777,7 +791,8 @@ def write_surface_input(
         fx = 0.3 + 0.4 * ((i * 0.37) % 1.0)
         fy = 0.3 + 0.4 * ((i * 0.61) % 1.0)
         if structure_file:
-            bx, by, bz = fx * nx * a, fy * ny * a, (nz + 0.8) * a
+            Lx, Ly, Lz = _structure_box_A(path, material, params)
+            bx, by, bz = fx * Lx, fy * Ly, Lz + 0.8 * a
             insert_lines.append(
                 f"create_atoms {ion_type} single {bx:.4f} {by:.4f} {bz:.4f} units box"
             )
@@ -952,8 +967,10 @@ def write_interstitial_input(
     )
     ityp = _elem_index(elems, species)
     if structure_file:
+        Lx, Ly, Lz = _structure_box_A(path, material, params)
+        # Sites are in lattice units of the UI cell; map by fraction of nx/ny/nz
         insert_lines = [
-            f"create_atoms {ityp} single {x * a:.6f} {y * a:.6f} {z * a:.6f} units box"
+            f"create_atoms {ityp} single {(x / max(nx, 1)) * Lx:.6f} {(y / max(ny, 1)) * Ly:.6f} {(z / max(nz, 1)) * Lz:.6f} units box"
             for x, y, z, _kind in sites
         ]
     else:
