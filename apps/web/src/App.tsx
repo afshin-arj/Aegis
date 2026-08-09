@@ -147,6 +147,9 @@ type RunParams = {
   poly_n_grains: number;
   poly_seed: number;
   poly_texture: string;
+  gb_misorientation_deg: number;
+  gb_tilt_axis: string;
+  gb_normal: string;
   void_radius_A: number;
   void_count: number;
   void_center_frac_x: number;
@@ -228,6 +231,9 @@ const defaultParams: RunParams = {
   poly_n_grains: 4,
   poly_seed: 42,
   poly_texture: "random",
+  gb_misorientation_deg: 15,
+  gb_tilt_axis: "001",
+  gb_normal: "001",
   void_radius_A: 5,
   void_count: 1,
   void_center_frac_x: 0.5,
@@ -2686,6 +2692,7 @@ export default function App() {
                   >
                     <option value="single_crystal">single crystal</option>
                     <option value="polycrystal">polycrystal</option>
+                    <option value="bicrystal">bicrystal (tilt GB)</option>
                     <option value="void">nano-void</option>
                     <option value="polycrystal_void">polycrystal + void</option>
                     <option value="import">import LAMMPS data</option>
@@ -2706,6 +2713,44 @@ export default function App() {
                   <code>read_data</code> — not a single-crystal lattice stub. Preview needs ASE (
                   {engines?.ase_found ? "found" : "missing — Engines / setup_and_run.cmd"}).
                 </p>
+              )}
+              {params.structure_kind === "bicrystal" && (
+                <div className="row">
+                  <Field label="Misorientation (°)" htmlFor="gb-theta">
+                    <input
+                      id="gb-theta"
+                      type="number"
+                      min={0.1}
+                      max={90}
+                      step={0.1}
+                      value={params.gb_misorientation_deg}
+                      onChange={(e) => setParam("gb_misorientation_deg", Number(e.target.value))}
+                    />
+                  </Field>
+                  <Field label="Tilt axis" htmlFor="gb-tilt">
+                    <select
+                      id="gb-tilt"
+                      value={params.gb_tilt_axis}
+                      onChange={(e) => setParam("gb_tilt_axis", e.target.value)}
+                    >
+                      <option value="001">001</option>
+                      <option value="011">011</option>
+                      <option value="111">111</option>
+                      <option value="100">100</option>
+                    </select>
+                  </Field>
+                  <Field label="GB normal" htmlFor="gb-n">
+                    <select
+                      id="gb-n"
+                      value={params.gb_normal}
+                      onChange={(e) => setParam("gb_normal", e.target.value)}
+                    >
+                      <option value="001">001 (stack z)</option>
+                      <option value="100">100 (stack x)</option>
+                      <option value="010">010 (stack y)</option>
+                    </select>
+                  </Field>
+                </div>
               )}
               {(params.structure_kind === "polycrystal" ||
                 params.structure_kind === "polycrystal_void") && (

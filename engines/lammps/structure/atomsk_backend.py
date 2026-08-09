@@ -31,7 +31,7 @@ def build_with_atomsk(
     atomsk_bin: str,
 ) -> dict[str, Any]:
     kind = str(getattr(params.get("structure_kind"), "value", params.get("structure_kind")) or "").lower()
-    if kind not in {"polycrystal", "polycrystal_void", "void"}:
+    if kind not in {"polycrystal", "polycrystal_void", "void", "bicrystal"}:
         raise ValueError(f"Atomsk builder does not support structure_kind={kind}")
 
     sym = _host_symbol(material)
@@ -42,59 +42,145 @@ def build_with_atomsk(
     nz = int(params.get("nz") or 8)
     n_grains = max(2, min(int(params.get("poly_n_grains") or 4), 64))
     seed = int(params.get("poly_seed") or 42)
+    theta = float(params.get("gb_misorientation_deg") or 15.0)
+    gb_normal = str(params.get("gb_normal") or "001").strip().lower()
+    merge_axis = "Z"
+    if gb_normal in {"100", "1 0 0", "[100]"}:
+        merge_axis = "X"
+    elif gb_normal in {"010", "0 1 0", "[010]"}:
+        merge_axis = "Y"
 
     work = Path(tempfile.mkdtemp(prefix="aegis_atomsk_"))
+    gb_meta: dict[str, Any] = {}
     try:
-        # Create oriented crystal then polycrystalize
         crystal_xsf = work / "crystal.xsf"
         poly_lmp = work / "poly.lmp"
-        cmd_create = [
-            atomsk_bin,
-            "--create",
-            cry,
-            str(a),
-            sym,
-            str(crystal_xsf),
-            "-duplicate",
-            str(nx),
-            str(ny),
-            str(nz),
-        ]
-        _run(cmd_create, work)
-        if kind in {"polycrystal", "polycrystal_void"}:
-            cmd_poly = [
-                atomsk_bin,
-                str(crystal_xsf),
-                "-polycrystal",
-                str(n_grains),
-                "random",
-                str(seed),
-                str(poly_lmp),
-                "lmp",
-            ]
-            # Atomsk polycrystal syntax varies; try documented form then fallback
+
+        if kind == "bicrystal":
+            half = {
+                "X": (max(2, nx // 2), ny, nz),
+                "Y": (nx, max(2, ny // 2), nz),
+                "Z": (nx, ny, max(2, nz // 2)),
+            }[merge_axis]
+            g1 = work / "grain1.xsf"
+            g2 = work / "grain2.xsf"
+            bi = work / "bicrystal.lmp"
+            _run(
+                [
+                    atomsk_bin,
+                    "--create",
+                    cry,
+                    str(a),
+                    sym,
+                    str(g1),
+                    "-duplicate",
+                    str(half[0]),
+                    str(half[1]),
+                    str(half[2]),
+                ],
+                work,
+            )
+            # Second grain: copy then rotate about merge axis by misorientation
+            shutil.copy2(g1, g2)
             try:
-                _run(cmd_poly, work)
+                _run(
+                    [atomsk_bin, str(g2), "-rotate", merge_axis, f"{theta:.6f}", str(g2)],
+                    work,
+                )
             except RuntimeError:
-                # Fallback: --polycrystal N box
+                _run(
+                    [
+                        atomsk_bin,
+                        str(g1),
+                        "-rotate",
+                        merge_axis,
+                        f"{theta:.6f}",
+                        str(g2),
+                    ],
+                    work,
+                )
+            try:
+                _run(
+                    [
+                        atomsk_bin,
+                        "--merge",
+                        merge_axis,
+                        "2",
+                        str(g1),
+                        str(g2),
+                        str(bi),
+                        "lmp",
+                    ],
+                    work,
+                )
+            except RuntimeError:
+                # Alternate merge syntax
+                _run(
+                    [
+                        atomsk_bin,
+                        "--merge",
+                        "2",
+                        str(g1),
+                        str(g2),
+                        merge_axis,
+                        str(bi),
+                        "lmp",
+                    ],
+                    work,
+                )
+            src = bi if bi.exists() else poly_lmp
+            gb_meta = {
+                "method": "atomsk-merge-bicrystal",
+                "misorientation_deg": theta,
+                "merge_axis": merge_axis,
+                "gb_normal": gb_normal,
+                "n_grains": 2,
+            }
+            n_grains = 2
+        else:
+            cmd_create = [
+                atomsk_bin,
+                "--create",
+                cry,
+                str(a),
+                sym,
+                str(crystal_xsf),
+                "-duplicate",
+                str(nx),
+                str(ny),
+                str(nz),
+            ]
+            _run(cmd_create, work)
+            if kind in {"polycrystal", "polycrystal_void"}:
                 cmd_poly = [
                     atomsk_bin,
-                    "--polycrystal",
-                    f"{cry} {a} {sym}",
-                    f"{n_grains} random",
+                    str(crystal_xsf),
+                    "-polycrystal",
+                    str(n_grains),
+                    "random",
+                    str(seed),
                     str(poly_lmp),
                     "lmp",
                 ]
-                _run(cmd_poly, work)
-            src = poly_lmp
-        else:
-            # Single crystal to lmp
-            cmd_lmp = [atomsk_bin, str(crystal_xsf), str(poly_lmp), "lmp"]
-            _run(cmd_lmp, work)
-            src = poly_lmp
+                try:
+                    _run(cmd_poly, work)
+                except RuntimeError:
+                    cmd_poly = [
+                        atomsk_bin,
+                        "--polycrystal",
+                        f"{cry} {a} {sym}",
+                        f"{n_grains} random",
+                        str(poly_lmp),
+                        "lmp",
+                    ]
+                    _run(cmd_poly, work)
+                src = poly_lmp
+            else:
+                cmd_lmp = [atomsk_bin, str(crystal_xsf), str(poly_lmp), "lmp"]
+                _run(cmd_lmp, work)
+                src = poly_lmp
 
         if not src.exists():
-            # Atomsk may write .lmp with different name
             cands = list(work.glob("*.lmp")) + list(work.glob("*.data"))
             if not cands:
                 raise RuntimeError("Atomsk did not produce a LAMMPS data file")
@@ -106,7 +192,6 @@ def build_with_atomsk(
         removed = 0
         artificial_void = False
         if kind in {"void", "polycrystal_void"}:
-            # Punch void with ASE on the Atomsk result
             from ase.io import read, write
 
             atoms = read(str(out_data), format="lammps-data")
@@ -120,9 +205,10 @@ def build_with_atomsk(
         return {
             "atom_count": n,
             "host_symbol": sym,
-            "n_grains": n_grains if "poly" in kind else 1,
+            "n_grains": n_grains if ("poly" in kind or kind == "bicrystal") else 1,
             "artificial_void": artificial_void,
             "void_atoms_removed": removed,
+            "gb": gb_meta,
             "note": "Built with Atomsk",
         }
     finally:

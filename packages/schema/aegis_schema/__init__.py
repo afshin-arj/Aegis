@@ -36,6 +36,7 @@ class CrystalSystem(str, Enum):
 class StructureKind(str, Enum):
     SINGLE_CRYSTAL = "single_crystal"
     POLYCRYSTAL = "polycrystal"
+    BICRYSTAL = "bicrystal"
     VOID = "void"
     POLYCRYSTAL_VOID = "polycrystal_void"
     IMPORT = "import"
@@ -207,11 +208,15 @@ class LammpsRunParams(BaseModel):
     interstitial_geometry: str = "octahedral"
     interstitial_offset_A: float | None = None  # dumbbell/crowdion half-separation; default ~0.25 a
     interstitial_energy_eV: float = 0.0  # optional kick along the lattice direction after insert
-    # Structure builder (single crystal | polycrystal | nano-void | import)
+    # Structure builder (single crystal | polycrystal | bicrystal GB | nano-void | import)
     structure_kind: StructureKind = StructureKind.SINGLE_CRYSTAL
     poly_n_grains: int = Field(4, ge=2, le=64)
     poly_seed: int = 42
     poly_texture: str = "random"  # random | fiber
+    # Symmetric tilt bicrystal: misorientation about gb_tilt_axis; grains stacked along gb_normal
+    gb_misorientation_deg: float = Field(15.0, ge=0.1, le=90.0)
+    gb_tilt_axis: str = "001"  # Miller / 001|011|111 style
+    gb_normal: str = "001"  # GB plane normal / merge direction
     void_radius_A: float = Field(5.0, ge=0.5, le=200.0)
     void_count: int = Field(1, ge=1, le=64)
     void_center_frac_x: float = Field(0.5, ge=0.0, le=1.0)

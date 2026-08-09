@@ -114,7 +114,7 @@ runs/                 Job artifacts (gitignored)
 
 - **Potentials:** Aegis never invents coefficients. Upload a published file or place one under `data/potentials/curated/`. The bundled placeholder is for pipeline wiring only—real MD requires a valid EAM/FS/MEAM file.
 - **Defect analysis:** Phase-1 Wigner–Seitz-style proxy for engineering inspection—not a replacement for OVITO production analysis. Enable DXA from the LAMMPS tab or Results. `setup_and_run` tries `pip install -U ovito` on first run (soft-fail); see [docs/ovito.md](docs/ovito.md).
-- **Nanostructures:** LAMMPS tab → Structure (`polycrystal`, `void`, `polycrystal_void`, `import`) builds `structure.data` via ASE (Atomsk optional) and loads it with `read_data` — see [docs/structures.md](docs/structures.md).
+- **Nanostructures:** LAMMPS tab → Structure (`polycrystal`, `bicrystal`, `void`, `polycrystal_void`, `import`) builds `structure.data` via ASE (Atomsk optional) and loads it with `read_data` — see [docs/structures.md](docs/structures.md).
 - **Large cells:** runs with &gt;20³ unit cells require explicit confirmation.
 
 ---
