@@ -158,18 +158,72 @@ def _elems_for_script(
     return elems
 
 
-def _nanowire_boundary(params: dict[str, Any]) -> str | None:
+def _nanowire_axis(params: dict[str, Any]) -> str | None:
     kind = str(
         getattr(params.get("structure_kind"), "value", params.get("structure_kind")) or ""
     ).lower()
     if kind != "nanowire":
         return None
     axis = str(params.get("nanowire_axis") or "z").strip().lower()
+    return axis if axis in {"x", "y", "z"} else "z"
+
+
+def _nanowire_boundary(params: dict[str, Any]) -> str | None:
+    axis = _nanowire_axis(params)
+    if axis is None:
+        return None
     if axis == "x":
         return "p s s"
     if axis == "y":
         return "s p s"
     return "s s p"  # z wire: free x/y, periodic z
+
+
+def _nanowire_beam(
+    params: dict[str, Any],
+    *,
+    Lx: float,
+    Ly: float,
+    Lz: float,
+    a: float,
+    n_ions: int,
+    speed: float,
+    angle_deg: float,
+) -> tuple[list[tuple[float, float, float]], tuple[float, float, float], str]:
+    """Place ions outside a free transverse face; velocity toward the wire axis."""
+    axis = _nanowire_axis(params) or "z"
+    angle = math.radians(float(angle_deg))
+    margin = max(0.5 * a, 1.0)
+    inserts: list[tuple[float, float, float]] = []
+    # Approach from the high free-face side; angle tilts in the free plane
+    if axis == "z":
+        vx = -speed * math.cos(angle)
+        vy = speed * math.sin(angle)
+        vz = 0.0
+        for i in range(n_ions):
+            fy = 0.35 + 0.3 * ((i * 0.37) % 1.0)
+            fz = 0.35 + 0.3 * ((i * 0.61) % 1.0)
+            inserts.append((max(margin, Lx - margin), fy * Ly, fz * Lz))
+        note = "nanowire beam: +x free face → −x toward wire (axis=z)"
+    elif axis == "y":
+        vx = -speed * math.cos(angle)
+        vy = 0.0
+        vz = speed * math.sin(angle)
+        for i in range(n_ions):
+            fx = 0.35 + 0.3 * ((i * 0.37) % 1.0)
+            fz = 0.35 + 0.3 * ((i * 0.61) % 1.0)
+            inserts.append((fx * Lx, max(margin, Ly - margin), fz * Lz))
+        note = "nanowire beam: +y free face → −y toward wire (axis=y)"
+    else:  # x wire: free y/z — approach from +z
+        vx = 0.0
+        vy = speed * math.sin(angle)
+        vz = -speed * math.cos(angle)
+        for i in range(n_ions):
+            fx = 0.35 + 0.3 * ((i * 0.37) % 1.0)
+            fy = 0.35 + 0.3 * ((i * 0.61) % 1.0)
+            inserts.append((fx * Lx, fy * Ly, max(margin, Lz - margin)))
+        note = "nanowire beam: +z free face → −z toward wire (axis=x)"
+    return inserts, (vx, vy, vz), note
 
 
 def _structure_box_A(
@@ -660,6 +714,7 @@ def write_implant_input(
     vx = speed * math.sin(angle)
     vy = 0.0
     vz = -speed * math.cos(angle)
+    beam_note = f"Insert {ion_count} × {ion} near top surface (angle={angle_deg} deg from normal)"
 
     ion_type = _elem_index(elems, ion)
     host_elems = [e for e in elems if e.lower() != ion.lower()] or elems[:1]
@@ -667,6 +722,7 @@ def write_implant_input(
     dump, dump_mod = _dump_command(params, "dump.implant.*.lammpstrj")
     restart = _restart_block(params)
     crystal_note = _crystal_comment(material)
+    poly_note = _poly_preamble(path, material, params)
     geometry = _geometry_block(
         material=material, params=params, elems=host_elems, structure_file=structure_file
     )
@@ -699,31 +755,53 @@ def write_implant_input(
         )
 
     insert_lines = []
-    for i in range(ion_count):
-        # Spread ions slightly in xy for multi-ion proxy
-        fx = 0.5 + 0.05 * ((i % 3) - 1)
-        fy = 0.5 + 0.05 * (((i // 3) % 3) - 1)
-        if structure_file:
-            Lx, Ly, Lz = _structure_box_A(path, material, params)
-            bx, by, bz = fx * Lx, fy * Ly, max(0.0, Lz - 0.5 * a)
+    nw_axis = _nanowire_axis(params)
+    if nw_axis and structure_file:
+        Lx, Ly, Lz = _structure_box_A(path, material, params)
+        pts, vel, nw_note = _nanowire_beam(
+            params,
+            Lx=Lx,
+            Ly=Ly,
+            Lz=Lz,
+            a=a,
+            n_ions=ion_count,
+            speed=speed,
+            angle_deg=angle_deg,
+        )
+        vx, vy, vz = vel
+        beam_note = f"{nw_note}; {ion_count} × {ion} at {E} eV (angle={angle_deg} deg)"
+        poly_note = (poly_note or "") + f"# {beam_note}\n"
+        for bx, by, bz in pts:
             insert_lines.append(
                 f"create_atoms {ion_type} single {bx:.4f} {by:.4f} {bz:.4f} units box"
             )
-        else:
-            insert_lines.append(
-                f"create_atoms {ion_type} single {fx:.3f} {fy:.3f} {nz - 0.5} units lattice"
-            )
+    else:
+        for i in range(ion_count):
+            # Spread ions slightly in xy for multi-ion proxy
+            fx = 0.5 + 0.05 * ((i % 3) - 1)
+            fy = 0.5 + 0.05 * (((i // 3) % 3) - 1)
+            if structure_file:
+                Lx, Ly, Lz = _structure_box_A(path, material, params)
+                bx, by, bz = fx * Lx, fy * Ly, max(0.0, Lz - 0.5 * a)
+                insert_lines.append(
+                    f"create_atoms {ion_type} single {bx:.4f} {by:.4f} {bz:.4f} units box"
+                )
+            else:
+                insert_lines.append(
+                    f"create_atoms {ion_type} single {fx:.3f} {fy:.3f} {nz - 0.5} units lattice"
+                )
     insert_block = "\n".join(insert_lines)
 
-    # Free Z avoids periodic wrap of injected ions (same default as surface mode).
-    boundary = str(params.get("boundary") or "p p s")
-    if boundary.strip() == "p p p":
+    nw_bound = _nanowire_boundary(params)
+    boundary = nw_bound or str(params.get("boundary") or "p p s")
+    if not nw_bound and boundary.strip() == "p p p":
         boundary = "p p s"
 
     script = textwrap.dedent(
         f"""\
         # Aegis-generated ion implant input
         {crystal_note}
+        {poly_note}
         units metal
         dimension 3
         boundary {boundary}
@@ -744,7 +822,7 @@ def write_implant_input(
         # Reference lattice BEFORE ion insertion
         write_dump all custom dump.initial.lammpstrj id type x y z modify sort id
 
-        # Insert {ion_count} × {ion} near top surface (angle={angle_deg} deg from normal)
+        # {beam_note}
         {insert_block}
         group implant type {ion_type}
         velocity implant set {vx:.6f} {vy:.6f} {vz:.6f} units box
@@ -803,12 +881,24 @@ def write_surface_input(
     vx = speed * math.sin(angle)
     vy = 0.0
     vz = -speed * math.cos(angle)
+    beam_note = f"Insert low-E beam above the free surface"
 
     masses = "\n".join(f"mass {i+1} {_approx_mass(sym)}" for i, sym in enumerate(elems))
     ion_type = _elem_index(elems, ion)
     host_elems = [e for e in elems if e.lower() != ion.lower()] or elems[:1]
     lattice_cmd = _lattice_line(material, params)
-    if structure_file:
+    nw_axis = _nanowire_axis(params)
+    if structure_file and nw_axis:
+        # Nanowire already includes transverse vacuum — do not change_box along z
+        geometry = textwrap.dedent(
+            f"""\
+            # Prebuilt nanowire (transverse vacuum already in structure.data)
+            read_data {structure_file}
+            {masses}
+            {lattice_cmd}
+            """
+        )
+    elif structure_file:
         Lx, Ly, Lz = _structure_box_A(path, material, params)
         z_top = Lz + float(vacuum) * a
         geometry = textwrap.dedent(
@@ -835,28 +925,50 @@ def write_surface_input(
             """
         )
 
-    boundary = str(params.get("boundary") or "p p s")
-    if boundary.strip() == "p p p":
+    nw_bound = _nanowire_boundary(params)
+    boundary = nw_bound or str(params.get("boundary") or "p p s")
+    if not nw_bound and boundary.strip() == "p p p":
         boundary = "p p s"
     ensemble = _ensemble_fix(params)
     dump, dump_mod = _dump_command(params, "dump.surface.*.lammpstrj")
     restart = _restart_block(params)
     crystal_note = _crystal_comment(material)
+    poly_note = _poly_preamble(path, material, params)
 
     insert_lines = []
-    for i in range(n_impacts):
-        fx = 0.3 + 0.4 * ((i * 0.37) % 1.0)
-        fy = 0.3 + 0.4 * ((i * 0.61) % 1.0)
-        if structure_file:
-            Lx, Ly, Lz = _structure_box_A(path, material, params)
-            bx, by, bz = fx * Lx, fy * Ly, Lz + 0.8 * a
+    if nw_axis and structure_file:
+        Lx, Ly, Lz = _structure_box_A(path, material, params)
+        pts, vel, nw_note = _nanowire_beam(
+            params,
+            Lx=Lx,
+            Ly=Ly,
+            Lz=Lz,
+            a=a,
+            n_ions=n_impacts,
+            speed=speed,
+            angle_deg=angle_deg,
+        )
+        vx, vy, vz = vel
+        beam_note = f"{nw_note}; {n_impacts} × {ion} at {E} eV (angle={angle_deg} deg)"
+        poly_note = (poly_note or "") + f"# {beam_note}\n"
+        for bx, by, bz in pts:
             insert_lines.append(
                 f"create_atoms {ion_type} single {bx:.4f} {by:.4f} {bz:.4f} units box"
             )
-        else:
-            insert_lines.append(
-                f"create_atoms {ion_type} single {fx:.4f} {fy:.4f} {nz + 0.8} units lattice"
-            )
+    else:
+        for i in range(n_impacts):
+            fx = 0.3 + 0.4 * ((i * 0.37) % 1.0)
+            fy = 0.3 + 0.4 * ((i * 0.61) % 1.0)
+            if structure_file:
+                Lx, Ly, Lz = _structure_box_A(path, material, params)
+                bx, by, bz = fx * Lx, fy * Ly, Lz + 0.8 * a
+                insert_lines.append(
+                    f"create_atoms {ion_type} single {bx:.4f} {by:.4f} {bz:.4f} units box"
+                )
+            else:
+                insert_lines.append(
+                    f"create_atoms {ion_type} single {fx:.4f} {fy:.4f} {nz + 0.8} units lattice"
+                )
     insert_block = "\n".join(insert_lines)
 
     script = textwrap.dedent(
@@ -865,6 +977,7 @@ def write_surface_input(
         # Note: {n_impacts} ions are inserted together (simultaneous), not sequential fluence.
         # Fluence proxy: {n_impacts} × {ion} at {E} eV onto free surface (vacuum={vacuum} layers)
         {crystal_note}
+        {poly_note}
         units metal
         dimension 3
         boundary {boundary}
@@ -885,7 +998,7 @@ def write_surface_input(
         # Reference free surface BEFORE irradiation
         write_dump all custom dump.initial.lammpstrj id type x y z modify sort id
 
-        # Insert low-E beam above the free surface
+        # {beam_note}
         {insert_block}
         group beam type {ion_type}
         velocity beam set {vx:.6f} {vy:.6f} {vz:.6f} units box
@@ -953,13 +1066,15 @@ def write_interstitial_input(
     extra atoms (octahedral / tetrahedral / dumbbell / crowdion / basal) oriented along
     structure-appropriate directions.
     """
-    host_elems = _elements_line(material["composition"])
-    if not host_elems:
-        host_elems = ["W"]
+    elems = _elems_for_script(
+        path, material, params, structure_file=structure_file, mode="interstitial"
+    )
+    if not elems:
+        elems = ["W"]
     species = _norm_sym(str(params.get("interstitial_species") or "He"))
-    elems = list(host_elems)
     if not _has_elem(elems, species):
-        elems.append(species)
+        elems = elems + [species]
+    host_elems = [e for e in elems if e.lower() != species.lower()] or elems[:1]
 
     a = float(material.get("lattice_constant_A", 3.165))
     crystal = str(material.get("crystal", "bcc"))

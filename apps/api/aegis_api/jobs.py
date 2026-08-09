@@ -28,6 +28,26 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _validate_mode_structure(params: dict[str, Any]) -> None:
+    """Refuse mode/structure combinations that would emit dishonest geometry."""
+    mode = str(getattr(params.get("mode"), "value", params.get("mode")) or "cascade").lower()
+    sk = str(
+        getattr(params.get("structure_kind"), "value", params.get("structure_kind"))
+        or "single_crystal"
+    ).lower()
+    if mode == "interstitial" and sk not in {"", "single_crystal"}:
+        raise ValueError(
+            "Interstitial insertion requires structure_kind=single_crystal "
+            "(lattice-site geometries are not defined on nanostructures)."
+        )
+    if sk in {"polycrystal", "polycrystal_void", "bicrystal"} and mode == "surface":
+        # Surface vacuum slab + grain structures is poorly defined
+        raise ValueError(
+            f"mode=surface is not supported with structure_kind={sk} — "
+            "use cascade/implant, or import a slab with free surfaces."
+        )
+
+
 def _approx_mass_sym(sym: str) -> float:
     table = {
         "H": 1.008,
@@ -80,7 +100,45 @@ def _prepare_structure_file(
         if meta.get("artificial_void"):
             log.write(f"[Aegis] void removed {meta.get('void_atoms_removed')} atoms\n")
 
-    elems = structure_type_symbols(mat_dict, params, mode=mode)
+    kind = str(meta.get("kind") or params.get("structure_kind") or "").lower()
+    mode_s = str(getattr(mode, "value", mode) or "cascade").strip().lower()
+
+    def _norm(sym: str) -> str:
+        s = str(sym or "").strip()
+        if not s:
+            return ""
+        if len(s) == 1:
+            return s.upper()
+        return s[0].upper() + s[1:].lower()
+
+    def _add(out: list[str], seen: set[str], sym: str) -> None:
+        n = _norm(sym)
+        if not n or n.lower() in seen:
+            return
+        seen.add(n.lower())
+        out.append(n)
+
+    # Import: prefer symbols from the file; only append ion/interstitial extras
+    if kind == "import" and isinstance(meta.get("type_symbols"), list) and meta["type_symbols"]:
+        elems: list[str] = []
+        seen: set[str] = set()
+        for s in meta["type_symbols"]:
+            _add(elems, seen, str(s))
+        if mode_s in {"implant", "surface"}:
+            _add(elems, seen, str(params.get("ion_type") or "He"))
+        elif mode_s == "interstitial":
+            _add(elems, seen, str(params.get("interstitial_species") or "He"))
+    else:
+        elems = structure_type_symbols(mat_dict, params, mode=mode)
+        # Prefer builder-reported order when present (alloy / WC)
+        built = meta.get("type_symbols")
+        if isinstance(built, list) and built:
+            elems = [_norm(str(s)) for s in built if str(s).strip()]
+            extras = structure_type_symbols(mat_dict, params, mode=mode)
+            seen = {e.lower() for e in elems}
+            for s in extras:
+                _add(elems, seen, s)
+
     if len(elems) > 1:
         masses = {i + 1: float(_approx_mass(s)) for i, s in enumerate(elems)}
         ensure_atom_types(job_dir / "structure.data", len(elems), masses)
@@ -210,6 +268,7 @@ class JobManager:
             )
         validate_potential_coverage(material, potential, params)
         validate_cascade_pka(material, params)
+        _validate_mode_structure(params)
 
         local_pot = job_dir / pot_file.name
         shutil.copy2(pot_file, local_pot)
@@ -320,6 +379,7 @@ class JobManager:
 
             validate_potential_coverage(material, potential, params)
             validate_cascade_pka(material, params)
+            _validate_mode_structure(params)
 
             # Copy potential into job dir for portability
             local_pot = job_dir / pot_file.name
@@ -479,6 +539,8 @@ class JobManager:
                 return
 
             self._update(job_id, status=JobStatus.ANALYZING, message="defect analysis")
+            if self._is_cancelled(job_id):
+                return
             c_A = getattr(material, "lattice_c_A", None) or crystal_reg.resolve_c_A(mat_dict)
             summary = analyze_job_dir(
                 job_dir,
@@ -492,6 +554,8 @@ class JobManager:
                     getattr(params.get("structure_kind"), "value", params.get("structure_kind", "single_crystal"))
                 ),
             )
+            if self._is_cancelled(job_id):
+                return
             if use_dry_run:
                 summary.setdefault("summary", {})
                 summary["summary"]["demo_structure_proxy"] = True
@@ -507,6 +571,9 @@ class JobManager:
             (job_dir / "defects.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
             surface_summary = (summary.get("surface") or {}).get("summary")
 
+            if self._is_cancelled(job_id):
+                return
+
             # Best-effort cascade/implant preview GIF for Results download
             try:
                 from aegis_api.animation import build_trajectory_gif, cache_trajectory_gif
@@ -518,6 +585,9 @@ class JobManager:
             except Exception as gif_exc:  # noqa: BLE001
                 with log_path.open("a", encoding="utf-8") as log:
                     log.write(f"[Aegis] animation.gif skipped: {gif_exc}\n")
+
+            if self._is_cancelled(job_id):
+                return
 
             # Optional OVITO DXA
             if params.get("run_dxa"):

@@ -70,10 +70,10 @@ def analyze_job_dir(
             "Ideal-lattice WS treats cavity volume as vacancies — interpret with care; "
             "prefer OVITO DXA for void structures."
         )
-    elif sk in {"nanowire", "precipitate", "import"}:
+    elif sk in {"nanowire", "precipitate", "import", "bicrystal"}:
         nano_note = (
             f"structure_kind={sk}: WS assumes a perfect host lattice reference — "
-            "surface / second-phase atoms may appear as false defects."
+            "surface / second-phase / grain atoms may appear as false defects."
         )
 
     dumps = _prefer_analysis_dumps(job_dir)

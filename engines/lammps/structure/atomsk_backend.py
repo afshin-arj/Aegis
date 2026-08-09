@@ -20,7 +20,18 @@ def _crystal_flag(material: dict[str, Any]) -> str:
     from lammps import crystal as crystal_reg
 
     cry = crystal_reg.normalize_crystal(str(material.get("crystal") or "bcc"))
-    return {"bcc": "bcc", "fcc": "fcc", "hcp": "hcp", "diamond": "diamond", "hex": "hcp"}.get(cry, "bcc")
+    if cry == "hex":
+        raise ValueError(
+            "Atomsk structure builders do not support crystal=hex (WC) — use ASE WC builders "
+            "(void / nanowire / precipitate) or structure_kind=import."
+        )
+    mapping = {"bcc": "bcc", "fcc": "fcc", "hcp": "hcp", "diamond": "diamond"}
+    if cry not in mapping:
+        raise ValueError(
+            f"Atomsk structure builders do not support crystal='{cry}' — "
+            "use bcc/fcc/hcp/diamond (or import a LAMMPS data file)."
+        )
+    return mapping[cry]
 
 
 def build_with_atomsk(

@@ -708,6 +708,14 @@ def export_job_hpc(job_id: str, body: HpcExportRequest) -> FileResponse:
     return FileResponse(zip_path, filename=zip_path.name, media_type="application/zip")
 
 
+def _in_aegis_is_stub(job_dir: Path) -> bool:
+    in_path = job_dir / "in.aegis"
+    if not in_path.exists():
+        return True
+    head = in_path.read_text(encoding="utf-8", errors="replace")[:240]
+    return "Aegis HPC stub" in head or "Aegis dry-run stub" in head
+
+
 @app.post("/api/campaigns/{campaign_id}/hpc-export")
 def export_campaign_hpc(campaign_id: str, body: HpcExportRequest) -> FileResponse:
     info = campaigns.get(campaign_id)
@@ -724,7 +732,10 @@ def export_campaign_hpc(campaign_id: str, body: HpcExportRequest) -> FileRespons
         if not case.job_id:
             continue
         job_dir = RUNS_ROOT / case.job_id
-        if not (job_dir / "in.aegis").exists():
+        need_prepare = True
+        if (job_dir / "in.aegis").exists() and not _in_aegis_is_stub(job_dir):
+            need_prepare = False
+        if need_prepare:
             try:
                 jobs.prepare_inputs(case.job_id)
             except Exception as exc:  # noqa: BLE001
@@ -733,13 +744,23 @@ def export_campaign_hpc(campaign_id: str, body: HpcExportRequest) -> FileRespons
         if not (job_dir / "in.aegis").exists():
             prepare_errors.append(f"{case.job_id}: in.aegis still missing after prepare")
             continue
+        if _in_aegis_is_stub(job_dir):
+            prepare_errors.append(
+                f"{case.job_id}: skipped dry-run/placeholder stub "
+                "(upload a published potential + supported crystal)"
+            )
+            continue
         case_out = root / case.job_id
         write_hpc_pack(job_dir, out_dir=case_out, req=body, job_id=case.job_id, make_zip=False)
         case_dirs.append(case.job_id)
         exported += 1
     if exported == 0:
         detail = "; ".join(prepare_errors[:5]) if prepare_errors else "no cases with prepared inputs"
-        raise HTTPException(400, f"no cases with prepared inputs available for HPC export yet ({detail})")
+        raise HTTPException(
+            400,
+            f"no production-ready cases for HPC export ({detail}). "
+            "Stub/dry-run inputs are refused.",
+        )
     if prepare_errors:
         (root / "prepare_warnings.txt").write_text(
             "\n".join(prepare_errors) + "\n",

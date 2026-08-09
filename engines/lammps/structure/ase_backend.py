@@ -23,28 +23,84 @@ def _crystal_name(material: dict[str, Any]) -> str:
     return crystal_reg.normalize_crystal(str(material.get("crystal") or "bcc"))
 
 
+def _norm_sym(sym: str) -> str:
+    s = str(sym or "").strip()
+    if not s:
+        return ""
+    if len(s) == 1:
+        return s.upper()
+    return s[0].upper() + s[1:].lower()
+
+
 def _ase_crystal(cry: str) -> str:
     """Map Aegis crystal id to ASE bulk name. Refuse silent wrong lattices."""
     key = (cry or "bcc").strip().lower()
     if key == "hex":
-        raise ValueError(
-            "structure builders do not support crystal=hex (WC) yet — use bcc/fcc/hcp/diamond, "
-            "or structure_kind=import with a WC cell."
-        )
+        return "hex"  # handled by _make_wc_bulk
     mapping = {"bcc": "bcc", "fcc": "fcc", "hcp": "hcp", "diamond": "diamond"}
     if key not in mapping:
         raise ValueError(
-            f"structure builders do not support crystal='{cry}' — use bcc/fcc/hcp/diamond "
+            f"structure builders do not support crystal='{cry}' — use bcc/fcc/hcp/diamond/hex "
             "(or import a LAMMPS data file)."
         )
     return mapping[key]
 
 
+def _wc_pair(material: dict[str, Any]) -> tuple[str, str]:
+    """Metal + carbon symbols for WC-like hex basis (matches crystal.py)."""
+    comps = [
+        (_norm_sym(str(c.get("symbol") or "")), float(c.get("atomic_percent") or 0))
+        for c in (material.get("composition") or [])
+    ]
+    comps = [(s, p) for s, p in comps if s and p > 0]
+    carbons = [s for s, _ in comps if s.lower() == "c"]
+    metals = [s for s, _ in comps if s.lower() != "c"]
+    if not carbons:
+        raise ValueError(
+            "crystal=hex (WC) nanostructures require carbon in the composition "
+            "(e.g. W + C). Use import for custom cells, or switch crystal."
+        )
+    if not metals:
+        raise ValueError("crystal=hex (WC) nanostructures require a metal host (e.g. W) plus C.")
+    return metals[0], carbons[0]
+
+
+def _make_wc_bulk(material: dict[str, Any], nx: int, ny: int, nz: int):
+    """True WC hexagonal cell: metal @ (0,0,0), C @ (1/3,2/3,1/2)."""
+    from ase import Atoms
+    from lammps import crystal as crystal_reg
+
+    metal, carbon = _wc_pair(material)
+    a = float(material.get("lattice_constant_A") or 2.906)
+    c = crystal_reg.resolve_c_A(material, "hex") or a * 0.976
+    cell = np.array(
+        [
+            [a, 0.0, 0.0],
+            [-0.5 * a, a * math.sqrt(3.0) / 2.0, 0.0],
+            [0.0, 0.0, float(c)],
+        ],
+        dtype=float,
+    )
+    atoms = Atoms(
+        [metal, carbon],
+        scaled_positions=[[0.0, 0.0, 0.0], [1.0 / 3.0, 2.0 / 3.0, 0.5]],
+        cell=cell,
+        pbc=True,
+    )
+    atoms = atoms.repeat((max(1, nx), max(1, ny), max(1, nz)))
+    atoms.set_pbc(True)
+    atoms.wrap()
+    return atoms
+
+
 def _make_bulk(material: dict[str, Any], nx: int, ny: int, nz: int):
     from ase.build import bulk
 
-    sym = _host_symbol(material)
     cry = _crystal_name(material)
+    if cry == "hex":
+        return _make_wc_bulk(material, nx, ny, nz)
+
+    sym = _host_symbol(material)
     a = float(material.get("lattice_constant_A") or 3.165)
     c = material.get("lattice_c_A")
     name = _ase_crystal(cry)
@@ -58,6 +114,52 @@ def _make_bulk(material: dict[str, Any], nx: int, ny: int, nz: int):
     atoms.set_pbc(True)
     atoms.wrap()
     return atoms
+
+
+def _composition_weights(material: dict[str, Any]) -> list[tuple[str, float]]:
+    items: list[tuple[str, float]] = []
+    for c in material.get("composition") or []:
+        sym = _norm_sym(str(c.get("symbol") or ""))
+        pct = float(c.get("atomic_percent") or 0)
+        if sym and pct > 0:
+            items.append((sym, pct))
+    total = sum(p for _, p in items) or 1.0
+    return [(s, p / total) for s, p in items]
+
+
+def _apply_substitutional_alloy(atoms, material: dict[str, Any], rng: random.Random) -> dict[str, Any]:
+    """Random substitutional fill matching composition atomic fractions (seeded)."""
+    weights = _composition_weights(material)
+    if not weights:
+        weights = [("W", 1.0)]
+    if len(weights) == 1:
+        sym = weights[0][0]
+        atoms.set_chemical_symbols([sym] * len(atoms))
+        return {
+            "alloy_fill": "mono",
+            "counts": {sym: len(atoms)},
+            "note": f"Mono-host fill ({sym})",
+        }
+    counts = {s: 0 for s, _ in weights}
+    symbols: list[str] = []
+    for _ in range(len(atoms)):
+        u = rng.random()
+        cum = 0.0
+        chosen = weights[-1][0]
+        for s, w in weights:
+            cum += w
+            if u <= cum:
+                chosen = s
+                break
+        symbols.append(chosen)
+        counts[chosen] = counts.get(chosen, 0) + 1
+    atoms.set_chemical_symbols(symbols)
+    return {
+        "alloy_fill": "substitutional_random",
+        "counts": counts,
+        "fractions": {s: w for s, w in weights},
+        "note": "Substitutional random alloy from material composition (ASE)",
+    }
 
 
 def _punch_voids(atoms, params: dict[str, Any], rng: random.Random) -> int:
@@ -148,6 +250,13 @@ def _voronoi_polycrystal(material: dict[str, Any], params: dict[str, Any]):
     from ase import Atoms
     from ase.build import bulk
 
+    cry = _crystal_name(material)
+    if cry == "hex":
+        raise ValueError(
+            "polycrystal is not supported for crystal=hex (WC) — use void / nanowire / "
+            "precipitate / import, or single_crystal LAMMPS lattice."
+        )
+
     nx = int(params.get("nx") or 8)
     ny = int(params.get("ny") or 8)
     nz = int(params.get("nz") or 8)
@@ -155,11 +264,10 @@ def _voronoi_polycrystal(material: dict[str, Any], params: dict[str, Any]):
     seed = int(params.get("poly_seed") or 42)
     rng = random.Random(seed)
     sym = _host_symbol(material)
-    cry = _crystal_name(material)
     a = float(material.get("lattice_constant_A") or 3.165)
     name = _ase_crystal(cry)
     lattice_name = name
-    # Prefer cubic prototypes for Voronoi clipping; HCP/hex keep hcp basis
+    # Prefer cubic prototypes for Voronoi clipping; HCP keeps hcp basis
     if name == "diamond":
         lattice_name = "diamond"
     elif name == "hcp":
@@ -285,6 +393,11 @@ def _rotate_atoms(atoms, angle_deg: float, axis: np.ndarray, origin: np.ndarray)
 
 def _bicrystal_tilt(material: dict[str, Any], params: dict[str, Any]):
     """Symmetric tilt bicrystal: two half-crystals joined along gb_normal."""
+    if _crystal_name(material) == "hex":
+        raise ValueError(
+            "bicrystal is not supported for crystal=hex (WC) — use void / nanowire / "
+            "import, or single_crystal LAMMPS lattice."
+        )
     nx = max(2, int(params.get("nx") or 8))
     ny = max(2, int(params.get("ny") or 8))
     nz = max(4, int(params.get("nz") or 8))
@@ -440,6 +553,11 @@ def _precipitates(material: dict[str, Any], params: dict[str, Any], rng: random.
     ppt = ppt[:1].upper() + ppt[1:]
 
     atoms = _make_bulk(material, nx, ny, nz)
+    alloy_meta: dict[str, Any] = {}
+    if _crystal_name(material) == "hex":
+        alloy_meta = {"alloy_fill": "wc_ordered_basis"}
+    else:
+        alloy_meta = _apply_substitutional_alloy(atoms, material, rng)
     cell = atoms.get_cell()
     lx, ly, lz = float(cell[0, 0]), float(cell[1, 1]), float(cell[2, 2])
     cx0 = float(params.get("precipitate_center_frac_x") or 0.5) * lx
@@ -453,7 +571,7 @@ def _precipitates(material: dict[str, Any], params: dict[str, Any], rng: random.
             centers.append((rng.random() * lx, rng.random() * ly, rng.random() * lz))
 
     pos = atoms.get_positions()
-    symbols = [host] * len(atoms)
+    symbols = list(atoms.get_chemical_symbols())
     changed = 0
     for cx, cy, cz in centers:
         d2 = (pos[:, 0] - cx) ** 2 + (pos[:, 1] - cy) ** 2 + (pos[:, 2] - cz) ** 2
@@ -476,8 +594,9 @@ def _precipitates(material: dict[str, Any], params: dict[str, Any], rng: random.
         "n_precipitates": n,
         "atoms_converted": changed,
         "centers_A": centers,
+        "alloy": alloy_meta,
         "note": (
-            f"Spherical {ppt} precipitates in {host} matrix (same crystal lattice; "
+            f"Spherical {ppt} precipitates in alloy/host matrix (same crystal lattice; "
             "substitutional proxy - not a second crystal structure)."
         ),
     }
@@ -534,7 +653,8 @@ def build_with_ase(out_data: Path, *, material: dict[str, Any], params: dict[str
     void_meta: dict[str, Any] = {}
     wire_meta: dict[str, Any] = {}
     ppt_meta: dict[str, Any] = {}
-    force_mono = True
+    alloy_meta: dict[str, Any] = {}
+    cry = _crystal_name(material)
 
     if kind in {"polycrystal", "polycrystal_void"}:
         atoms, poly_meta = _voronoi_polycrystal(material, params)
@@ -545,7 +665,7 @@ def build_with_ase(out_data: Path, *, material: dict[str, Any], params: dict[str
         atoms, wire_meta = _nanowire(material, params)
     elif kind == "precipitate":
         atoms, ppt_meta = _precipitates(material, params, rng)
-        force_mono = False
+        alloy_meta = dict(ppt_meta.get("alloy") or {})
     elif kind in {"void", "void_lattice"}:
         atoms = _make_bulk(material, nx, ny, nz)
     else:
@@ -568,12 +688,15 @@ def build_with_ase(out_data: Path, *, material: dict[str, Any], params: dict[str
                 "Increase void_radius_A or cell size."
             )
 
-    n = _write_lammps_data(
-        atoms,
-        out_data,
-        sym if force_mono else None,
-        specorder=None if force_mono else _precipitate_specorder(material, params, atoms),
-    )
+    # Chemistry: WC hex keeps ordered basis; others get substitutional random alloy
+    if kind != "precipitate":
+        if cry == "hex":
+            alloy_meta = {"alloy_fill": "wc_ordered_basis", "note": "Ordered WC metal+C basis"}
+        else:
+            alloy_meta = _apply_substitutional_alloy(atoms, material, rng)
+
+    specorder = _precipitate_specorder(material, params, atoms)
+    n = _write_lammps_data(atoms, out_data, None, specorder=specorder)
     cell = atoms.get_cell()
     box_A = [float(cell[0, 0]), float(cell[1, 1]), float(cell[2, 2])]
     note = "ASE structure builder"
@@ -591,6 +714,10 @@ def build_with_ase(out_data: Path, *, material: dict[str, Any], params: dict[str
             "ASE Voronoi polycrystal is an engineering construction; "
             "prefer Atomsk for production GB studies."
         )
+    if alloy_meta.get("alloy_fill") == "substitutional_random":
+        note = f"{note} {alloy_meta.get('note') or ''}".strip()
+    elif alloy_meta.get("alloy_fill") == "wc_ordered_basis":
+        note = f"{note} Ordered WC hex basis (not random alloy).".strip()
     return {
         "atom_count": n,
         "host_symbol": sym,
@@ -602,5 +729,7 @@ def build_with_ase(out_data: Path, *, material: dict[str, Any], params: dict[str
         "void_lattice": void_meta,
         "nanowire": wire_meta,
         "precipitate": ppt_meta,
+        "alloy": alloy_meta,
+        "type_symbols": specorder,
         "note": note,
     }

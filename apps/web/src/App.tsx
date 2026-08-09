@@ -738,11 +738,29 @@ export default function App() {
     const sk = (params.structure_kind || "single_crystal").toLowerCase();
     const needsStructBuild =
       sk !== "single_crystal" && sk !== "" && sk !== "import";
-    if (needsStructBuild && engines && engines.ase_found === false) {
+    if (needsStructBuild && !engines) {
+      list.push("Waiting for Engines status (ASE required for nanostructures)");
+    } else if (needsStructBuild && engines.ase_found === false) {
       list.push("Nanostructure kinds require ASE — run setup_and_run.cmd or pip install ase (Engines tab)");
     }
     if (sk === "import" && !(params.structure_import_path || "").trim()) {
       list.push("Import structure: upload a file or set structure_import_path");
+    }
+    if (params.mode === "interstitial" && sk !== "single_crystal" && sk !== "") {
+      list.push("Interstitial insertion requires single crystal (not nanostructures)");
+    }
+    if (
+      params.mode === "surface" &&
+      ["polycrystal", "polycrystal_void", "bicrystal"].includes(sk)
+    ) {
+      list.push(`Surface mode is not supported with ${sk.replace(/_/g, " ")} — use cascade/implant or import a slab`);
+    }
+    const cry = (material?.crystal || "").toLowerCase();
+    if (
+      cry === "hex" &&
+      ["polycrystal", "polycrystal_void", "bicrystal"].includes(sk)
+    ) {
+      list.push("WC hex does not support polycrystal/bicrystal — use void, nanowire, precipitate, import, or single crystal");
     }
     if (compUnit === "wt%") {
       for (const e of composition) {
@@ -780,14 +798,6 @@ export default function App() {
           `Precipitate species must be covered by the potential (${need.join(", ")}); current covers ${selectedPot.elements.join(" ")}`,
         );
       }
-    }
-    if (
-      params.structure_kind === "nanowire" &&
-      (params.mode === "surface" || params.mode === "implant")
-    ) {
-      list.push(
-        "Nanowire + surface/implant is not supported yet — use cascade mode (or single crystal for surface/implant)",
-      );
     }
     return list;
   }, [
@@ -2564,6 +2574,10 @@ export default function App() {
                 </span>
               </span>
             </div>
+            <p className="hint">
+              Nanostructures (void, nanowire, GB, precipitate, import) are configured in the{" "}
+              <strong>Structure</strong> section below — not a separate tab.
+            </p>
             <fieldset className="fieldset">
               <legend>Mode & thermostat</legend>
               <div className="row">
@@ -2742,8 +2756,16 @@ export default function App() {
                   )}
                 </div>
               )}
+            </fieldset>
+            <fieldset className="fieldset">
+              <legend>Structure / nanostructures</legend>
+              <p className="hint">
+                Choose a structure kind, set kind-specific params, optionally Preview, then Run.
+                Multi-element hosts get a seeded substitutional random alloy fill (WC hex uses an ordered W+C basis).
+                Nanowire + surface/implant uses an axis-aware beam on a free transverse face.
+              </p>
               <div className="row">
-                <Field label="Structure" htmlFor="struct-kind">
+                <Field label="Structure kind" htmlFor="struct-kind">
                   <select
                     id="struct-kind"
                     value={params.structure_kind}
@@ -3117,6 +3139,13 @@ export default function App() {
                           headers: { "Content-Type": "application/json" },
                           body: JSON.stringify({
                             material_id: materialId,
+                            material: material
+                              ? {
+                                  ...material,
+                                  composition,
+                                  lattice_c_A: effectiveLatticeC ?? material.lattice_c_A,
+                                }
+                              : undefined,
                             params: {
                               ...params,
                               nx: Math.min(params.nx, 10),
@@ -3743,6 +3772,14 @@ export default function App() {
                   in the job folder, but these WS numbers are not from that geometry.
                 </div>
               )}
+              {params.structure_kind !== "single_crystal" &&
+                !Boolean((defects?.summary as { demo_structure_proxy?: boolean } | undefined)?.demo_structure_proxy) &&
+                Boolean(defects?.summary) && (
+                <div className="alert alert-warn">
+                  Nanostructure run (<code>{params.structure_kind}</code>): Wigner–Seitz uses a perfect host-lattice
+                  reference — treat vacancy/SIA counts as engineering proxies (prefer OVITO DXA for production).
+                </div>
+              )}
               {defects?.summary ? (
                 <table className="table">
                   <tbody>
@@ -4037,7 +4074,11 @@ export default function App() {
                 </div>
                 <p className="hint">
                   {engines?.ase_message ||
-                    "Required for polycrystal / void / nanowire / precipitate builders; also used for optional lattice relax"}
+                    "Required for nanostructures (alloy fill, WC hex, void/wire/GB/precipitate). Without ASE, those kinds cannot build. Also used for optional lattice relax."}
+                </p>
+                <p className="hint">
+                  Placeholder potentials and missing LAMMPS still produce dry-run stubs — HPC export refuses those stubs.
+                  Atomsk never maps WC hex → HCP.
                 </p>
               </div>
               <div className="stack">
@@ -4166,6 +4207,12 @@ export default function App() {
                 : ""}
               {params.structure_kind === "precipitate"
                 ? ` · ${params.precipitate_species} r=${params.precipitate_radius_A}Å`
+                : ""}
+              {params.structure_kind === "void" || params.structure_kind === "void_lattice"
+                ? ` · r=${params.void_radius_A}Å`
+                : ""}
+              {params.structure_kind === "import"
+                ? ` · ${params.structure_import_path || "(no path)"}`
                 : ""}
             </dd>
           </div>

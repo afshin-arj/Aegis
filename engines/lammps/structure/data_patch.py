@@ -46,7 +46,10 @@ def ensure_atom_types(path: Path, n_types: int, type_masses: dict[int, float]) -
                 elif tid in type_masses:
                     out.append(f"{tid} {type_masses[tid]:.6f}\n")
                 else:
-                    out.append(f"{tid} 1.0\n")
+                    raise ValueError(
+                        f"structure.data missing mass for atom type {tid} "
+                        f"(need masses for types 1..{n_types})"
+                    )
             continue
         out.append(line if line.endswith("\n") else line + "\n")
         i += 1

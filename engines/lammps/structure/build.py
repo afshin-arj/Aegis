@@ -70,7 +70,21 @@ def build_structure(
         return meta
 
     atomsk = resolve_atomsk_bin()
-    use_atomsk = bool(atomsk) and kind in {"polycrystal", "polycrystal_void", "bicrystal"}
+    # Multi-host alloys need ASE substitutional fill — Atomsk emits mono-host only
+    n_hosts = sum(
+        1
+        for c in (material.get("composition") or [])
+        if float(c.get("atomic_percent") or 0) > 0 and str(c.get("symbol") or "").strip()
+    )
+    from lammps import crystal as crystal_reg
+
+    cry = crystal_reg.normalize_crystal(str(material.get("crystal") or "bcc"))
+    use_atomsk = (
+        bool(atomsk)
+        and kind in {"polycrystal", "polycrystal_void", "bicrystal"}
+        and n_hosts <= 1
+        and cry != "hex"
+    )
 
     if use_atomsk:
         try:
