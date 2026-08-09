@@ -38,6 +38,7 @@ class StructureKind(str, Enum):
     POLYCRYSTAL = "polycrystal"
     BICRYSTAL = "bicrystal"
     VOID = "void"
+    VOID_LATTICE = "void_lattice"
     POLYCRYSTAL_VOID = "polycrystal_void"
     IMPORT = "import"
 
@@ -222,6 +223,10 @@ class LammpsRunParams(BaseModel):
     void_center_frac_x: float = Field(0.5, ge=0.0, le=1.0)
     void_center_frac_y: float = Field(0.5, ge=0.0, le=1.0)
     void_center_frac_z: float = Field(0.5, ge=0.0, le=1.0)
+    # Periodic void lattice (structure_kind=void_lattice): voids at subcell centers
+    void_lattice_nx: int = Field(2, ge=1, le=16)
+    void_lattice_ny: int = Field(2, ge=1, le=16)
+    void_lattice_nz: int = Field(2, ge=1, le=16)
     structure_import_path: str | None = None  # relative to job dir or absolute for import kind
     timestep_fs: float = 0.001
     max_steps: int = 20000

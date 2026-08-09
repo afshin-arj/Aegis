@@ -155,6 +155,9 @@ type RunParams = {
   void_center_frac_x: number;
   void_center_frac_y: number;
   void_center_frac_z: number;
+  void_lattice_nx: number;
+  void_lattice_ny: number;
+  void_lattice_nz: number;
   structure_import_path: string | null;
   timestep_fs: number;
   max_steps: number;
@@ -239,6 +242,9 @@ const defaultParams: RunParams = {
   void_center_frac_x: 0.5,
   void_center_frac_y: 0.5,
   void_center_frac_z: 0.5,
+  void_lattice_nx: 2,
+  void_lattice_ny: 2,
+  void_lattice_nz: 2,
   structure_import_path: null,
   timestep_fs: 0.001,
   max_steps: 20000,
@@ -2694,6 +2700,7 @@ export default function App() {
                     <option value="polycrystal">polycrystal</option>
                     <option value="bicrystal">bicrystal (tilt GB)</option>
                     <option value="void">nano-void</option>
+                    <option value="void_lattice">void lattice</option>
                     <option value="polycrystal_void">polycrystal + void</option>
                     <option value="import">import LAMMPS data</option>
                   </select>
@@ -2819,6 +2826,58 @@ export default function App() {
                     />
                   </Field>
                 </div>
+              )}
+              {params.structure_kind === "void_lattice" && (
+                <>
+                  <div className="row">
+                    <Field label="Void radius (Å)" htmlFor="vl-r">
+                      <input
+                        id="vl-r"
+                        type="number"
+                        min={0.5}
+                        step={0.5}
+                        value={params.void_radius_A}
+                        onChange={(e) => setParam("void_radius_A", Number(e.target.value))}
+                      />
+                    </Field>
+                    <Field label="Voids nx" htmlFor="vl-nx">
+                      <input
+                        id="vl-nx"
+                        type="number"
+                        min={1}
+                        max={16}
+                        value={params.void_lattice_nx}
+                        onChange={(e) => setParam("void_lattice_nx", Number(e.target.value))}
+                      />
+                    </Field>
+                    <Field label="Voids ny" htmlFor="vl-ny">
+                      <input
+                        id="vl-ny"
+                        type="number"
+                        min={1}
+                        max={16}
+                        value={params.void_lattice_ny}
+                        onChange={(e) => setParam("void_lattice_ny", Number(e.target.value))}
+                      />
+                    </Field>
+                    <Field label="Voids nz" htmlFor="vl-nz">
+                      <input
+                        id="vl-nz"
+                        type="number"
+                        min={1}
+                        max={16}
+                        value={params.void_lattice_nz}
+                        onChange={(e) => setParam("void_lattice_nz", Number(e.target.value))}
+                      />
+                    </Field>
+                  </div>
+                  <p className="hint">
+                    Simple-cubic void lattice at subcell centers ({params.void_lattice_nx}×
+                    {params.void_lattice_ny}×{params.void_lattice_nz} ={" "}
+                    {params.void_lattice_nx * params.void_lattice_ny * params.void_lattice_nz} voids).
+                    Spacing must exceed ~2× radius or preview/build will error.
+                  </p>
+                </>
               )}
               {params.structure_kind === "import" && (
                 <div className="row">

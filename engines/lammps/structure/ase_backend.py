@@ -73,6 +73,63 @@ def _punch_voids(atoms, params: dict[str, Any], rng: random.Random) -> int:
     return removed
 
 
+def _void_lattice_centers(params: dict[str, Any], lx: float, ly: float, lz: float) -> list[tuple[float, float, float]]:
+    nxv = max(1, min(16, int(params.get("void_lattice_nx") or 2)))
+    nyv = max(1, min(16, int(params.get("void_lattice_ny") or 2)))
+    nzv = max(1, min(16, int(params.get("void_lattice_nz") or 2)))
+    centers: list[tuple[float, float, float]] = []
+    for i in range(nxv):
+        for j in range(nyv):
+            for k in range(nzv):
+                centers.append(
+                    (
+                        (i + 0.5) / nxv * lx,
+                        (j + 0.5) / nyv * ly,
+                        (k + 0.5) / nzv * lz,
+                    )
+                )
+    return centers
+
+
+def _punch_void_lattice(atoms, params: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    """Punch a simple-cubic lattice of spherical voids (engineering bubble-lattice proxy)."""
+    cell = atoms.get_cell()
+    lx, ly, lz = float(cell[0, 0]), float(cell[1, 1]), float(cell[2, 2])
+    r = float(params.get("void_radius_A") or 5.0)
+    centers = _void_lattice_centers(params, lx, ly, lz)
+    nxv = max(1, min(16, int(params.get("void_lattice_nx") or 2)))
+    nyv = max(1, min(16, int(params.get("void_lattice_ny") or 2)))
+    nzv = max(1, min(16, int(params.get("void_lattice_nz") or 2)))
+    spacing = (lx / nxv, ly / nyv, lz / nzv)
+    if min(spacing) < 2.0 * r * 0.95:
+        raise ValueError(
+            f"Void lattice overlaps heavily: radius={r} Å but spacing~"
+            f"({spacing[0]:.2f},{spacing[1]:.2f},{spacing[2]:.2f}) Å. "
+            "Reduce void_radius_A, reduce void_lattice_n*, or enlarge the cell."
+        )
+    pos = atoms.get_positions()
+    keep = np.ones(len(atoms), dtype=bool)
+    removed = 0
+    for cx, cy, cz in centers:
+        d2 = (pos[:, 0] - cx) ** 2 + (pos[:, 1] - cy) ** 2 + (pos[:, 2] - cz) ** 2
+        hit = d2 < r * r
+        removed += int(np.sum(hit & keep))
+        keep &= ~hit
+    del_idx = np.where(~keep)[0]
+    if len(del_idx):
+        del atoms[del_idx.tolist()]
+    meta = {
+        "method": "ase-void-lattice-sc-v1",
+        "n_voids": len(centers),
+        "void_lattice_n": [nxv, nyv, nzv],
+        "spacing_A": [float(spacing[0]), float(spacing[1]), float(spacing[2])],
+        "radius_A": r,
+        "centers_A": centers,
+        "note": "Simple-cubic void lattice punched from bulk (bubble-lattice / swelling proxy).",
+    }
+    return removed, meta
+
+
 def _voronoi_polycrystal(material: dict[str, Any], params: dict[str, Any]):
     """Voronoi polycrystal: clip randomly oriented grains into the simulation box."""
     from ase import Atoms
@@ -285,19 +342,28 @@ def build_with_ase(out_data: Path, *, material: dict[str, Any], params: dict[str
     artificial_void = False
     removed = 0
     poly_meta: dict[str, Any] = {}
-
     gb_meta: dict[str, Any] = {}
+    void_meta: dict[str, Any] = {}
+
     if kind in {"polycrystal", "polycrystal_void"}:
         atoms, poly_meta = _voronoi_polycrystal(material, params)
     elif kind == "bicrystal":
         atoms, gb_meta = _bicrystal_tilt(material, params)
         poly_meta = {"n_grains": 2, **gb_meta}
-    elif kind == "void":
+    elif kind in {"void", "void_lattice"}:
         atoms = _make_bulk(material, nx, ny, nz)
     else:
         raise ValueError(f"ASE builder does not support structure_kind={kind}")
 
-    if kind in {"void", "polycrystal_void"}:
+    if kind == "void_lattice":
+        removed, void_meta = _punch_void_lattice(atoms, params)
+        artificial_void = True
+        if removed < 1:
+            raise ValueError(
+                f"Void lattice removed 0 atoms (radius={params.get('void_radius_A')} Å). "
+                "Increase void_radius_A or cell size."
+            )
+    elif kind in {"void", "polycrystal_void"}:
         removed = _punch_voids(atoms, params, rng)
         artificial_void = True
         if removed < 1:
@@ -311,6 +377,8 @@ def build_with_ase(out_data: Path, *, material: dict[str, Any], params: dict[str
     note = "ASE structure builder"
     if kind == "bicrystal":
         note = gb_meta.get("note") or note
+    elif kind == "void_lattice":
+        note = void_meta.get("note") or note
     elif poly_meta:
         note = (
             "ASE Voronoi polycrystal is an engineering construction; "
@@ -324,5 +392,6 @@ def build_with_ase(out_data: Path, *, material: dict[str, Any], params: dict[str
         "void_atoms_removed": removed,
         "poly": poly_meta,
         "gb": gb_meta,
+        "void_lattice": void_meta,
         "note": note,
     }

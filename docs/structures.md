@@ -10,6 +10,7 @@ Aegis can start MD from a **single crystal** (LAMMPS `lattice` + `create_atoms`)
 | `polycrystal` | Atomsk if present, else ASE Voronoi | Engineering multi-grain proxy |
 | `bicrystal` | Atomsk merge if present, else ASE symmetric tilt | Tilt GB; set misorientation / tilt axis / GB normal |
 | `void` | ASE | Spherical nano-void(s) punched from bulk |
+| `void_lattice` | ASE | Simple-cubic lattice of spherical voids (bubble-lattice / swelling proxy) |
 | `polycrystal_void` | Atomsk/ASE then void punch | Grains + cavity |
 | `import` | Copy / ASE read | External LAMMPS data, dump, xyz, … |
 
@@ -25,6 +26,15 @@ Job folders get `structure.data` + `structure_meta.json` (backend, atom count, G
 
 ASE builds a **symmetric tilt** (±θ/2) and joins half-cells along the normal. Atomsk (when available) creates two grains and `--merge`s them. Both are engineering constructions — relax / verify in OVITO before production GB studies.
 
+### Void lattice params
+
+| Param | Default | Meaning |
+|-------|---------|---------|
+| `void_radius_A` | 5 | Sphere radius for each void (Å) |
+| `void_lattice_nx/ny/nz` | 2 | Number of voids along each box edge |
+
+Voids sit at subcell centers. Build fails if spacing ≲ 2× radius (overlapping cavities).
+
 ## Tools
 
 - **ASE** — required for void / polycrystal / bicrystal fallback. Installed via `apps/api/requirements.txt` and `Ensure-Ase` in `setup_and_run.cmd`. Opt out: `AEGIS_INSTALL_ASE=0`.
@@ -38,4 +48,4 @@ ASE builds a **symmetric tilt** (±θ/2) and joins half-cells along the normal. 
 
 ## Integrity rule
 
-Polycrystal / bicrystal / void / import **must not** silently fall back to a perfect single crystal. If the builder fails, the job errors with a clear message (install ASE / fix Atomsk / check void radius or GB params).
+Polycrystal / bicrystal / void / void_lattice / import **must not** silently fall back to a perfect single crystal. If the builder fails, the job errors with a clear message (install ASE / fix Atomsk / check void radius, lattice spacing, or GB params).
