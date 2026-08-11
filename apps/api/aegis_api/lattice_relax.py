@@ -29,15 +29,32 @@ def discover_atomsk() -> dict[str, Any]:
     path = shutil.which("atomsk") or shutil.which("atomsk.exe")
     if path:
         return {"atomsk_found": True, "atomsk_path": path}
-    # Repo-local bootstrap install
+    # Repo-local bootstrap install + common Windows installer paths
     root = Path(__file__).resolve().parents[3]
-    for cand in (
+    candidates = [
         root / "third_party" / "atomsk" / "atomsk.exe",
         root / "third_party" / "atomsk" / "atomsk",
-    ):
+        Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Atomsk" / "atomsk.exe",
+        Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Atomsk" / "atomsk.exe",
+    ]
+    for cand in candidates:
         if cand.exists():
             return {"atomsk_found": True, "atomsk_path": str(cand)}
-    return {"atomsk_found": False, "atomsk_path": None}
+    local = root / "third_party" / "atomsk"
+    if local.is_dir():
+        for hit in local.rglob("atomsk.exe"):
+            return {"atomsk_found": True, "atomsk_path": str(hit)}
+        for hit in local.rglob("atomsk"):
+            if hit.is_file():
+                return {"atomsk_found": True, "atomsk_path": str(hit)}
+    return {
+        "atomsk_found": False,
+        "atomsk_path": None,
+        "atomsk_message": (
+            "Optional — ASE Voronoi builds polycrystal without Atomsk. "
+            "Install from https://github.com/pierrehirel/atomsk or set AEGIS_ATOMSK_BIN."
+        ),
+    }
 
 
 def export_poscar(material: dict[str, Any], *, nx: int = 1, ny: int = 1, nz: int = 1) -> str:

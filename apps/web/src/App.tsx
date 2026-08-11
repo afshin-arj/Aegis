@@ -794,7 +794,7 @@ export default function App() {
       sk !== "single_crystal" && sk !== "" && sk !== "import";
     if (needsStructBuild && !engines) {
       list.push("Waiting for Engines status (ASE required for nanostructures)");
-    } else if (needsStructBuild && engines.ase_found === false) {
+    } else if (needsStructBuild && engines && engines.ase_found === false) {
       list.push("Nanostructure kinds require ASE — run setup_and_run.cmd or pip install ase (Engines tab)");
     }
     if (sk === "import" && !(params.structure_import_path || "").trim()) {
@@ -1707,9 +1707,17 @@ export default function App() {
           </div>
           <div className="kpi">
             <span className="kpi-k">Exec</span>
-            <span className={`kpi-v ${(job?.execution_mode || jobSnapshot?.execution_mode) === "real_md" ? "tone-ok" : "tone-warn"}`}>
-              {(job?.execution_mode || jobSnapshot?.execution_mode || (engines?.lammps_found ? "—" : "dry-run")).replace(/_/g, " ")}
-            </span>
+            {(() => {
+              const mode = job?.execution_mode || jobSnapshot?.execution_mode || null;
+              const label = mode || (engines?.lammps_found ? "—" : "dry-run");
+              const tone =
+                mode === "real_md" ? "tone-ok" : mode ? "tone-warn" : "";
+              return (
+                <span className={`kpi-v ${tone}`.trim()}>
+                  {String(label).replace(/_/g, " ")}
+                </span>
+              );
+            })()}
           </div>
           <button
             type="button"
@@ -3906,6 +3914,12 @@ export default function App() {
                   {job?.structure_provenance?.structure_kind
                     ? <> · structure <code>{String(job.structure_provenance.structure_kind)}</code></>
                     : null}
+                  {job?.structure_provenance?.backend
+                    ? <> · backend <code>{String(job.structure_provenance.backend)}</code></>
+                    : null}
+                  {job?.structure_provenance?.atomsk_fallback_reason
+                    ? <> · Atomsk fallback <code>{String(job.structure_provenance.atomsk_fallback_reason)}</code></>
+                    : null}
                   {Array.isArray(job?.structure_provenance?.type_symbols)
                     ? <> · types {(job!.structure_provenance!.type_symbols as string[]).join(", ")}</>
                     : null}
@@ -3919,7 +3933,7 @@ export default function App() {
                   reference — treat vacancy/SIA counts as engineering proxies (prefer OVITO DXA for production).
                 </div>
               )}
-              {jobSnapshot && (
+                  {jobSnapshot && (
                 <div className="chip-row">
                   <button
                     type="button"
@@ -3929,6 +3943,7 @@ export default function App() {
                       setPotentialId(jobSnapshot.potential_id);
                       setScenarioId(jobSnapshot.scenario_id);
                       setParams(jobSnapshot.run_params);
+                      setTab("params");
                     }}
                   >
                     Restore job recipe into editor
@@ -4097,7 +4112,7 @@ export default function App() {
               </div>
               <p className="hint">
                 {engines?.ovito_message ||
-                  "Install with pip install -U ovito (or set AEGIS_OVITO_BIN). DXA is not fabricated when OVITO is absent."}
+                  "Install with pip install -U ovito==3.15.5 (or set AEGIS_OVITO_BIN to ovitos.exe). DXA is not fabricated when OVITO is absent."}
               </p>
               {dxaSummary ? (
                 <>
@@ -4171,11 +4186,14 @@ export default function App() {
                       <span className="chip-v">{String((dxaSummary as { dump?: string }).dump)}</span>
                     </span>
                   ) : null}
-                  {(String((dxaSummary as { crystal?: string }).crystal || "").toLowerCase() === "hex" ||
-                    String((dxaSummary as { ovito_lattice?: string }).ovito_lattice || "").toLowerCase() ===
-                      "hcp") && (
+                  {String((dxaSummary as { crystal?: string }).crystal || "").toLowerCase() === "hex" && (
                     <div className="alert alert-warn">
                       WC hex DXA maps to HCP in OVITO — approximate only; do not treat as calibrated WC dislocation analysis.
+                    </div>
+                  )}
+                  {String((dxaSummary as { status?: string }).status || "") === "synthetic_proxy" && (
+                    <div className="alert alert-warn">
+                      DXA ran on dry-run / demo dumps — not production residual MD analysis.
                     </div>
                   )}
                   {(dxaSummary as { message?: string }).message ? (
@@ -4346,7 +4364,7 @@ export default function App() {
                 </div>
                 <p className="hint">
                   {engines?.atomsk_path ||
-                    "Optional — ASE Voronoi builds polycrystal without Atomsk. Set AEGIS_ATOMSK_BIN for Atomsk GB builds."}
+                    "Optional — ASE Voronoi builds polycrystal without Atomsk. setup_and_run installs from pierrehirel/atomsk (Windows zip); or set AEGIS_ATOMSK_BIN."}
                 </p>
               </div>
             </div>
@@ -4355,7 +4373,7 @@ export default function App() {
 
 # Crystal-aware lattices: bcc | fcc | hcp | diamond | hex(WC)
 # Nanostructures: ASE (required) · Atomsk optional — see docs/structures.md
-# OVITO DXA: pip install -U ovito   OR set AEGIS_OVITO_BIN=…/ovitos.exe`}
+# OVITO DXA: pip install -U ovito==3.15.5   OR set AEGIS_OVITO_BIN=…/ovitos.exe`}
             </pre>
           </section>
         )}

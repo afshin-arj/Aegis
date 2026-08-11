@@ -92,16 +92,64 @@ function Find-Lammps {
   return $null
 }
 
-function Download-File([string]$Url, [string]$OutFile) {
+function Download-File([string]$Url, [string]$OutFile, [string]$UserAgent = "") {
   Write-Info ("Downloading: {0}" -f $Url)
   $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
   if ($curl) {
-    & curl.exe -L --retry 5 --retry-all-errors --connect-timeout 30 -o $OutFile $Url
+    if ($UserAgent) {
+      & curl.exe -L --retry 5 --retry-all-errors --connect-timeout 30 -A $UserAgent -o $OutFile $Url
+    } else {
+      & curl.exe -L --retry 5 --retry-all-errors --connect-timeout 30 -o $OutFile $Url
+    }
     if ($LASTEXITCODE -ne 0) { throw "curl exit $LASTEXITCODE for $Url" }
     return
   }
   # Fallback
-  Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing
+  if ($UserAgent) {
+    Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing -UserAgent $UserAgent
+  } else {
+    Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing
+  }
+}
+
+function Test-VenvPythonCode([string]$VenvPy, [string]$Code) {
+  # PowerShell strips " from native argv — never put double-quotes inside -c payloads.
+  $prevEap = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  $probeOut = & $VenvPy -c $Code 2>&1
+  $probeCode = $LASTEXITCODE
+  $ErrorActionPreference = $prevEap
+  return @{
+    Ok = ($probeCode -eq 0)
+    Out = $probeOut
+    Code = $probeCode
+  }
+}
+
+function Find-Atomsk {
+  if ($env:AEGIS_ATOMSK_BIN -and (Test-Path $env:AEGIS_ATOMSK_BIN)) {
+    return (Resolve-Path $env:AEGIS_ATOMSK_BIN).Path
+  }
+  Refresh-Path
+  $which = Get-Command atomsk -ErrorAction SilentlyContinue
+  if (-not $which) { $which = Get-Command atomsk.exe -ErrorAction SilentlyContinue }
+  if ($which) { return $which.Source }
+
+  $candidates = @(
+    (Join-Path $Root "third_party\atomsk\atomsk.exe"),
+    (Join-Path ${env:ProgramFiles} "Atomsk\atomsk.exe"),
+    (Join-Path ${env:ProgramFiles(x86)} "Atomsk\atomsk.exe")
+  )
+  foreach ($c in $candidates) {
+    if (Test-Path $c) { return (Resolve-Path $c).Path }
+  }
+  $localRoot = Join-Path $Root "third_party\atomsk"
+  if (Test-Path $localRoot) {
+    $hit = Get-ChildItem -Path $localRoot -Filter "atomsk.exe" -Recurse -Depth 4 -ErrorAction SilentlyContinue |
+      Select-Object -First 1
+    if ($hit) { return $hit.FullName }
+  }
+  return $null
 }
 
 function Ensure-Lammps {
@@ -331,26 +379,60 @@ function Ensure-Atomsk {
     Write-Info "Atomsk install skipped (AEGIS_INSTALL_ATOMSK=0). ASE Voronoi still available."
     return
   }
-  if ($env:AEGIS_ATOMSK_BIN -and (Test-Path $env:AEGIS_ATOMSK_BIN)) {
-    Write-Ok ("AEGIS_ATOMSK_BIN={0}" -f $env:AEGIS_ATOMSK_BIN)
+  $existing = Find-Atomsk
+  if ($existing) {
+    $env:AEGIS_ATOMSK_BIN = $existing
+    Write-Ok ("Atomsk found: {0}" -f $existing)
     return
   }
-  $which = Get-Command atomsk -ErrorAction SilentlyContinue
-  if (-not $which) { $which = Get-Command atomsk.exe -ErrorAction SilentlyContinue }
-  if ($which) {
-    $env:AEGIS_ATOMSK_BIN = $which.Source
-    Write-Ok ("Atomsk on PATH: {0}" -f $which.Source)
+
+  # Official Windows binary (Inno setup) from atomsk.univ-lille.fr — source: https://github.com/pierrehirel/atomsk
+  $ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+  $zipUrl = if ($env:AEGIS_ATOMSK_URL) { $env:AEGIS_ATOMSK_URL } else { "https://atomsk.univ-lille.fr/code/atomsk_b0.13.1_Windows.zip" }
+  $zipPath = Join-Path $CacheDir "atomsk_Windows.zip"
+  $extractDir = Join-Path $CacheDir "atomsk_extract"
+  $installDir = Join-Path $Root "third_party\atomsk"
+
+  try {
+    Write-Info "Downloading Atomsk Windows package (soft-fail)..."
+    if (-not ((Test-Path $zipPath) -and ((Get-Item $zipPath).Length -gt 1MB))) {
+      Download-File $zipUrl $zipPath $ua
+    } else {
+      Write-Ok ("Using cached Atomsk zip: {0}" -f $zipPath)
+    }
+    if (-not ((Test-Path $zipPath) -and ((Get-Item $zipPath).Length -gt 1MB))) {
+      throw "Atomsk zip missing or too small"
+    }
+    if (Test-Path $extractDir) { Remove-Item -Recurse -Force $extractDir }
+    New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
+    Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
+    $setup = Get-ChildItem -Path $extractDir -Filter "Atomsk_setup.exe" -Recurse -ErrorAction SilentlyContinue |
+      Select-Object -First 1
+    if (-not $setup) { throw "Atomsk_setup.exe not found in zip" }
+
+    New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+    Write-Info ("Silent-installing Atomsk into {0}..." -f $installDir)
+    $proc = Start-Process -FilePath $setup.FullName -ArgumentList @(
+      "/VERYSILENT",
+      "/NORESTART",
+      "/SUPPRESSMSGBOXES",
+      ("/DIR={0}" -f $installDir)
+    ) -Wait -PassThru
+    if ($proc.ExitCode -ne 0 -and $null -ne $proc.ExitCode) {
+      Write-Warn ("Atomsk setup exit code {0}" -f $proc.ExitCode)
+    }
+  } catch {
+    Write-Warn ("Atomsk download/install failed: {0}" -f $_)
+  }
+
+  $found = Find-Atomsk
+  if ($found) {
+    $env:AEGIS_ATOMSK_BIN = $found
+    Write-Ok ("Atomsk ready: {0}" -f $found)
     return
   }
-  $local = Join-Path $Root "third_party\atomsk"
-  $localExe = Join-Path $local "atomsk.exe"
-  if (Test-Path $localExe) {
-    $env:AEGIS_ATOMSK_BIN = $localExe
-    Write-Ok ("Atomsk found at {0}" -f $localExe)
-    return
-  }
-  # Soft probe: Atomsk Windows zip is often UA-gated; do not hard-fail bootstrap.
-  Write-Warn "Atomsk not found - polycrystal uses ASE Voronoi. Optional: install Atomsk and set AEGIS_ATOMSK_BIN (docs\structures.md)."
+  Write-Warn "Atomsk not found - polycrystal uses ASE Voronoi."
+  Write-Warn "Optional: install from https://github.com/pierrehirel/atomsk (Windows zip at atomsk.univ-lille.fr/dl.php) and set AEGIS_ATOMSK_BIN (docs\structures.md)."
 }
 
 function Ensure-Ovito {
@@ -361,42 +443,49 @@ function Ensure-Ovito {
     return
   }
   if ($env:AEGIS_OVITO_BIN -and (Test-Path $env:AEGIS_OVITO_BIN)) {
-    Write-Ok ("AEGIS_OVITO_BIN={0}" -f $env:AEGIS_OVITO_BIN)
-    return
+    $binLeaf = [IO.Path]::GetFileName($env:AEGIS_OVITO_BIN).ToLowerInvariant()
+    if ($binLeaf -eq "ovito.exe" -or $binLeaf -eq "ovito") {
+      Write-Warn "AEGIS_OVITO_BIN points at the GUI (ovito.exe) — DXA needs ovitos.exe or the pip module."
+    } else {
+      Write-Ok ("AEGIS_OVITO_BIN={0}" -f $env:AEGIS_OVITO_BIN)
+      return
+    }
   }
-  # Use single-quoted -c payload so PowerShell does not misparse commas/quotes.
-  # Native stderr must not abort under $ErrorActionPreference=Stop.
-  $prevEap = $ErrorActionPreference
-  $ErrorActionPreference = "Continue"
-  $probeOut = & $venvPy -c 'import ovito; print(getattr(ovito, "version", "ok"))' 2>&1
-  $probeCode = $LASTEXITCODE
-  $ErrorActionPreference = $prevEap
-  if ($probeCode -eq 0) {
-    $ver = ($probeOut | Select-Object -Last 1)
+
+  # Probe must use only single-quoted Python string literals: PowerShell strips " from native -c args.
+  # Also import DXA symbols so "package present but broken" does not look like success.
+  $ovitoProbe = "import ovito; from ovito.io import import_file; from ovito.modifiers import DislocationAnalysisModifier; v=getattr(ovito,'version',None); print('.'.join(str(x) for x in v[:3]) if isinstance(v,(tuple,list)) else v)"
+  $probe = Test-VenvPythonCode $venvPy $ovitoProbe
+  if ($probe.Ok) {
+    $ver = ($probe.Out | Select-Object -Last 1)
     Write-Ok ("OVITO Python module present ({0})" -f $ver)
     return
   }
+
   # Opt out: set AEGIS_INSTALL_OVITO=0 to skip the first-run pip attempt.
   if ($env:AEGIS_INSTALL_OVITO -eq "0") {
     Write-Info "OVITO install skipped (AEGIS_INSTALL_OVITO=0). Engines tab / docs\ovito.md later."
     return
   }
-  Write-Info "OVITO not found - pip install -U ovito (first-run; soft-fail if it fails)..."
+
+  # Pin matches https://www.ovito.org/#download (override with AEGIS_OVITO_PIP_SPEC).
+  $ovitoSpec = if ($env:AEGIS_OVITO_PIP_SPEC) { $env:AEGIS_OVITO_PIP_SPEC } else { "ovito==3.15.5" }
+  Write-Info ("OVITO not found - pip install -U {0} (first-run; soft-fail if it fails)..." -f $ovitoSpec)
   $prevEap = $ErrorActionPreference
   $ErrorActionPreference = "Continue"
-  & $venvPy -m pip install -U ovito
+  & $venvPy -m pip install -U $ovitoSpec
   $pipCode = $LASTEXITCODE
   $ErrorActionPreference = $prevEap
   if ($pipCode -eq 0) {
-    $ErrorActionPreference = "Continue"
-    $probeOut = & $venvPy -c 'import ovito; print(getattr(ovito, "version", "ok"))' 2>&1
-    $probeCode = $LASTEXITCODE
-    $ErrorActionPreference = $prevEap
-    if ($probeCode -eq 0) {
-      $ver = ($probeOut | Select-Object -Last 1)
+    $probe2 = Test-VenvPythonCode $venvPy $ovitoProbe
+    if ($probe2.Ok) {
+      $ver = ($probe2.Out | Select-Object -Last 1)
       Write-Ok ("OVITO installed ({0}) - Engines / DXA ready" -f $ver)
       return
     }
+    Write-Warn "pip reported success but OVITO import/DXA probe still failed."
+    $tail = ($probe2.Out | Out-String)
+    if ($tail.Trim()) { Write-Warn ($tail.Trim().Substring(0, [Math]::Min(400, $tail.Trim().Length))) }
   }
   Write-Warn "OVITO pip install failed or module still missing - continuing without DXA."
   Write-Warn "Later: Engines -> Install OVITO, or see docs\ovito.md (cascades still run)."

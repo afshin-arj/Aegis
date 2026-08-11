@@ -82,9 +82,11 @@ Copy `.env.example` → `.env` (never commit secrets).
 | Variable | Purpose |
 |----------|---------|
 | `AEGIS_LAMMPS_BIN` | Path to `lmp` / `lmp.exe` |
-| `AEGIS_OVITO_BIN` | Optional path to OVITO Pro `ovitos` (bootstrap also tries `pip install -U ovito`) |
+| `AEGIS_OVITO_BIN` | Optional path to OVITO Pro `ovitos` (not GUI `ovito.exe`); bootstrap also tries `pip install -U ovito==3.15.5` |
+| `AEGIS_OVITO_PIP_SPEC` | Override OVITO pip pin (default `ovito==3.15.5`) |
 | `AEGIS_INSTALL_OVITO` | Set `0` to skip first-run OVITO pip (default: attempt; soft-fail) |
 | `AEGIS_ATOMSK_BIN` | Optional Atomsk binary for polycrystal / GB builds (ASE Voronoi fallback) |
+| `AEGIS_ATOMSK_URL` | Override Atomsk Windows zip URL (default univ-lille `atomsk_b0.13.1_Windows.zip`) |
 | `AEGIS_INSTALL_ASE` / `AEGIS_INSTALL_ATOMSK` | Set `0` to skip ASE / Atomsk bootstrap steps |
 | `AEGIS_KART_ROOT` / `AEGIS_KART_BIN` | KART clone / binary |
 | `AEGIS_KART_COMMIT` | Pin (default `62d66adf`) |
@@ -113,7 +115,7 @@ runs/                 Job artifacts (gitignored)
 ## Engineering notes
 
 - **Potentials:** Aegis never invents coefficients. Upload a published file or place one under `data/potentials/curated/`. The bundled placeholder is for pipeline wiring only—real MD requires a valid EAM/FS/MEAM file.
-- **Defect analysis:** Phase-1 Wigner–Seitz-style proxy for engineering inspection—not a replacement for OVITO production analysis. Enable DXA from the LAMMPS tab or Results. `setup_and_run` tries `pip install -U ovito` on first run (soft-fail); see [docs/ovito.md](docs/ovito.md).
+- **Defect analysis:** Phase-1 Wigner–Seitz-style proxy for engineering inspection—not a replacement for OVITO production analysis. Enable DXA from the LAMMPS tab or Results. `setup_and_run` tries `pip install -U ovito==3.15.5` on first run (soft-fail); see [docs/ovito.md](docs/ovito.md).
 - **Nanostructures:** LAMMPS tab → Structure (`polycrystal`, `bicrystal`, `void`, `void_lattice`, `nanowire`, `precipitate`, `polycrystal_void`, `import`) builds `structure.data` via ASE (Atomsk optional) and loads it with `read_data` — see [docs/structures.md](docs/structures.md).
 - **Large cells:** runs with &gt;20³ unit cells require explicit confirmation.
 

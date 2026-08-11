@@ -25,15 +25,25 @@ def resolve_atomsk_bin() -> str | None:
     which = shutil.which("atomsk") or shutil.which("atomsk.exe")
     if which:
         return which
-    # Repo-local bootstrap install
+    # Repo-local bootstrap install + common Windows installer paths
     here = Path(__file__).resolve()
     root = here.parents[3]  # engines/lammps/structure → repo
-    for cand in (
+    candidates = [
         root / "third_party" / "atomsk" / "atomsk.exe",
         root / "third_party" / "atomsk" / "atomsk",
-    ):
+        Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Atomsk" / "atomsk.exe",
+        Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Atomsk" / "atomsk.exe",
+    ]
+    for cand in candidates:
         if cand.exists():
             return str(cand)
+    local = root / "third_party" / "atomsk"
+    if local.is_dir():
+        for hit in local.rglob("atomsk.exe"):
+            return str(hit)
+        for hit in local.rglob("atomsk"):
+            if hit.is_file():
+                return str(hit)
     return None
 
 

@@ -30,18 +30,30 @@ _CRYSTAL_TO_OVITO = {
 }
 
 
+_OVITO_PIP_SPEC = (os.environ.get("AEGIS_OVITO_PIP_SPEC") or "ovito==3.15.5").strip()
+
+
+def _is_ovitos_path(path: str | Path) -> bool:
+    name = Path(path).name.lower()
+    return name.startswith("ovitos")
+
+
 def _resolve_ovitos_bin() -> str | None:
     """Return path to OVITO's *script* interpreter only (never the GUI ``ovito`` binary)."""
     env = (os.environ.get("AEGIS_OVITO_BIN") or "").strip()
     if env:
         p = Path(env)
-        if p.exists():
+        if p.exists() and _is_ovitos_path(p):
             return str(p)
         found = shutil.which(env)
-        if found:
+        if found and _is_ovitos_path(found):
             return found
+        # Explicitly reject GUI binary even if env points at it.
     # Do not fall back to ``ovito`` — that launches the desktop GUI, not scripts.
-    return shutil.which("ovitos")
+    which = shutil.which("ovitos") or shutil.which("ovitos.exe")
+    if which and _is_ovitos_path(which):
+        return which
+    return None
 
 
 def _try_import_ovito() -> tuple[bool, str | None, Any]:
@@ -74,6 +86,15 @@ def _try_import_ovito() -> tuple[bool, str | None, Any]:
 
 def discover_ovito() -> dict[str, Any]:
     """Probe local OVITO for Engines status and DXA readiness."""
+    env_raw = (os.environ.get("AEGIS_OVITO_BIN") or "").strip()
+    env_gui_warn = ""
+    if env_raw:
+        leaf = Path(env_raw).name.lower()
+        if leaf in {"ovito", "ovito.exe"}:
+            env_gui_warn = (
+                " AEGIS_OVITO_BIN points at the GUI (ovito.exe) — ignored; "
+                "use ovitos.exe or pip install the Python module."
+            )
     ovitos = _resolve_ovitos_bin()
     mod_ok, ver, _ = _try_import_ovito()
     found = bool(ovitos) or mod_ok
@@ -93,23 +114,24 @@ def discover_ovito() -> dict[str, Any]:
         mode = "ovitos"
         msg = (
             f"OVITO ovitos at {ovitos}. "
-            "DXA runs via subprocess (or pip install -U ovito into the Aegis venv)."
+            f"DXA runs via subprocess (or pip install -U {_OVITO_PIP_SPEC} into the Aegis venv)."
         )
     else:
         mode = "missing"
         msg = (
             "OVITO not found. Easiest: in the Aegis venv run "
-            "`pip install -U ovito` (see https://docs.ovito.org/python/). "
+            f"`pip install -U {_OVITO_PIP_SPEC}` (see https://www.ovito.org/#download). "
             "Or install OVITO Pro and set AEGIS_OVITO_BIN to ovitos.exe "
             "(not the GUI ovito.exe)."
         )
+    msg = (msg + env_gui_warn).strip()
     return {
         "ovito_found": found,
         "ovito_path": ovitos,
         "ovito_mode": mode,
         "ovito_version": ver,
         "ovito_message": msg,
-        "install_hint": "pip install -U ovito",
+        "install_hint": f"pip install -U {_OVITO_PIP_SPEC}",
         "docs_url": "https://docs.ovito.org/python/",
     }
 
@@ -156,7 +178,37 @@ def _ovito_lattice_name(crystal: str) -> str:
     return _CRYSTAL_TO_OVITO.get(crystal, "BCC")
 
 
-def _summarize_dxa_data(data: Any, *, dump_name: str, crystal: str, lattice: str, how: str) -> dict[str, Any]:
+def _pipeline_frame_count(pipeline: Any) -> int:
+    for obj in (pipeline, getattr(pipeline, "source", None)):
+        if obj is None:
+            continue
+        try:
+            n = int(getattr(obj, "num_frames", 0) or 0)
+            if n > 0:
+                return n
+        except (TypeError, ValueError):
+            continue
+    return 1
+
+
+def _compute_dxa_frame(pipeline: Any) -> tuple[Any, int, int]:
+    """Evaluate DXA on the last trajectory frame (matches WS residual analysis)."""
+    n_frames = _pipeline_frame_count(pipeline)
+    frame_index = max(0, n_frames - 1)
+    data = pipeline.compute(frame_index)
+    return data, frame_index, n_frames
+
+
+def _summarize_dxa_data(
+    data: Any,
+    *,
+    dump_name: str,
+    crystal: str,
+    lattice: str,
+    how: str,
+    frame_index: int | None = None,
+    n_frames: int | None = None,
+) -> dict[str, Any]:
     attrs = dict(getattr(data, "attributes", {}) or {})
     length = attrs.get("DislocationAnalysis.total_line_length")
     volume = attrs.get("DislocationAnalysis.cell_volume")
@@ -197,7 +249,7 @@ def _summarize_dxa_data(data: Any, *, dump_name: str, crystal: str, lattice: str
 
     dxa_attrs = {k: v for k, v in attrs.items() if "DislocationAnalysis" in k or "CrystalAnalysis" in k}
 
-    return {
+    summary: dict[str, Any] = {
         "status": "ok",
         "dump": dump_name,
         "crystal": crystal,
@@ -213,6 +265,11 @@ def _summarize_dxa_data(data: Any, *, dump_name: str, crystal: str, lattice: str
         "note": note,
         "ovito_docs": "https://docs.ovito.org/python/reference/pipelines/modifiers/dislocation_analysis.html",
     }
+    if frame_index is not None:
+        summary["frame_index"] = frame_index
+    if n_frames is not None:
+        summary["n_frames"] = n_frames
+    return summary
 
 
 def _run_dxa_inprocess(dump: Path, out_path: Path, crystal: str, job_dir: Path) -> dict[str, Any]:
@@ -225,9 +282,15 @@ def _run_dxa_inprocess(dump: Path, out_path: Path, crystal: str, job_dir: Path) 
     mod = DislocationAnalysisModifier()
     mod.input_crystal_structure = lattice_enum
     pipeline.modifiers.append(mod)
-    data = pipeline.compute()
+    data, frame_index, n_frames = _compute_dxa_frame(pipeline)
     summary = _summarize_dxa_data(
-        data, dump_name=dump.name, crystal=crystal, lattice=lattice_name, how="in-process"
+        data,
+        dump_name=dump.name,
+        crystal=crystal,
+        lattice=lattice_name,
+        how="in-process",
+        frame_index=frame_index,
+        n_frames=n_frames,
     )
     ca_path = job_dir / "dislocations.ca"
     try:
@@ -260,7 +323,9 @@ mod.input_crystal_structure = getattr(
     DislocationAnalysisModifier.Lattice, lattice_name, DislocationAnalysisModifier.Lattice.BCC
 )
 pipeline.modifiers.append(mod)
-data = pipeline.compute()
+n_frames = int(getattr(pipeline, "num_frames", 0) or getattr(getattr(pipeline, "source", None), "num_frames", 1) or 1)
+frame_index = max(0, n_frames - 1)
+data = pipeline.compute(frame_index)
 attrs = dict(data.attributes)
 length = attrs.get("DislocationAnalysis.total_line_length")
 volume = attrs.get("DislocationAnalysis.cell_volume")
@@ -305,6 +370,8 @@ summary = {{
     "crystal": crystal,
     "ovito_lattice": lattice_name,
     "how": "ovitos",
+    "frame_index": frame_index,
+    "n_frames": n_frames,
     "dislocation_length_A": length_f,
     "cell_volume_A3": volume_f,
     "dislocation_density_per_A2": density,
@@ -321,12 +388,50 @@ print("Aegis DXA written")
 '''
 
 
+def _job_is_synthetic_proxy(job_dir: Path) -> bool:
+    """True when DXA would run on dry-run / demo geometry rather than real MD."""
+    job_path = job_dir / "job.json"
+    if job_path.exists():
+        try:
+            job = json.loads(job_path.read_text(encoding="utf-8"))
+            if str(job.get("execution_mode") or "") == "synthetic_proxy":
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+    defects_path = job_dir / "defects.json"
+    if defects_path.exists():
+        try:
+            defects = json.loads(defects_path.read_text(encoding="utf-8"))
+            summary = defects.get("summary") if isinstance(defects, dict) else None
+            if isinstance(summary, dict) and summary.get("demo_structure_proxy"):
+                return True
+            if isinstance(defects, dict) and defects.get("demo_structure_proxy"):
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+    return False
+
+
+def _stamp_synthetic_proxy(summary: dict[str, Any]) -> dict[str, Any]:
+    if summary.get("status") == "ok":
+        summary["status"] = "synthetic_proxy"
+    note = str(summary.get("note") or "").strip()
+    warn = (
+        "DXA evaluated dry-run / demo dumps (synthetic_proxy) — "
+        "not production MD residual analysis."
+    )
+    summary["note"] = f"{note} {warn}".strip() if note else warn
+    summary["synthetic_proxy"] = True
+    return summary
+
+
 def run_dxa_on_job(job_dir: Path, *, crystal: str | None = None) -> dict[str, Any]:
     """Run DXA if OVITO is available; otherwise write an honest stub summary."""
     info = discover_ovito()
     out_path = job_dir / "dxa_summary.json"
     target = _pick_dump(job_dir)
     cry = crystal or _crystal_from_job(job_dir)
+    synthetic = _job_is_synthetic_proxy(job_dir)
 
     if not info["ovito_found"]:
         summary = {
@@ -360,7 +465,11 @@ def run_dxa_on_job(job_dir: Path, *, crystal: str | None = None) -> dict[str, An
     mod_ok, _, _ = _try_import_ovito()
     if mod_ok:
         try:
-            return _run_dxa_inprocess(target, out_path, cry, job_dir)
+            summary = _run_dxa_inprocess(target, out_path, cry, job_dir)
+            if synthetic:
+                summary = _stamp_synthetic_proxy(summary)
+                out_path.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
+            return summary
         except Exception as exc:  # noqa: BLE001
             # Fall through to ovitos if module path fails
             if not info.get("ovito_path"):
@@ -380,7 +489,7 @@ def run_dxa_on_job(job_dir: Path, *, crystal: str | None = None) -> dict[str, An
             "status": "failed",
             "message": (
                 "OVITO module failed and ovitos is not available. "
-                "Reinstall with `pip install -U ovito` or set AEGIS_OVITO_BIN."
+                f"Reinstall with `pip install -U {_OVITO_PIP_SPEC}` or set AEGIS_OVITO_BIN to ovitos.exe."
             ),
             "ovito_found": True,
             "crystal": cry,
@@ -402,7 +511,11 @@ def run_dxa_on_job(job_dir: Path, *, crystal: str | None = None) -> dict[str, An
             check=False,
         )
         if out_path.exists():
-            return json.loads(out_path.read_text(encoding="utf-8"))
+            summary = json.loads(out_path.read_text(encoding="utf-8"))
+            if synthetic:
+                summary = _stamp_synthetic_proxy(summary)
+                out_path.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
+            return summary
         return {
             "status": "failed",
             "message": (proc.stderr or proc.stdout or "DXA script failed")[:800],
@@ -435,16 +548,19 @@ def install_ovito_hint() -> dict[str, Any]:
     py = sys.executable
     return {
         "python": py,
-        "pip_command": f'"{py}" -m pip install -U ovito',
+        "pip_command": f'"{py}" -m pip install -U {_OVITO_PIP_SPEC}',
+        "pip_spec": _OVITO_PIP_SPEC,
         "conda_command": (
             "conda install --strict-channel-priority "
-            "-c https://conda.ovito.org -c conda-forge ovito"
+            f"-c https://conda.ovito.org -c conda-forge {_OVITO_PIP_SPEC}"
         ),
         "env_var": "AEGIS_OVITO_BIN",
         "env_example": r"AEGIS_OVITO_BIN=C:\Program Files\OVITO Pro\ovitos.exe",
         "docs_url": "https://docs.ovito.org/python/introduction/installation.html",
+        "download_url": "https://www.ovito.org/#download",
         "note": (
-            "Prefer pip into the Aegis .venv so DXA runs in-process. "
+            "Prefer pip into the Aegis .venv so DXA runs in-process "
+            f"(pinned {_OVITO_PIP_SPEC} per ovito.org). "
             "OVITO Pro's ovitos works without pip if AEGIS_OVITO_BIN or PATH is set."
         ),
     }

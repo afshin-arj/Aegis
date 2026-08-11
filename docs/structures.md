@@ -63,7 +63,7 @@ Substitutional proxy on the host lattice — not a second crystal structure. Mat
 ## Tools
 
 - **ASE** — required for most builders. Installed via `apps/api/requirements.txt` and `Ensure-Ase`. Opt out: `AEGIS_INSTALL_ASE=0`.
-- **Atomsk** — optional mono-host polycrystal / bicrystal. Soft-fail bootstrap. Opt out: `AEGIS_INSTALL_ATOMSK=0`.
+- **Atomsk** — optional mono-host polycrystal / bicrystal ([pierrehirel/atomsk](https://github.com/pierrehirel/atomsk)). `setup_and_run` downloads the Windows zip from [atomsk.univ-lille.fr](https://atomsk.univ-lille.fr/dl.php) and silent-installs into `third_party/atomsk` (soft-fail; ASE Voronoi fallback). Opt out: `AEGIS_INSTALL_ATOMSK=0`. Override URL with `AEGIS_ATOMSK_URL`.
 
 ## API / UI
 

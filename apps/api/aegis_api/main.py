@@ -942,9 +942,10 @@ def ovito_pip_install() -> dict[str, Any]:
     from aegis_api.dxa import discover_ovito, install_ovito_hint
 
     hint = install_ovito_hint()
+    pip_spec = str(hint.get("pip_spec") or "ovito==3.15.5")
     try:
         proc = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-U", "ovito"],
+            [sys.executable, "-m", "pip", "install", "-U", pip_spec],
             capture_output=True,
             text=True,
             timeout=600,

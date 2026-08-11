@@ -6,19 +6,19 @@ Aegis uses [OVITO’s Python API](https://docs.ovito.org/python/) for optional d
 
 ## Easiest path (recommended)
 
-`setup_and_run.cmd` / `scripts/bootstrap.ps1` **tries** `pip install -U ovito` into `.venv` on first run when the module is missing. Failure is a **soft warning** — Aegis still launches; DXA stays unavailable until install succeeds.
+`setup_and_run.cmd` / `scripts/bootstrap.ps1` **tries** `pip install -U ovito==3.15.5` into `.venv` on first run when the module is missing (pin matches [ovito.org download](https://www.ovito.org/#download)). Failure is a **soft warning** — Aegis still launches; DXA stays unavailable until install succeeds.
 
-Skip the attempt with `AEGIS_INSTALL_OVITO=0`.
+Skip the attempt with `AEGIS_INSTALL_OVITO=0`. Override the pin with `AEGIS_OVITO_PIP_SPEC` (e.g. `ovito` for latest).
 
 Manual install in the Aegis virtualenv:
 
 ```bash
-.venv\Scripts\python.exe -m pip install -U ovito
+.venv\Scripts\python.exe -m pip install -U ovito==3.15.5
 ```
 
 Or click **Install OVITO (pip)** on the Engines tab.
 
-DXA then runs **in-process** (`import ovito`) — no separate `ovitos` binary required.
+DXA then runs **in-process** (`import ovito`) — no separate `ovitos` binary required. Analysis uses the **last** trajectory frame (residual), same intent as Wigner–Seitz.
 
 Docs: https://docs.ovito.org/python/introduction/installation.html
 
@@ -35,6 +35,8 @@ Example `.env`:
 AEGIS_OVITO_BIN=C:\Program Files\OVITO Pro\ovitos.exe
 ```
 
+Do **not** point `AEGIS_OVITO_BIN` at the GUI `ovito.exe` — Aegis ignores that path.
+
 Aegis falls back to an `ovitos` subprocess when the Python module is unavailable.
 
 ## Using DXA in the UI
@@ -44,14 +46,16 @@ Aegis falls back to an `ovitos` subprocess when the Python module is unavailable
 3. **Results** — **Run / refresh DXA**; inspect length / segments / density / cell volume chips.
 4. **Download .ca** — open `dislocations.ca` in the OVITO desktop app to scrub the network.
 
-Crystal mapping: `bcc→BCC`, `fcc→FCC`, `hcp→HCP`, `diamond→CubicDiamond`, `hex(WC)→HCP` (**approximate** — the Results panel warns; do not treat WC→HCP DXA as calibrated WC dislocation analysis).
+Crystal mapping: `bcc→BCC`, `fcc→FCC`, `hcp→HCP`, `diamond→CubicDiamond`, `hex(WC)→HCP` (**approximate** — the Results panel warns only for `crystal=hex`; do not treat WC→HCP DXA as calibrated WC dislocation analysis).
+
+Dry-run / demo jobs stamp DXA `status: synthetic_proxy` so residual metrics are not mistaken for production MD.
 
 ## Conda
 
 Prefer the OVITO channel (not conda-forge’s GUI-only package):
 
 ```bash
-conda install --strict-channel-priority -c https://conda.ovito.org -c conda-forge ovito
+conda install --strict-channel-priority -c https://conda.ovito.org -c conda-forge ovito==3.15.5
 ```
 
 ## API
@@ -59,6 +63,6 @@ conda install --strict-channel-priority -c https://conda.ovito.org -c conda-forg
 | Endpoint | Purpose |
 |----------|---------|
 | `GET /api/engines/ovito` | Discovery + install hints |
-| `POST /api/engines/ovito/install` | `pip install -U ovito` into the API interpreter |
+| `POST /api/engines/ovito/install` | `pip install -U ovito==3.15.5` into the API interpreter |
 | `GET /api/jobs/{id}/dxa?refresh=true` | Run / refresh DXA |
 | `GET /api/jobs/{id}/dxa/ca` | Download Crystal Analysis file |

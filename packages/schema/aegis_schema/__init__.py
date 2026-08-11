@@ -322,7 +322,7 @@ class JobInfo(BaseModel):
     mmonca_summary: dict[str, Any] | None = None
     surface_summary: dict[str, Any] | None = None
     # Provenance for Results / UI badges
-    execution_mode: str | None = None  # real_md | dry_run | synthetic_proxy
+    execution_mode: str | None = None  # real_md | synthetic_proxy
     structure_provenance: dict[str, Any] | None = None
 
 

@@ -7,7 +7,7 @@ aiofiles>=23.2
 websockets>=12.0
 pillow>=10.0
 ase>=3.22
-# Optional DXA: pip install -U ovito  (or Engines → Install OVITO)
-# See docs/ovito.md and https://docs.ovito.org/python/
+# Optional DXA: pip install -U ovito==3.15.5  (or Engines → Install OVITO)
+# See docs/ovito.md and https://www.ovito.org/#download
 # Atomsk (polycrystal/GB): installed by setup_and_run into third_party/atomsk when possible
 

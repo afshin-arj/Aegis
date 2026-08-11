@@ -753,6 +753,7 @@ class JobManager:
                             "alloy": sm.get("alloy"),
                             "atom_count": sm.get("atom_count"),
                             "note": sm.get("note"),
+                            "atomsk_fallback_reason": sm.get("atomsk_fallback_reason"),
                         }
                     )
                 except Exception:  # noqa: BLE001
