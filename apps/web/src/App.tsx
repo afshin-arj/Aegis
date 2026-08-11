@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as THREE from "three";
-import StructureViewer from "./StructureViewer";
+import StructureViewer, { StructureAtomCanvas } from "./StructureViewer";
 
 type ElementFraction = { symbol: string; atomic_percent: number };
 type Material = {
@@ -109,6 +109,8 @@ type JobInfo = {
   kart_summary?: Record<string, unknown>;
   mmonca_summary?: Record<string, unknown>;
   surface_summary?: Record<string, unknown>;
+  execution_mode?: string | null;
+  structure_provenance?: Record<string, unknown> | null;
 };
 type RunParams = {
   mode: string;
@@ -456,9 +458,7 @@ function DefectViz({ points }: { points: Array<{ x: number; y: number; z: number
     const el = ref.current;
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x07090d);
-    const camera = new THREE.PerspectiveCamera(45, el.clientWidth / Math.max(el.clientHeight, 1), 0.1, 1000);
-    camera.position.set(12, 10, 16);
-    camera.lookAt(0, 0, 0);
+    const camera = new THREE.PerspectiveCamera(45, el.clientWidth / Math.max(el.clientHeight, 1), 0.1, 5000);
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(el.clientWidth, el.clientHeight);
     el.appendChild(renderer.domElement);
@@ -467,16 +467,43 @@ function DefectViz({ points }: { points: Array<{ x: number; y: number; z: number
     scene.add(light);
     scene.add(new THREE.AmbientLight(0x6688aa, 0.35));
 
+    const pts = points.slice(0, 2000);
+    let minX = Infinity,
+      minY = Infinity,
+      minZ = Infinity,
+      maxX = -Infinity,
+      maxY = -Infinity,
+      maxZ = -Infinity;
+    for (const p of pts) {
+      minX = Math.min(minX, p.x);
+      minY = Math.min(minY, p.y);
+      minZ = Math.min(minZ, p.z);
+      maxX = Math.max(maxX, p.x);
+      maxY = Math.max(maxY, p.y);
+      maxZ = Math.max(maxZ, p.z);
+    }
+    if (!Number.isFinite(minX)) {
+      minX = minY = minZ = 0;
+      maxX = maxY = maxZ = 8;
+    }
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    const cz = (minZ + maxZ) / 2;
+    const span = Math.max(maxX - minX, maxY - minY, maxZ - minZ, 4);
+    const radius = Math.min(0.35, span * 0.02);
+
     const group = new THREE.Group();
-    for (const p of points.slice(0, 2000)) {
+    for (const p of pts) {
       const color = p.kind === "vacancy" ? 0xd46555 : p.kind === "interstitial" ? 0xd4894a : 0x3d9a6a;
-      const geo = new THREE.SphereGeometry(0.12, 10, 10);
+      const geo = new THREE.SphereGeometry(radius, 10, 10);
       const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.45, metalness: 0.2 });
       const mesh = new THREE.Mesh(geo, mat);
-      mesh.position.set(p.x - 4, p.y - 4, p.z - 4);
+      mesh.position.set(p.x - cx, p.y - cy, p.z - cz);
       group.add(mesh);
     }
     scene.add(group);
+    camera.position.set(span * 0.9, span * 0.75, span * 1.2);
+    camera.lookAt(0, 0, 0);
     let frame = 0;
     let alive = true;
     const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -494,6 +521,15 @@ function DefectViz({ points }: { points: Array<{ x: number; y: number; z: number
       el.innerHTML = "";
     };
   }, [points]);
+  if (!points.length) {
+    return (
+      <div className="empty viz" role="img" aria-label="No defect markers">
+        <div className="empty-kicker">Defects</div>
+        <h3>No defect markers</h3>
+        <p className="hint">Complete analysis to populate vacancy / interstitial proxies.</p>
+      </div>
+    );
+  }
   return <div className="viz" ref={ref} role="img" aria-label="3D defect point cloud" />;
 }
 
@@ -587,6 +623,24 @@ export default function App() {
   const [kartMaxKmcTimeS, setKartMaxKmcTimeS] = useState(1);
   const [kartDoeTemps, setKartDoeTemps] = useState("");
   const [kartSummary, setKartSummary] = useState<KartSummary | null>(null);
+  const [jobSnapshot, setJobSnapshot] = useState<{
+    material_id: string;
+    potential_id: string;
+    scenario_id: string;
+    run_params: RunParams;
+    execution_mode?: string | null;
+    structure_provenance?: Record<string, unknown> | null;
+  } | null>(null);
+  const [showAllBlockers, setShowAllBlockers] = useState(false);
+  const [structurePreview, setStructurePreview] = useState<{
+    atoms?: Array<{ id: number; type: number; x: number; y: number; z: number }>;
+    box_A?: number[];
+    type_symbols?: string[];
+    atom_count?: number;
+    backend?: string;
+    note?: string;
+    preview_n_full?: number;
+  } | null>(null);
   const [cascadeTimeline, setCascadeTimeline] = useState<{
     auto?: boolean;
     note?: string;
@@ -1097,6 +1151,18 @@ export default function App() {
       setCascadeTimeline(null);
       setDxaSummary(null);
       setJob(info);
+      if (info.run_params) {
+        setJobSnapshot({
+          material_id: info.material_id,
+          potential_id: info.potential_id,
+          scenario_id: info.scenario_id,
+          run_params: { ...defaultParams, ...(info.run_params as Partial<RunParams>) } as RunParams,
+          execution_mode: info.execution_mode,
+          structure_provenance: info.structure_provenance,
+        });
+      } else {
+        setJobSnapshot(null);
+      }
       // Bump after setJob so the log effect does not briefly re-sub the previous id.
       setLogEpoch((n) => n + 1);
       if (info.status === "completed" || info.status === "failed") {
@@ -1639,6 +1705,12 @@ export default function App() {
             <span className="kpi-k">Job</span>
             <span className="kpi-v">{job?.status || "idle"}</span>
           </div>
+          <div className="kpi">
+            <span className="kpi-k">Exec</span>
+            <span className={`kpi-v ${(job?.execution_mode || jobSnapshot?.execution_mode) === "real_md" ? "tone-ok" : "tone-warn"}`}>
+              {(job?.execution_mode || jobSnapshot?.execution_mode || (engines?.lammps_found ? "—" : "dry-run")).replace(/_/g, " ")}
+            </span>
+          </div>
           <button
             type="button"
             className="primary-run"
@@ -1655,10 +1727,19 @@ export default function App() {
         <span className={`verdict-badge ${verdict.tone}`}>{verdict.label}</span>
         <span className="verdict-msg">{verdict.msg}</span>
         {blockers.length > 1 && (
-          <span className="chip">
-            <span className="chip-k">+</span>
-            <span className="chip-v">{blockers.length - 1} more</span>
-          </span>
+          <button type="button" className="chip" onClick={() => setShowAllBlockers((v) => !v)}>
+            <span className="chip-k">checks</span>
+            <span className="chip-v">
+              {showAllBlockers ? "hide" : `+${blockers.length - 1} more`}
+            </span>
+          </button>
+        )}
+        {showAllBlockers && blockers.length > 1 && (
+          <ul className="hint" style={{ margin: 0, paddingLeft: "1.2rem" }}>
+            {blockers.map((b) => (
+              <li key={b}>{b}</li>
+            ))}
+          </ul>
         )}
       </div>
 
@@ -3155,11 +3236,15 @@ export default function App() {
                           }),
                         });
                         setError("");
-                        window.alert(
-                          `Preview OK — backend=${r.backend || "?"} atoms=${r.atom_count ?? "?"} ` +
-                            (r.void_atoms_removed != null ? `void_removed=${r.void_atoms_removed} ` : "") +
-                            (r.note || ""),
-                        );
+                        setStructurePreview({
+                          atoms: (r as { preview_atoms?: Array<{ id: number; type: number; x: number; y: number; z: number }> }).preview_atoms,
+                          box_A: (r as { box_A?: number[] }).box_A,
+                          type_symbols: (r as { type_symbols?: string[] }).type_symbols,
+                          atom_count: r.atom_count,
+                          backend: r.backend,
+                          note: r.note,
+                          preview_n_full: (r as { preview_n_full?: number }).preview_n_full,
+                        });
                       } catch (err) {
                         setError(err instanceof Error ? err.message : String(err));
                       } finally {
@@ -3169,6 +3254,36 @@ export default function App() {
                   >
                     Preview structure
                   </button>
+                </div>
+              )}
+              {structurePreview && (
+                <div className="stack" style={{ marginTop: "0.75rem" }}>
+                  <h3>Structure preview</h3>
+                  <p className="hint">
+                    Builder geometry (not MD). backend={structurePreview.backend || "?"}
+                    {structurePreview.atom_count != null ? ` · atoms=${structurePreview.atom_count}` : ""}
+                    {structurePreview.type_symbols?.length
+                      ? ` · types ${structurePreview.type_symbols.join(", ")}`
+                      : ""}
+                    {structurePreview.note ? ` — ${structurePreview.note}` : ""}
+                  </p>
+                  {structurePreview.atoms?.length ? (
+                    <StructureAtomCanvas
+                      atoms={structurePreview.atoms}
+                      box={
+                        structurePreview.box_A && structurePreview.box_A.length >= 3
+                          ? {
+                              lx: structurePreview.box_A[0],
+                              ly: structurePreview.box_A[1],
+                              lz: structurePreview.box_A[2],
+                            }
+                          : undefined
+                      }
+                      label="Structure preview"
+                    />
+                  ) : (
+                    <p className="hint">No atom sample returned — metadata-only preview.</p>
+                  )}
                 </div>
               )}
             </fieldset>
@@ -3700,7 +3815,9 @@ export default function App() {
             {cascadeTimeline?.stages && cascadeTimeline.stages.length > 0 && (
               <section className="panel stack">
                 <h2>Cascade stages</h2>
-                <p className="hint">{cascadeTimeline.note}</p>
+                <p className="hint">
+                  {cascadeTimeline.note} Click a stage to jump the structure scrubber toward that timestep window.
+                </p>
                 {cascadeTimeline.extended_max_steps && (
                   <div className="alert alert-warn">
                     Auto stages extended the cascade past your max_steps so quench/residual could finish (
@@ -3719,7 +3836,18 @@ export default function App() {
                     </thead>
                     <tbody>
                       {cascadeTimeline.stages.map((st) => (
-                        <tr key={st.id}>
+                        <tr
+                          key={st.id}
+                          style={{ cursor: "pointer" }}
+                          title="Seek structure viewer toward this stage"
+                          onClick={() => {
+                            window.dispatchEvent(
+                              new CustomEvent("aegis-seek-timestep", {
+                                detail: { timestep: st.timestep_end ?? st.timestep_start ?? 0 },
+                              }),
+                            );
+                          }}
+                        >
                           <td>{st.id}</td>
                           <td>{st.label}</td>
                           <td>
@@ -3772,12 +3900,39 @@ export default function App() {
                   in the job folder, but these WS numbers are not from that geometry.
                 </div>
               )}
-              {params.structure_kind !== "single_crystal" &&
+              {Boolean(job?.execution_mode) && (
+                <div className={`alert ${job?.execution_mode === "real_md" ? "alert-ok" : "alert-warn"}`}>
+                  Execution: <code>{job?.execution_mode}</code>
+                  {job?.structure_provenance?.structure_kind
+                    ? <> · structure <code>{String(job.structure_provenance.structure_kind)}</code></>
+                    : null}
+                  {Array.isArray(job?.structure_provenance?.type_symbols)
+                    ? <> · types {(job!.structure_provenance!.type_symbols as string[]).join(", ")}</>
+                    : null}
+                </div>
+              )}
+              {(jobSnapshot?.run_params.structure_kind || params.structure_kind) !== "single_crystal" &&
                 !Boolean((defects?.summary as { demo_structure_proxy?: boolean } | undefined)?.demo_structure_proxy) &&
                 Boolean(defects?.summary) && (
                 <div className="alert alert-warn">
-                  Nanostructure run (<code>{params.structure_kind}</code>): Wigner–Seitz uses a perfect host-lattice
+                  Nanostructure run (<code>{jobSnapshot?.run_params.structure_kind || params.structure_kind}</code>): Wigner–Seitz uses a perfect host-lattice
                   reference — treat vacancy/SIA counts as engineering proxies (prefer OVITO DXA for production).
+                </div>
+              )}
+              {jobSnapshot && (
+                <div className="chip-row">
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => {
+                      setMaterialId(jobSnapshot.material_id);
+                      setPotentialId(jobSnapshot.potential_id);
+                      setScenarioId(jobSnapshot.scenario_id);
+                      setParams(jobSnapshot.run_params);
+                    }}
+                  >
+                    Restore job recipe into editor
+                  </button>
                 </div>
               )}
               {defects?.summary ? (
@@ -3990,6 +4145,39 @@ export default function App() {
                       </span>
                     ) : null}
                   </div>
+                  {(dxaSummary as { dislocation_density_per_A2?: number | null }).dislocation_density_per_A2 !=
+                  null ? (
+                    <span className="chip">
+                      <span className="chip-k">density</span>
+                      <span className="chip-v">
+                        {Number(
+                          (dxaSummary as { dislocation_density_per_A2?: number }).dislocation_density_per_A2,
+                        ).toExponential(3)}{" "}
+                        /Å²
+                      </span>
+                    </span>
+                  ) : null}
+                  {(dxaSummary as { cell_volume_A3?: number | null }).cell_volume_A3 != null ? (
+                    <span className="chip">
+                      <span className="chip-k">cell vol</span>
+                      <span className="chip-v">
+                        {Number((dxaSummary as { cell_volume_A3?: number }).cell_volume_A3).toFixed(0)} Å³
+                      </span>
+                    </span>
+                  ) : null}
+                  {(dxaSummary as { dump?: string }).dump ? (
+                    <span className="chip">
+                      <span className="chip-k">dump</span>
+                      <span className="chip-v">{String((dxaSummary as { dump?: string }).dump)}</span>
+                    </span>
+                  ) : null}
+                  {(String((dxaSummary as { crystal?: string }).crystal || "").toLowerCase() === "hex" ||
+                    String((dxaSummary as { ovito_lattice?: string }).ovito_lattice || "").toLowerCase() ===
+                      "hcp") && (
+                    <div className="alert alert-warn">
+                      WC hex DXA maps to HCP in OVITO — approximate only; do not treat as calibrated WC dislocation analysis.
+                    </div>
+                  )}
                   {(dxaSummary as { message?: string }).message ? (
                     <p className="hint">{String((dxaSummary as { message?: string }).message)}</p>
                   ) : null}
@@ -4201,7 +4389,7 @@ export default function App() {
           <div>
             <dt>Structure</dt>
             <dd>
-              {params.structure_kind.replace(/_/g, " ")}
+              {(jobSnapshot?.run_params.structure_kind || params.structure_kind).replace(/_/g, " ")}
               {params.structure_kind === "nanowire"
                 ? ` · r=${params.nanowire_radius_A}Å · ${params.nanowire_axis}`
                 : ""}

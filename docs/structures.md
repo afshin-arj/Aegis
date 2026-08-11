@@ -76,6 +76,12 @@ Substitutional proxy on the host lattice — not a second crystal structure. Mat
 
 ## Integrity rule
 
-Non–single-crystal kinds **must not** silently fall back to a perfect single crystal for real MD. Dry-run still builds `structure.data` when possible, stamps `demo_structure_proxy` on Results, and warns that demo dumps are SC proxies. Builder failure → clear error (install ASE / fix params).
+Non–single-crystal kinds **must not** silently fall back to a perfect single crystal for real MD. Dry-run still builds `structure.data` when possible, stamps `demo_structure_proxy` / `execution_mode` on Results, and warns that demo dumps are SC proxies. Builder failure → clear error (install ASE / fix params).
 
-**HPC export** (single-job and campaign) refuses dry-run/placeholder stubs. Crystal orientation applies to single crystal only.
+**HPC export** (single-job and campaign) refuses dry-run/placeholder stubs. Scheduler is `slurm|pbs` only. Crystal orientation applies to single crystal only.
+
+**Import:** multi-type files without element symbols require a composition with the same number of host species (type order). Potential coverage validates imported `type_symbols`.
+
+**WC hex:** single-crystal `create_atoms` maps metal→basis 1 and C→basis 2 by symbol (safe for `C,W` composition order). ASE builders use `resolve_c_A` (honors `c_over_a`). Sublattice WS is species-aware when `type_symbols` exist; otherwise labeled species-blind.
+
+**Provenance:** jobs expose `execution_mode` (`real_md` | `synthetic_proxy`) and `structure_provenance` (kind, backend, type_symbols, alloy). Results can restore the job recipe into the editor. Structure preview returns an atom sample for the LAMMPS Structure panel.

@@ -75,13 +75,24 @@ def required_species(material: Any, params: Any) -> list[str]:
     return ordered
 
 
-def validate_potential_coverage(material: Any, potential: Any, params: Any) -> None:
+def validate_potential_coverage(
+    material: Any,
+    potential: Any,
+    params: Any,
+    *,
+    type_symbols: list[str] | None = None,
+) -> None:
     """Raise ValueError if potential cannot cover required species (placeholders exempt)."""
     if bool(getattr(potential, "is_placeholder", False)):
         return
     pot_elems = getattr(potential, "elements", None) or []
     pot = {normalize_symbol(str(e)).lower() for e in pot_elems}
     need = required_species(material, params)
+    if type_symbols:
+        for s in type_symbols:
+            n = normalize_symbol(str(s))
+            if n and n.lower() not in {x.lower() for x in need}:
+                need.append(n)
     missing = [s for s in need if s.lower() not in pot]
     if missing:
         covers = " ".join(str(e) for e in pot_elems) or "(none)"

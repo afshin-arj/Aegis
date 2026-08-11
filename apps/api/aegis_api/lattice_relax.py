@@ -41,13 +41,26 @@ def discover_atomsk() -> dict[str, Any]:
 
 
 def export_poscar(material: dict[str, Any], *, nx: int = 1, ny: int = 1, nz: int = 1) -> str:
-    """Minimal conventional-cell POSCAR for DFT export."""
+    """Minimal conventional-cell POSCAR for DFT export.
+
+    Alloys and WC hex are refused — a silent single-host POSCAR would mislead experts.
+    """
     from lammps import crystal as crystal_reg
 
-    a = float(material.get("lattice_constant_A", 3.165))
     cry = crystal_reg.normalize_crystal(material.get("crystal"))
+    elems = [
+        e["symbol"]
+        for e in material.get("composition") or []
+        if float(e.get("atomic_percent") or 0) > 0
+    ]
+    if cry == "hex" or len(elems) > 1:
+        raise ValueError(
+            "POSCAR export supports single-host bcc/fcc/hcp/diamond only. "
+            "Alloys and WC (hex) need a multi-species DFT cell — export via ASE/Atomsk "
+            "or structure_kind=import, not this single-host POSCAR helper."
+        )
+    a = float(material.get("lattice_constant_A", 3.165))
     c = crystal_reg.resolve_c_A(material, cry)
-    elems = [e["symbol"] for e in material.get("composition") or [] if e.get("atomic_percent", 0) > 0]
     host = elems[0] if elems else "X"
     offsets = crystal_reg.basis_offsets(cry)
     # Scale box
@@ -119,12 +132,30 @@ def try_ase_relax(material: dict[str, Any]) -> dict[str, Any]:
         host = elems[0] if elems else "Cu"
         cry = str(material.get("crystal", "fcc")).lower()
         a0 = float(material.get("lattice_constant_A", 3.6))
+        if len(elems) > 1 or cry in {"hex", "diamond"}:
+            return {
+                "status": "unsupported",
+                "message": (
+                    "ASE EMT relax supports single-host bcc/fcc/hcp only. "
+                    "Alloys / WC / diamond need DFT — POSCAR export is refused for multi-species."
+                ),
+                "poscar": None,
+                "note": "Build a DFT cell externally or use structure_kind=import.",
+            }
         # EMT supports limited crystals; never silently map diamond/hex → fcc
         if cry not in {"bcc", "fcc", "hcp"}:
+            try:
+                poscar = export_poscar(material)
+            except ValueError as exc:
+                return {
+                    "status": "unsupported",
+                    "message": str(exc),
+                    "poscar": None,
+                }
             return {
                 "status": "unsupported",
                 "message": f"ASE EMT relax does not support crystal '{cry}'. Export POSCAR for DFT.",
-                "poscar": export_poscar(material),
+                "poscar": poscar,
                 "note": "Use exported POSCAR with your DFT code, then import a/c.",
             }
         crystalname = cry

@@ -95,7 +95,14 @@ def analyze_job_dir(
         return summary
 
     dump_path = dumps[-1]
-    atoms, box = _read_last_frame(dump_path)
+    atoms, box, box_meta = _read_last_frame(dump_path)
+    if box_meta.get("triclinic"):
+        note = (
+            "Dump frame has triclinic tilt (xy/xz/yz). Aegis WS uses an orthogonal box proxy — "
+            "vacancy/SIA counts for WC/hex or sheared cells are approximate; prefer OVITO."
+        )
+        nano_note = f"{nano_note} {note}".strip() if nano_note else note
+
     if not atoms:
         empty = {
             "summary": {
@@ -147,14 +154,25 @@ def analyze_job_dir(
 
     occupied = [False] * len(sites)
     interstitial_pts: list[dict[str, Any]] = []
-    for atom in atoms:
-        best_i = 0
-        best_d2 = 1e99
-        for i, s in enumerate(sites):
-            d2 = (atom["x"] - s[0]) ** 2 + (atom["y"] - s[1]) ** 2 + (atom["z"] - s[2]) ** 2
-            if d2 < best_d2:
-                best_d2 = d2
-                best_i = i
+    # Spatial hash for nearest-site lookup (avoids O(N_atoms × N_sites))
+    site_index = _build_site_index(sites, cell=max(a_ref * 0.75, 1.0))
+    analysis_sampled = False
+    atom_budget = 250_000
+    atoms_use = atoms
+    if len(atoms) > atom_budget:
+        step = max(1, len(atoms) // atom_budget)
+        atoms_use = atoms[::step][:atom_budget]
+        analysis_sampled = True
+        nano_note = (
+            f"{nano_note} Analysis sampled {len(atoms_use)}/{len(atoms)} atoms "
+            f"(budget {atom_budget})."
+        ).strip()
+
+    for atom in atoms_use:
+        best_i, best_d2 = _nearest_site(atom, sites, site_index, cell=max(a_ref * 0.75, 1.0))
+        if best_i < 0:
+            interstitial_pts.append({**atom, "kind": "interstitial"})
+            continue
         if occupied[best_i]:
             interstitial_pts.append({**atom, "kind": "interstitial"})
         else:
@@ -178,6 +196,8 @@ def analyze_job_dir(
     summary: dict[str, Any] = {
         "summary": {
             "n_atoms": len(atoms),
+            "n_atoms_analyzed": len(atoms_use),
+            "analysis_sampled": analysis_sampled,
             "n_sites": len(sites),
             "vacancies": len(vacancies),
             "interstitials": len(interstitial_pts),
@@ -190,6 +210,7 @@ def analyze_job_dir(
             "crystal": cry,
             "structure_kind": structure_kind,
             "mode": run_mode or "cascade",
+            "triclinic_proxy": bool(box_meta.get("triclinic")),
             "note": note,
             "hardening_proxy": {
                 "dbh_Nd_sqrt": (len(interstitial_pts) * max(len(clusters), 1)) ** 0.5,
@@ -200,28 +221,63 @@ def analyze_job_dir(
         "points": points[:5000],
     }
 
-    # WC hex: optional sublattice vacancy proxies
+    # WC hex: species-aware sublattice vacancy proxies when type_symbols available
     if cry == "hex":
+        type_symbols: list[str] = []
+        meta_path = job_dir / "structure_meta.json"
+        if meta_path.exists():
+            try:
+                ts = json.loads(meta_path.read_text(encoding="utf-8")).get("type_symbols")
+                if isinstance(ts, list):
+                    type_symbols = [str(s) for s in ts]
+            except Exception:  # noqa: BLE001
+                type_symbols = []
         sub = crystal_reg.ideal_sites_sublattice(box, cry, a_ref, c=c_ref)
-        sub_stats = {}
+        sub_stats: dict[str, Any] = {}
+        species_aware = False
         for label, sub_sites in sub.items():
             if not sub_sites:
                 sub_stats[label] = {"n_sites": 0, "vacancies_proxy": 0}
                 continue
+            allowed_types: set[int] | None = None
+            if type_symbols:
+                want = "c" if label.lower().startswith("c") else None
+                if want == "c":
+                    allowed_types = {
+                        i + 1 for i, s in enumerate(type_symbols) if str(s).lower() == "c"
+                    }
+                else:
+                    allowed_types = {
+                        i + 1 for i, s in enumerate(type_symbols) if str(s).lower() != "c"
+                    }
+                if allowed_types:
+                    species_aware = True
+            sub_index = _build_site_index(sub_sites, cell=max(a_ref * 0.75, 1.0))
             sub_occ = [False] * len(sub_sites)
-            for atom in atoms:
-                best_i, best_d2 = 0, 1e99
-                for i, s in enumerate(sub_sites):
-                    d2 = (atom["x"] - s[0]) ** 2 + (atom["y"] - s[1]) ** 2 + (atom["z"] - s[2]) ** 2
-                    if d2 < best_d2:
-                        best_d2, best_i = d2, i
-                if not sub_occ[best_i] and best_d2 <= (0.35 * a_ref) ** 2:
+            for atom in atoms_use:
+                if allowed_types is not None and int(atom.get("type") or 0) not in allowed_types:
+                    continue
+                best_i, best_d2 = _nearest_site(
+                    atom, sub_sites, sub_index, cell=max(a_ref * 0.75, 1.0)
+                )
+                if best_i >= 0 and not sub_occ[best_i] and best_d2 <= (0.35 * a_ref) ** 2:
                     sub_occ[best_i] = True
             sub_stats[label] = {
                 "n_sites": len(sub_sites),
                 "vacancies_proxy": sum(1 for o in sub_occ if not o),
             }
         summary["summary"]["sublattice"] = sub_stats
+        summary["summary"]["sublattice_species_aware"] = species_aware
+        if not species_aware:
+            summary["summary"]["note"] = (
+                f"{summary['summary'].get('note') or ''} WC sublattice vacancies are a "
+                "species-blind geometric proxy unless type_symbols are present — not calibrated."
+            ).strip()
+        else:
+            summary["summary"]["note"] = (
+                f"{summary['summary'].get('note') or ''} WC sublattice WS uses type_symbols "
+                "to match metal↔metal and C↔C sites (engineering proxy)."
+            ).strip()
 
     if run_mode == "surface":
         surface = analyze_surface_metrics(job_dir, lattice_A=a_ref, ion_type_hint=None)
@@ -256,8 +312,8 @@ def analyze_surface_metrics(
         # Only initial exists
         return None
 
-    before, _ = _read_last_frame(initial_path)
-    after, box = _read_last_frame(after_path)
+    before, _, _ = _read_last_frame(initial_path)
+    after, box, _ = _read_last_frame(after_path)
     if not before or not after:
         return None
 
@@ -319,17 +375,22 @@ def analyze_surface_metrics(
     return out
 
 
-def _read_last_frame(path: Path) -> tuple[list[dict[str, Any]], tuple[float, float, float]]:
+def _read_last_frame(
+    path: Path,
+) -> tuple[list[dict[str, Any]], tuple[float, float, float], dict[str, Any]]:
     text = path.read_text(encoding="utf-8", errors="replace").strip().splitlines()
     starts = [i for i, line in enumerate(text) if line.startswith("ITEM: TIMESTEP")]
     if not starts:
-        return [], (0, 0, 0)
+        return [], (0, 0, 0), {}
     i = starts[-1]
     while i < len(text) and not text[i].startswith("ITEM: NUMBER OF ATOMS"):
         i += 1
     n = int(text[i + 1])
     while i < len(text) and not text[i].startswith("ITEM: BOX BOUNDS"):
         i += 1
+    bounds_hdr = text[i]
+    triclinic = "xy" in bounds_hdr.lower() or "xz" in bounds_hdr.lower() or "yz" in bounds_hdr.lower()
+    # Always take first two tokens as lo/hi; ignore tilt factors for orthogonal proxy
     xlo, xhi = map(float, text[i + 1].split()[:2])
     ylo, yhi = map(float, text[i + 2].split()[:2])
     zlo, zhi = map(float, text[i + 3].split()[:2])
@@ -342,7 +403,7 @@ def _read_last_frame(path: Path) -> tuple[list[dict[str, Any]], tuple[float, flo
     y_key = "y" if "y" in idx else "yu" if "yu" in idx else "ys" if "ys" in idx else None
     z_key = "z" if "z" in idx else "zu" if "zu" in idx else "zs" if "zs" in idx else None
     if x_key is None or y_key is None or z_key is None:
-        return [], (xhi - xlo, yhi - ylo, zhi - zlo)
+        return [], (xhi - xlo, yhi - ylo, zhi - zlo), {"triclinic": triclinic, "xlo": xlo, "ylo": ylo, "zlo": zlo}
     lx, ly, lz = xhi - xlo, yhi - ylo, zhi - zlo
     scaled = x_key == "xs"
     atoms = []
@@ -364,7 +425,58 @@ def _read_last_frame(path: Path) -> tuple[list[dict[str, Any]], tuple[float, flo
                 "z": z,
             }
         )
-    return atoms, (lx, ly, lz)
+    return atoms, (lx, ly, lz), {
+        "triclinic": triclinic,
+        "xlo": xlo,
+        "ylo": ylo,
+        "zlo": zlo,
+        "xhi": xhi,
+        "yhi": yhi,
+        "zhi": zhi,
+    }
+
+
+def _build_site_index(
+    sites: list[tuple[float, float, float]], *, cell: float
+) -> dict[tuple[int, int, int], list[int]]:
+    index: dict[tuple[int, int, int], list[int]] = {}
+    inv = 1.0 / max(cell, 1e-9)
+    for i, (x, y, z) in enumerate(sites):
+        key = (int(x * inv), int(y * inv), int(z * inv))
+        index.setdefault(key, []).append(i)
+    return index
+
+
+def _nearest_site(
+    atom: dict[str, Any],
+    sites: list[tuple[float, float, float]],
+    index: dict[tuple[int, int, int], list[int]],
+    *,
+    cell: float,
+) -> tuple[int, float]:
+    if not sites:
+        return -1, 1e99
+    inv = 1.0 / max(cell, 1e-9)
+    ax, ay, az = float(atom["x"]), float(atom["y"]), float(atom["z"])
+    cx, cy, cz = int(ax * inv), int(ay * inv), int(az * inv)
+    best_i, best_d2 = -1, 1e99
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            for dz in (-1, 0, 1):
+                for i in index.get((cx + dx, cy + dy, cz + dz), ()):
+                    s = sites[i]
+                    d2 = (ax - s[0]) ** 2 + (ay - s[1]) ** 2 + (az - s[2]) ** 2
+                    if d2 < best_d2:
+                        best_d2 = d2
+                        best_i = i
+    if best_i < 0:
+        # Fallback rare empty neighborhood
+        for i, s in enumerate(sites):
+            d2 = (ax - s[0]) ** 2 + (ay - s[1]) ** 2 + (az - s[2]) ** 2
+            if d2 < best_d2:
+                best_d2 = d2
+                best_i = i
+    return best_i, best_d2
 
 
 def _bcc_sites(

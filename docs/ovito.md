@@ -41,10 +41,10 @@ Aegis falls back to an `ovitos` subprocess when the Python module is unavailable
 
 1. **Engines** — confirm OVITO shows *found* (mode `module`, `ovitos`, or both).
 2. **LAMMPS** — optionally check *Run OVITO DXA after job*.
-3. **Results** — **Run / refresh DXA**; inspect length / segments chips.
+3. **Results** — **Run / refresh DXA**; inspect length / segments / density / cell volume chips.
 4. **Download .ca** — open `dislocations.ca` in the OVITO desktop app to scrub the network.
 
-Crystal mapping: `bcc→BCC`, `fcc→FCC`, `hcp→HCP`, `diamond→CubicDiamond`, `hex(WC)→HCP` (approximate).
+Crystal mapping: `bcc→BCC`, `fcc→FCC`, `hcp→HCP`, `diamond→CubicDiamond`, `hex(WC)→HCP` (**approximate** — the Results panel warns; do not treat WC→HCP DXA as calibrated WC dislocation analysis).
 
 ## Conda
 

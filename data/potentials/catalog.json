@@ -32,7 +32,7 @@
       "Upload/download the .fs/.eam file you intend to cite.",
       "Short-range repulsion may need ZBL merge for high-energy PKAs — check your potential documentation."
     ],
-    "lammps_pair_style": "eam/alloy",
+    "lammps_pair_style": "eam/fs",
     "pair_coeff_template": "pair_coeff * * {file} W",
     "file_path": null,
     "source": "curated",

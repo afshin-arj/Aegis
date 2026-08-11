@@ -201,7 +201,52 @@ def structure_preview(payload: dict[str, Any]) -> dict[str, Any]:
     params.setdefault("seed", 42)
     try:
         with tempfile.TemporaryDirectory(prefix="aegis-struct-") as tmp:
-            meta = build_structure(Path(tmp), material=m.model_dump(mode="json"), params=params)
+            tmp_path = Path(tmp)
+            meta = build_structure(tmp_path, material=m.model_dump(mode="json"), params=params)
+            # Lightweight atom sample for visual preview (not MD)
+            sample: list[dict[str, Any]] = []
+            data = tmp_path / "structure.data"
+            if data.exists():
+                try:
+                    from ase.io import read
+
+                    atoms = read(str(data), format="lammps-data")
+                    symbols = atoms.get_chemical_symbols()
+                    pos = atoms.get_positions()
+                    max_prev = 4000
+                    step = max(1, len(atoms) // max_prev)
+                    type_symbols = list(meta.get("type_symbols") or [])
+                    if not type_symbols:
+                        # unique order of appearance
+                        seen: set[str] = set()
+                        for s in symbols:
+                            if s not in seen:
+                                seen.add(s)
+                                type_symbols.append(s)
+                    sym_to_type = {s: i + 1 for i, s in enumerate(type_symbols)}
+                    for i in range(0, len(atoms), step):
+                        if len(sample) >= max_prev:
+                            break
+                        sample.append(
+                            {
+                                "id": i + 1,
+                                "type": int(sym_to_type.get(str(symbols[i]), 1)),
+                                "x": float(pos[i][0]),
+                                "y": float(pos[i][1]),
+                                "z": float(pos[i][2]),
+                            }
+                        )
+                    cell = atoms.get_cell()
+                    meta["preview_atoms"] = sample
+                    meta["preview_truncated"] = len(atoms) > len(sample)
+                    meta["preview_n_full"] = len(atoms)
+                    meta.setdefault(
+                        "box_A",
+                        [float(cell[0, 0]), float(cell[1, 1]), float(cell[2, 2])],
+                    )
+                    meta["type_symbols"] = type_symbols
+                except Exception as preview_exc:  # noqa: BLE001
+                    meta["preview_note"] = f"atom sample unavailable: {preview_exc}"
             return meta
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -247,7 +292,10 @@ def export_material_poscar(material_id: str, nx: int = 1, ny: int = 1, nz: int =
         raise HTTPException(404, "material not found")
     from aegis_api.lattice_relax import export_poscar
 
-    text = export_poscar(m.model_dump(), nx=nx, ny=ny, nz=nz)
+    try:
+        text = export_poscar(m.model_dump(), nx=nx, ny=ny, nz=nz)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     return Response(
         content=text,
         media_type="text/plain",

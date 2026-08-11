@@ -89,13 +89,44 @@ def get_trajectory_frame(
         raise IndexError(f"frame_index {frame_index} out of range 0..{len(frames)-1}")
     meta = frames[frame_index]
     path = job_dir / meta["file"]
-    atoms, box, timestep = _read_frame_at(path, meta["file_frame"])
+    atoms, box, timestep, bounds = _read_frame_at(path, meta["file_frame"])
     truncated = False
     if len(atoms) > max_atoms:
         # Uniform stride downsample for interactive viz (not analysis)
         step = max(1, len(atoms) // max_atoms)
         atoms = atoms[::step][:max_atoms]
         truncated = True
+    type_symbols: list[str] = []
+    structure_kind = "single_crystal"
+    meta_path = job_dir / "structure_meta.json"
+    if meta_path.exists():
+        try:
+            import json
+
+            sm = json.loads(meta_path.read_text(encoding="utf-8"))
+            ts = sm.get("type_symbols")
+            if isinstance(ts, list):
+                type_symbols = [str(s) for s in ts if str(s).strip()]
+            structure_kind = str(sm.get("kind") or structure_kind)
+        except Exception:  # noqa: BLE001
+            pass
+    if not type_symbols:
+        rp = job_dir / "run_params.json"
+        mat = job_dir / "material.json"
+        try:
+            import json
+
+            from lammps.structure.types import structure_type_symbols
+
+            params = json.loads(rp.read_text(encoding="utf-8")) if rp.exists() else {}
+            material = json.loads(mat.read_text(encoding="utf-8")) if mat.exists() else {}
+            type_symbols = structure_type_symbols(material, params)
+            structure_kind = str(
+                getattr(params.get("structure_kind"), "value", params.get("structure_kind"))
+                or structure_kind
+            )
+        except Exception:  # noqa: BLE001
+            pass
     return {
         "index": frame_index,
         "timestep": timestep,
@@ -104,7 +135,17 @@ def get_trajectory_frame(
         "n_atoms_full": meta["n_atoms"],
         "n_atoms": len(atoms),
         "truncated": truncated,
-        "box": {"lx": box[0], "ly": box[1], "lz": box[2]},
+        "box": {
+            "lx": box[0],
+            "ly": box[1],
+            "lz": box[2],
+            "xlo": bounds.get("xlo", 0.0),
+            "ylo": bounds.get("ylo", 0.0),
+            "zlo": bounds.get("zlo", 0.0),
+            "triclinic": bool(bounds.get("triclinic")),
+        },
+        "type_symbols": type_symbols,
+        "structure_kind": structure_kind,
         "atoms": atoms,
     }
 
@@ -139,7 +180,9 @@ def _iter_frame_meta(path: Path) -> Iterator[dict[str, Any]]:
             continue
 
 
-def _read_frame_at(path: Path, file_frame: int) -> tuple[list[dict[str, Any]], tuple[float, float, float], int]:
+def _read_frame_at(
+    path: Path, file_frame: int
+) -> tuple[list[dict[str, Any]], tuple[float, float, float], int, dict[str, Any]]:
     text = path.read_text(encoding="utf-8", errors="replace").splitlines()
     starts = [i for i, line in enumerate(text) if line.startswith("ITEM: TIMESTEP")]
     if file_frame < 0 or file_frame >= len(starts):
@@ -151,6 +194,8 @@ def _read_frame_at(path: Path, file_frame: int) -> tuple[list[dict[str, Any]], t
     n = int(text[i + 1].strip())
     while i < len(text) and not text[i].startswith("ITEM: BOX BOUNDS"):
         i += 1
+    bounds_hdr = text[i]
+    triclinic = "xy" in bounds_hdr.lower() or "xz" in bounds_hdr.lower() or "yz" in bounds_hdr.lower()
     xlo, xhi = map(float, text[i + 1].split()[:2])
     ylo, yhi = map(float, text[i + 2].split()[:2])
     zlo, zhi = map(float, text[i + 3].split()[:2])
@@ -186,4 +231,12 @@ def _read_frame_at(path: Path, file_frame: int) -> tuple[list[dict[str, Any]], t
                 "z": z,
             }
         )
-    return atoms, (lx, ly, lz), timestep
+    return atoms, (lx, ly, lz), timestep, {
+        "triclinic": triclinic,
+        "xlo": xlo,
+        "ylo": ylo,
+        "zlo": zlo,
+        "xhi": xhi,
+        "yhi": yhi,
+        "zhi": zhi,
+    }

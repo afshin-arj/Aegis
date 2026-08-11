@@ -31,13 +31,15 @@ export type TrajFrame = {
   n_atoms: number;
   n_atoms_full: number;
   truncated: boolean;
-  box: { lx: number; ly: number; lz: number };
+  box: { lx: number; ly: number; lz: number; xlo?: number; ylo?: number; zlo?: number; triclinic?: boolean };
+  type_symbols?: string[];
+  structure_kind?: string;
   atoms: AtomXYZ[];
 };
 
 const TYPE_COLORS = [0xd4894a, 0x5b9ec9, 0x3d9a6a, 0xc9a227, 0x9b7bb8, 0xd46555];
 
-function AtomCanvas({
+export function StructureAtomCanvas({
   atoms,
   box,
   label,
@@ -239,6 +241,28 @@ export default function StructureViewer({ jobId, refreshKey }: Props) {
     };
   }, [jobId, refreshKey]);
 
+  useEffect(() => {
+    const onSeek = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ timestep?: number }>).detail;
+      const target = Number(detail?.timestep ?? 0);
+      if (!index?.frames?.length || !afterFrames.length) return;
+      let bestLocal = 0;
+      let bestDist = Infinity;
+      afterFrames.forEach((fi, local) => {
+        const fr = index.frames.find((f) => f.index === fi);
+        if (!fr) return;
+        const d = Math.abs(Number(fr.timestep) - target);
+        if (d < bestDist) {
+          bestDist = d;
+          bestLocal = local;
+        }
+      });
+      void scrub(bestLocal);
+    };
+    window.addEventListener("aegis-seek-timestep", onSeek);
+    return () => window.removeEventListener("aegis-seek-timestep", onSeek);
+  }, [index, afterFrames, jobId]);
+
   async function scrub(i: number) {
     if (!jobId || !afterFrames.length) return;
     const clamped = Math.max(0, Math.min(i, afterFrames.length - 1));
@@ -291,9 +315,24 @@ export default function StructureViewer({ jobId, refreshKey }: Props) {
         </span>
       </div>
       <p className="hint">
-        Atom color = LAMMPS type. Drag to rotate. Large cells are stride-sampled for interactive viewing; use OVITO for
-        production analysis.
+        Atom color = LAMMPS type
+        {(before?.type_symbols || after?.type_symbols)
+          ? ` (${(before?.type_symbols || after?.type_symbols || [])
+              .map((s, i) => `${i + 1}=${s}`)
+              .join(", ")})`
+          : ""}
+        . Drag to rotate. Large cells are stride-sampled for interactive viewing; use OVITO for production analysis.
       </p>
+      {(before?.type_symbols || after?.type_symbols) && (
+        <div className="chip-row">
+          {(before?.type_symbols || after?.type_symbols || []).map((s, i) => (
+            <span className="chip" key={`${s}-${i}`}>
+              <span className="chip-k">type {i + 1}</span>
+              <span className="chip-v">{s}</span>
+            </span>
+          ))}
+        </div>
+      )}
       {err && (
         <div className="alert alert-fail" role="alert">
           {err}
@@ -323,12 +362,16 @@ export default function StructureViewer({ jobId, refreshKey }: Props) {
               <span className="chip">
                 <span className="chip-k">atoms</span>
                 <span className="chip-v">
-                  {before ? `${before.n_atoms}${before.truncated ? "*" : ""}` : "—"}
+                  {before
+                    ? `${before.n_atoms.toLocaleString()} / ${before.n_atoms_full.toLocaleString()}${
+                        before.truncated ? " shown" : ""
+                      }`
+                    : "—"}
                 </span>
               </span>
             </div>
             {before ? (
-              <AtomCanvas atoms={before.atoms} box={before.box} label="Initial lattice" />
+              <StructureAtomCanvas atoms={before.atoms} box={before.box} label="Initial lattice" />
             ) : (
               <div className="viz structure-viz empty-viz">No initial dump file</div>
             )}
@@ -343,7 +386,11 @@ export default function StructureViewer({ jobId, refreshKey }: Props) {
               <span className="chip">
                 <span className="chip-k">atoms</span>
                 <span className="chip-v">
-                  {after ? `${after.n_atoms}${after.truncated ? "*" : ""}` : "—"}
+                  {after
+                    ? `${after.n_atoms.toLocaleString()} / ${after.n_atoms_full.toLocaleString()}${
+                        after.truncated ? " shown" : ""
+                      }`
+                    : "—"}
                 </span>
               </span>
               {afterMeta && (
@@ -354,7 +401,7 @@ export default function StructureViewer({ jobId, refreshKey }: Props) {
               )}
             </div>
             {after ? (
-              <AtomCanvas atoms={after.atoms} box={after.box} label="Post-cascade lattice" />
+              <StructureAtomCanvas atoms={after.atoms} box={after.box} label="Post-cascade lattice" />
             ) : (
               <div className="viz structure-viz empty-viz">No cascade dump file</div>
             )}

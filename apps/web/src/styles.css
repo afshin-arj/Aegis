@@ -11,6 +11,8 @@
   --ink: #eef1f6;
   --muted: #9aa3b5;
   --faint: #6b7488;
+  --text: var(--ink);
+  --accent: var(--copper);
   --copper: #d4894a;
   --copper-dim: rgba(212, 137, 74, 0.16);
   --copper-deep: #8f5528;

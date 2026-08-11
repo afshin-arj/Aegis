@@ -36,14 +36,19 @@ def import_structure(src: Path, out_data: Path) -> dict[str, Any]:
         if type_symbols:
             meta["type_symbols"] = type_symbols
             meta["n_atom_types"] = len(type_symbols)
+            meta["type_symbols_resolved"] = True
         else:
             n_types = _count_atom_types(out_data)
             if n_types:
                 meta["n_atom_types"] = n_types
+                meta["type_symbols_resolved"] = False
                 meta["note"] = (
-                    "Imported LAMMPS data file (no element symbols in file — "
-                    "pair_coeff order follows material composition + extras)."
+                    "Imported LAMMPS data file (no element symbols in file). "
+                    "Host composition must declare exactly the same number of species as atom types, "
+                    "in type order; otherwise the import is rejected."
                 )
+            else:
+                meta["type_symbols_resolved"] = False
         return meta
     # Try ASE for dumps / xyz / cfg
     try:
@@ -65,6 +70,7 @@ def import_structure(src: Path, out_data: Path) -> dict[str, Any]:
             "atom_count": len(atoms),
             "type_symbols": type_symbols,
             "n_atom_types": len(type_symbols) if type_symbols else None,
+            "type_symbols_resolved": bool(type_symbols),
             "note": f"Imported via ASE from {src.name}",
         }
     except Exception as exc:  # noqa: BLE001

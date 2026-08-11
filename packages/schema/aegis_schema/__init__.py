@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -48,6 +48,16 @@ class StructureKind(str, Enum):
 class ElementFraction(BaseModel):
     symbol: str = Field(..., min_length=1, max_length=3)
     atomic_percent: float = Field(..., ge=0, le=100)
+
+    @field_validator("symbol")
+    @classmethod
+    def normalize_symbol(cls, v: str) -> str:
+        s = str(v or "").strip()
+        if not s:
+            raise ValueError("element symbol required")
+        if len(s) == 1:
+            return s.upper()
+        return s[0].upper() + s[1:].lower()
 
 
 class Material(BaseModel):
@@ -311,6 +321,9 @@ class JobInfo(BaseModel):
     kart_summary: dict[str, Any] | None = None
     mmonca_summary: dict[str, Any] | None = None
     surface_summary: dict[str, Any] | None = None
+    # Provenance for Results / UI badges
+    execution_mode: str | None = None  # real_md | dry_run | synthetic_proxy
+    structure_provenance: dict[str, Any] | None = None
 
 
 class EngineStatus(BaseModel):
@@ -383,7 +396,7 @@ class DoeCampaignInfo(BaseModel):
 
 
 class HpcExportRequest(BaseModel):
-    scheduler: str = "slurm"
+    scheduler: Literal["slurm", "pbs"] = "slurm"
     cores: int = Field(8, ge=1, le=256)
     walltime: str = "04:00:00"
     account: str = ""

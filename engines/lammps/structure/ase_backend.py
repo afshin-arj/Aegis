@@ -95,6 +95,7 @@ def _make_wc_bulk(material: dict[str, Any], nx: int, ny: int, nz: int):
 
 def _make_bulk(material: dict[str, Any], nx: int, ny: int, nz: int):
     from ase.build import bulk
+    from lammps import crystal as crystal_reg
 
     cry = _crystal_name(material)
     if cry == "hex":
@@ -102,7 +103,7 @@ def _make_bulk(material: dict[str, Any], nx: int, ny: int, nz: int):
 
     sym = _host_symbol(material)
     a = float(material.get("lattice_constant_A") or 3.165)
-    c = material.get("lattice_c_A")
+    c = crystal_reg.resolve_c_A(material, cry)
     name = _ase_crystal(cry)
     if name == "hcp":
         atoms = bulk(sym, "hcp", a=a, c=float(c) if c else None)
@@ -249,6 +250,7 @@ def _voronoi_polycrystal(material: dict[str, Any], params: dict[str, Any]):
     """Voronoi polycrystal: clip randomly oriented grains into the simulation box."""
     from ase import Atoms
     from ase.build import bulk
+    from lammps import crystal as crystal_reg
 
     cry = _crystal_name(material)
     if cry == "hex":
@@ -274,7 +276,7 @@ def _voronoi_polycrystal(material: dict[str, Any], params: dict[str, Any]):
         lattice_name = "hcp"
 
     if lattice_name == "hcp":
-        c = material.get("lattice_c_A")
+        c = crystal_reg.resolve_c_A(material, cry)
         proto = bulk(sym, "hcp", a=a, c=float(c) if c else None).repeat((nx, ny, nz))
     elif lattice_name == "diamond":
         proto = bulk(sym, "diamond", a=a).repeat((nx, ny, nz))
@@ -288,7 +290,7 @@ def _voronoi_polycrystal(material: dict[str, Any], params: dict[str, Any]):
     pieces: list[Atoms] = []
     for gi, (sx, sy, sz) in enumerate(seeds):
         if lattice_name == "hcp":
-            c = material.get("lattice_c_A")
+            c = crystal_reg.resolve_c_A(material, cry)
             g = bulk(sym, "hcp", a=a, c=float(c) if c else None).repeat((nx + 2, ny + 2, nz + 2))
         elif lattice_name == "diamond":
             g = bulk(sym, "diamond", a=a).repeat((nx + 2, ny + 2, nz + 2))

@@ -119,11 +119,38 @@ def _prepare_structure_file(
         out.append(n)
 
     # Import: prefer symbols from the file; only append ion/interstitial extras
-    if kind == "import" and isinstance(meta.get("type_symbols"), list) and meta["type_symbols"]:
-        elems: list[str] = []
+    if kind == "import":
+        n_file_types = int(meta.get("n_atom_types") or 0)
+        resolved = bool(meta.get("type_symbols_resolved")) and isinstance(
+            meta.get("type_symbols"), list
+        ) and bool(meta.get("type_symbols"))
+        elems = []
         seen: set[str] = set()
-        for s in meta["type_symbols"]:
-            _add(elems, seen, str(s))
+        if resolved:
+            for s in meta["type_symbols"]:
+                _add(elems, seen, str(s))
+        else:
+            hosts = [
+                _norm(str(c.get("symbol") or ""))
+                for c in (mat_dict.get("composition") or [])
+                if float(c.get("atomic_percent") or 0) > 0
+            ]
+            hosts = [h for h in hosts if h]
+            if n_file_types > 1 and len(hosts) != n_file_types:
+                raise ValueError(
+                    f"Imported structure has {n_file_types} atom types but no element symbols, "
+                    f"while material composition has {len(hosts)} host species. "
+                    "Provide a typed data file (ASE-readable symbols) or a composition with "
+                    "exactly one species per atom type in type order."
+                )
+            if n_file_types > 1 and len(hosts) == n_file_types:
+                for h in hosts:
+                    _add(elems, seen, h)
+            elif hosts:
+                for h in hosts:
+                    _add(elems, seen, h)
+            else:
+                raise ValueError("Import requires type symbols or a non-empty host composition")
         if mode_s in {"implant", "surface"}:
             _add(elems, seen, str(params.get("ion_type") or "He"))
         elif mode_s == "interstitial":
@@ -139,9 +166,19 @@ def _prepare_structure_file(
             for s in extras:
                 _add(elems, seen, s)
 
-    if len(elems) > 1:
+    data_path = job_dir / "structure.data"
+    if elems:
         masses = {i + 1: float(_approx_mass(s)) for i, s in enumerate(elems)}
-        ensure_atom_types(job_dir / "structure.data", len(elems), masses)
+        ensure_atom_types(data_path, len(elems), masses)
+        # Assert declared type count matches planned symbols
+        from lammps.structure.import_backend import _count_atom_types
+
+        declared = _count_atom_types(data_path)
+        if declared and declared != len(elems):
+            raise ValueError(
+                f"structure.data declares {declared} atom types but type_symbols has {len(elems)} "
+                f"({', '.join(elems)}) — refusing dishonest pair_coeff mapping"
+            )
     # Persist type order for templates / debugging
     meta_path = job_dir / "structure_meta.json"
     try:
@@ -518,6 +555,10 @@ class JobManager:
                         return
                     log.write(f"[Aegis] launching {lmp_path} -in {in_path.name}\n")
                     log.flush()
+                    with self._lock:
+                        info0 = self._jobs.get(job_id)
+                        if info0 and info0.status == JobStatus.CANCELLED:
+                            return
                     proc = subprocess.Popen(
                         [lmp_path, "-in", in_path.name],
                         cwd=job_dir,
@@ -526,6 +567,17 @@ class JobManager:
                         text=True,
                     )
                     with self._lock:
+                        info1 = self._jobs.get(job_id)
+                        if info1 and info1.status == JobStatus.CANCELLED:
+                            try:
+                                proc.terminate()
+                            except Exception:  # noqa: BLE001
+                                pass
+                            try:
+                                proc.kill()
+                            except Exception:  # noqa: BLE001
+                                pass
+                            return
                         self._procs[job_id] = proc
                     code = proc.wait()
                     with self._lock:
@@ -612,7 +664,13 @@ class JobManager:
                 self._update(job_id, status=JobStatus.ANNEALING, message="KART anneal")
                 with log_path.open("a", encoding="utf-8") as log:
                     log.write("[Aegis] starting KART anneal path\n")
+                sk_anneal = str(
+                    getattr(params.get("structure_kind"), "value", params.get("structure_kind"))
+                    or "single_crystal"
+                ).lower()
                 try:
+                    if self._is_cancelled(job_id):
+                        return
                     kart_summary = run_anneal_stub_or_real(
                         job_dir,
                         temperature_K=float(req.get("kart_temperature_K", 600)),
@@ -623,6 +681,14 @@ class JobManager:
                         material=material.model_dump(mode="json"),
                         potential=potential.model_dump(mode="json"),
                     )
+                    if isinstance(kart_summary, dict) and sk_anneal not in {"", "single_crystal"}:
+                        kart_summary["ws_proxy_warning"] = (
+                            f"structure_kind={sk_anneal}: KART handoff uses WS proxy defect counts "
+                            "that are not transferable for nanostructures — treat anneal as "
+                            "handoff_ready / engineering only."
+                        )
+                        prev = kart_summary.get("message") or ""
+                        kart_summary["message"] = f"{prev} {kart_summary['ws_proxy_warning']}".strip()
                 except Exception as anneal_exc:  # noqa: BLE001
                     # Keep cascade COMPLETED — mirror POST /kart/anneal semantics
                     with log_path.open("a", encoding="utf-8") as log:
@@ -640,12 +706,25 @@ class JobManager:
                 self._update(job_id, status=JobStatus.ANNEALING, message="MMonCa OKMC")
                 with log_path.open("a", encoding="utf-8") as log:
                     log.write("[Aegis] starting optional MMonCa OKMC path\n")
+                sk_anneal = str(
+                    getattr(params.get("structure_kind"), "value", params.get("structure_kind"))
+                    or "single_crystal"
+                ).lower()
                 try:
+                    if self._is_cancelled(job_id):
+                        return
                     mmonca_summary = run_okmc_stub_or_real(
                         job_dir,
                         temperature_K=float(req.get("mmonca_temperature_K", 600)),
                         max_events=int(req.get("mmonca_max_events", 1000)),
                     )
+                    if isinstance(mmonca_summary, dict):
+                        mmonca_summary["synthetic"] = True
+                        if sk_anneal not in {"", "single_crystal"}:
+                            mmonca_summary["ws_proxy_warning"] = (
+                                f"structure_kind={sk_anneal}: MMonCa path is synthetic and fed by "
+                                "WS proxy counts — not a calibrated OKMC result."
+                            )
                 except Exception as okmc_exc:  # noqa: BLE001
                     with log_path.open("a", encoding="utf-8") as log:
                         log.write(f"[Aegis] MMonCa failed (cascade kept): {okmc_exc}\n")
@@ -657,6 +736,27 @@ class JobManager:
             msg = "completed"
             if isinstance(kart_summary, dict) and kart_summary.get("anneal_failed"):
                 msg = f"cascade completed; anneal failed: {kart_summary.get('error')}"
+            sk = str(
+                getattr(params.get("structure_kind"), "value", params.get("structure_kind"))
+                or "single_crystal"
+            )
+            execution_mode = "synthetic_proxy" if use_dry_run else "real_md"
+            struct_prov: dict[str, Any] = {"structure_kind": sk}
+            meta_path = job_dir / "structure_meta.json"
+            if meta_path.exists():
+                try:
+                    sm = json.loads(meta_path.read_text(encoding="utf-8"))
+                    struct_prov.update(
+                        {
+                            "backend": sm.get("backend"),
+                            "type_symbols": sm.get("type_symbols"),
+                            "alloy": sm.get("alloy"),
+                            "atom_count": sm.get("atom_count"),
+                            "note": sm.get("note"),
+                        }
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
             self._update(
                 job_id,
                 status=JobStatus.COMPLETED,
@@ -665,6 +765,8 @@ class JobManager:
                 kart_summary=kart_summary,
                 mmonca_summary=mmonca_summary,
                 surface_summary=surface_summary,
+                execution_mode=execution_mode,
+                structure_provenance=struct_prov,
             )
         except Exception as exc:  # noqa: BLE001
             if self._is_cancelled(job_id):

@@ -1222,16 +1222,33 @@ def _create_atoms_block(material: dict[str, Any], elems: list[str], *, region: s
     crystal = crystal_reg.normalize_crystal(material.get("crystal"))
     target = f"region {region}" if region else "box"
     if crystal == "hex" and len(elems) >= 2:
-        # Ordered W+C basis (basis 1 → type 1, basis 2 → type 2)
-        return f"create_atoms 1 {target} basis 1 1 basis 2 2"
+        # Ordered metal+C basis by symbol — basis 1 = metal site, basis 2 = C site
+        metal_i, carbon_i = None, None
+        for i, sym in enumerate(elems):
+            s = _norm_sym(sym)
+            if s.lower() == "c" and carbon_i is None:
+                carbon_i = i + 1
+            elif s.lower() != "c" and metal_i is None:
+                metal_i = i + 1
+        if metal_i is None or carbon_i is None:
+            raise ValueError(
+                "crystal=hex (WC) create_atoms requires a metal and C in the type list "
+                f"(got {', '.join(elems)})"
+            )
+        return f"create_atoms 1 {target} basis 1 {metal_i} basis 2 {carbon_i}"
     if len(elems) == 1:
         return f"create_atoms 1 {target}"
-    comp = {c["symbol"]: c["atomic_percent"] / 100.0 for c in material["composition"]}
+    # Normalized keys so lowercase composition symbols still fraction correctly
+    comp = {
+        _norm_sym(str(c["symbol"])): float(c["atomic_percent"]) / 100.0
+        for c in material["composition"]
+        if float(c.get("atomic_percent") or 0) > 0
+    }
     lines = [f"create_atoms 1 {target}", "group all_atoms type 1"]
     remaining = 1.0
     for i, sym in enumerate(elems):
         typ = i + 1
-        frac = comp.get(sym, 0.0)
+        frac = float(comp.get(_norm_sym(sym), 0.0))
         if i == 0:
             continue
         if remaining <= 0:

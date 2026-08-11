@@ -144,6 +144,16 @@ def build_kart_package(
         if c.get("atomic_percent", 0) > 0 and _norm(c.get("symbol", ""))
     ] or ["W"]
 
+    # Prefer persisted structure type order (import / alloy / WC)
+    meta_path = job_dir / "structure_meta.json"
+    if meta_path.exists():
+        try:
+            ts = json.loads(meta_path.read_text(encoding="utf-8")).get("type_symbols")
+            if isinstance(ts, list) and ts:
+                elems = [_norm(str(s)) for s in ts if _norm(str(s))]
+        except Exception:  # noqa: BLE001
+            pass
+
     # Extend type map from run_params / potential so implant ions are not padded as Xn
     run_params: dict[str, Any] = {}
     rp_path = job_dir / "run_params.json"
@@ -152,7 +162,7 @@ def build_kart_package(
             run_params = json.loads(rp_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             run_params = {}
-    for key in ("ion_type", "interstitial_species", "pka_species"):
+    for key in ("ion_type", "interstitial_species", "pka_species", "precipitate_species"):
         extra = _norm(str(run_params.get(key) or ""))
         if extra and extra.lower() not in {e.lower() for e in elems}:
             elems.append(extra)
