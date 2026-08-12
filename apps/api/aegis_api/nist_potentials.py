@@ -62,6 +62,167 @@ def filter_library(
     return out
 
 
+def filter_library_for_acquire(
+    entries: list[dict[str, Any]],
+    *,
+    elements: list[str],
+) -> list[dict[str, Any]]:
+    """Acquire filter: full cover, partial intersect, element-matched browse, or global search helpers."""
+    want = {e.strip() for e in elements if e.strip()}
+    if not want:
+        return list(entries)
+    global_helpers = {"nist-colab-search", "openkim-browse"}
+    out: list[dict[str, Any]] = []
+    for e in entries:
+        el = set(e.get("elements") or [])
+        browse = "browse" in (e.get("recommended_for") or [])
+        eid = str(e.get("id") or "")
+        if want <= el or (want & el) or eid in global_helpers or (browse and (want & el)):
+            out.append(e)
+    return out
+
+
+def build_acquire_plan(
+    *,
+    material_id: str,
+    elements: list[str],
+    library_entries: list[dict[str, Any]],
+    potentials: list[Any],
+    installed_library_ids: set[str],
+) -> dict[str, Any]:
+    """Rank acquire actions for a material. Never invents coefficients."""
+    want = [e for e in elements if e]
+    want_set = set(want)
+    pots = list(potentials)
+    compatible = [p for p in pots if want_set <= set(getattr(p, "elements", None) or [])]
+    ready = [p for p in compatible if bool(getattr(p, "available", False))]
+    ready_ids = [p.id for p in ready]
+
+    candidates = filter_library_for_acquire(library_entries, elements=want)
+    suggestions: list[dict[str, Any]] = []
+
+    for e in candidates:
+        el = list(e.get("elements") or [])
+        el_set = set(el)
+        covers = want_set <= el_set if want_set else False
+        browse = "browse" in (e.get("recommended_for") or [])
+        downloadable = bool(e.get("download_url"))
+        mapped = e.get("maps_to_catalog_id")
+        mapped_pot = next((p for p in pots if p.id == mapped), None) if mapped else None
+        installed = (
+            e.get("id") in installed_library_ids
+            or (mapped_pot is not None and bool(getattr(mapped_pot, "available", False)))
+        )
+
+        score = 0.0
+        if covers and downloadable:
+            score += 100.0
+        elif covers:
+            score += 35.0
+        elif want_set & el_set:
+            score += 12.0
+        if want_set and want_set == el_set:
+            score += 22.0
+        if "cascade" in (e.get("recommended_for") or []) or "acquire" in (e.get("recommended_for") or []):
+            score += 12.0
+        if mapped:
+            score += 8.0
+        if installed:
+            score += 40.0
+        if browse and not downloadable:
+            score += 6.0
+        if len(el_set) >= 8:
+            # Multi-element universal-mixing files: useful for alloys, deprioritized vs elemental
+            score -= 8.0
+        if not covers and not browse:
+            score -= 15.0
+
+        action = "download" if downloadable else "browse"
+        if covers and downloadable:
+            reason = "Published file covers all material elements — download and attach."
+        elif covers and browse:
+            reason = "Browse NIST/OpenKIM for a published file that covers this composition."
+        elif want_set & el_set:
+            reason = (
+                f"Partial element overlap ({', '.join(sorted(want_set & el_set))}); "
+                "may help locate a multi-component potential."
+            )
+        else:
+            reason = "General search helper for this materials family."
+
+        if installed:
+            reason = "Already installed / attached — verify citation before production use."
+
+        suggestions.append(
+            {
+                "rank": 0,
+                "score": score,
+                "action": action,
+                "library_id": e.get("id"),
+                "catalog_id": mapped,
+                "title": e.get("name") or e.get("id"),
+                "reason": reason,
+                "elements": el,
+                "downloadable": downloadable,
+                "installed": bool(installed),
+                "entry_url": e.get("entry_url") or "",
+                "warnings": list(e.get("warnings") or []),
+                "citation": e.get("citation") or "",
+                "doi": e.get("doi") or "",
+                "pair_style": e.get("pair_style") or "",
+            }
+        )
+
+    suggestions.sort(key=lambda s: (-float(s["score"]), str(s.get("title") or "")))
+    for i, s in enumerate(suggestions, start=1):
+        s["rank"] = i
+
+    # Cap UI list but keep enough browse options
+    suggestions = suggestions[:16]
+
+    next_steps: list[str] = []
+    if ready_ids:
+        next_steps.append(
+            f"Ready potential(s) on disk: {', '.join(ready_ids)}. Cite the DOI before production science."
+        )
+    else:
+        dl = next((s for s in suggestions if s["action"] == "download" and not s["installed"]), None)
+        if dl:
+            next_steps.append(
+                f"Preferred: Download «{dl['title']}» (library id {dl['library_id']}) and attach to the matching catalog slot."
+            )
+        br = next((s for s in suggestions if s["action"] == "browse"), None)
+        if br:
+            next_steps.append(
+                f"If no auto-download fits: Open «{br['title']}», pick a published file, then Import URL or Upload."
+            )
+        next_steps.append(
+            "Aegis never invents pair coefficients. Placeholders remain dry-run only until a published file is attached."
+        )
+        if not any(want_set <= set(s.get("elements") or []) and s.get("downloadable") for s in suggestions):
+            next_steps.append(
+                "No downloadable library row fully covers this composition — use NIST browse, OpenKIM, or upload a cited file. "
+                "Literature packager (Phase B) can package published parameters with a DOI."
+            )
+        if dl and (
+            "16el" in str(dl.get("library_id") or "") or len(dl.get("elements") or []) >= 8
+        ):
+            next_steps.append(
+                "Preferred download uses a multi-element universal-mixing potential — cross terms are not thoroughly "
+                "validated; read the row warnings before production cascade work."
+            )
+
+    return {
+        "material_id": material_id,
+        "elements": want,
+        "has_ready_potential": bool(ready_ids),
+        "ready_potential_ids": ready_ids,
+        "compatible_potential_ids": [p.id for p in compatible],
+        "suggestions": suggestions,
+        "next_steps": next_steps,
+    }
+
+
 def is_allowed_download_url(url: str) -> bool:
     try:
         parsed = urlparse(url)

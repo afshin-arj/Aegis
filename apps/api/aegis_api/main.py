@@ -34,6 +34,7 @@ from aegis_schema import (  # noqa: E402
     Material,
     MaterialUpdate,
     Potential,
+    PotentialAcquireResponse,
     PotentialDownloadRequest,
     PotentialFormalism,
     PotentialImportEntryRequest,
@@ -49,6 +50,7 @@ from aegis_api.analysis import analyze_job_dir  # noqa: E402
 from aegis_api.campaigns import CampaignManager, write_campaign_submit_helper, write_hpc_pack  # noqa: E402
 from aegis_api.jobs import JobManager  # noqa: E402
 from aegis_api.nist_potentials import (  # noqa: E402
+    build_acquire_plan,
     download_bytes,
     filter_library,
     guess_formalism,
@@ -413,6 +415,37 @@ def list_potential_library(
     return out
 
 
+@app.get("/api/potentials/acquire", response_model=PotentialAcquireResponse)
+def acquire_potential_plan(material_id: str) -> PotentialAcquireResponse:
+    """Ranked acquire plan for a material — find/import/attach only (never invent coeffs)."""
+    m = store.get_material(material_id)
+    if not m:
+        raise HTTPException(404, "material not found")
+    if bool(getattr(m, "metadata_only", False)):
+        return PotentialAcquireResponse(
+            material_id=material_id,
+            elements=[e.symbol for e in m.composition if e.atomic_percent > 0],
+            has_ready_potential=False,
+            ready_potential_ids=[],
+            compatible_potential_ids=[],
+            suggestions=[],
+            next_steps=[
+                "This material is metadata_only — Aegis will not imply a runnable potential exists.",
+                "Use a composition with published potentials, or upload a cited multi-element file under Upload.",
+            ],
+        )
+    elements = [e.symbol for e in m.composition if e.atomic_percent > 0]
+    raw = load_library_index(DATA_ROOT / "potentials" / "library_index.json")
+    plan = build_acquire_plan(
+        material_id=material_id,
+        elements=elements,
+        library_entries=raw,
+        potentials=store.list_potentials(),
+        installed_library_ids=store.installed_library_ids(),
+    )
+    return PotentialAcquireResponse(**plan)
+
+
 @app.post("/api/potentials/library/download", response_model=Potential)
 def download_library_potential(body: PotentialDownloadRequest) -> Potential:
     """Download a published file from NIST IPR (allowlisted) or register from URL."""
@@ -496,14 +529,26 @@ def download_library_potential(body: PotentialDownloadRequest) -> Potential:
         enriched["source_url"] = source_url or enriched.get("source_url") or url
         enriched["library_id"] = library_id
         enriched["lammps_pair_style"] = style
+        try:
+            enriched["formalism"] = PotentialFormalism(style if style != "eam" else "eam").value
+        except ValueError:
+            pass
+        if elements:
+            enriched["elements"] = elements
         if pair_coeff:
             enriched["pair_coeff_template"] = pair_coeff.replace(
                 "{elements}", " ".join(elements)
             )
         warnings = list(enriched.get("warnings") or [])
+        for w in list(lib_entry.get("warnings") or []) if lib_entry else []:
+            if w not in warnings:
+                warnings.append(w)
         for w in ["Downloaded from NIST IPR — verify citation before publication."]:
             if w not in warnings:
                 warnings.append(w)
+        # Strip leftover placeholder messaging after a real attach
+        drop_needles = ("placeholder", "dry-run only", "not bundled", "upload required", "demo placeholder")
+        warnings = [w for w in warnings if not any(n in w.lower() for n in drop_needles)]
         enriched["warnings"] = warnings
         enriched["source"] = "nist"
         return store.add_user_potential(Potential(**enriched))

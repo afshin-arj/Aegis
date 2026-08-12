@@ -63,6 +63,32 @@ type PotentialLibraryEntry = {
   downloadable: boolean;
   installed: boolean;
 };
+type PotentialAcquireSuggestion = {
+  rank: number;
+  score: number;
+  action: string;
+  library_id?: string | null;
+  catalog_id?: string | null;
+  title: string;
+  reason: string;
+  elements: string[];
+  downloadable: boolean;
+  installed: boolean;
+  entry_url: string;
+  warnings: string[];
+  citation: string;
+  doi: string;
+  pair_style?: string;
+};
+type PotentialAcquirePlan = {
+  material_id: string;
+  elements: string[];
+  has_ready_potential: boolean;
+  ready_potential_ids: string[];
+  compatible_potential_ids: string[];
+  suggestions: PotentialAcquireSuggestion[];
+  next_steps: string[];
+};
 type Scenario = {
   id: string;
   fuel: string;
@@ -686,6 +712,7 @@ export default function App() {
   const [importUrl, setImportUrl] = useState("");
   const [entryUrl, setEntryUrl] = useState("");
   const [entryFiles, setEntryFiles] = useState<Array<{ filename: string; download_url: string }>>([]);
+  const [acquirePlan, setAcquirePlan] = useState<PotentialAcquirePlan | null>(null);
   const [busy, setBusy] = useState(false);
   const [compUnit, setCompUnit] = useState<"at%" | "wt%">("at%");
   const [projectFilter, setProjectFilter] = useState<string>("");
@@ -693,6 +720,7 @@ export default function App() {
   const potReq = useRef(0);
   const campReq = useRef(0);
   const libReq = useRef(0);
+  const acquireReq = useRef(0);
   const watchedJobId = useRef<string | null>(null);
   const modeDirty = useRef(false);
   const [logEpoch, setLogEpoch] = useState(0);
@@ -983,7 +1011,35 @@ export default function App() {
       .catch(() => {
         if (reqId === potReq.current && libId === libReq.current) setLibrary([]);
       });
+    const acqId = ++acquireReq.current;
+    setAcquirePlan(null);
+    api<PotentialAcquirePlan>(`/api/potentials/acquire?material_id=${encodeURIComponent(materialId)}`)
+      .then((plan) => {
+        if (reqId === potReq.current && acqId === acquireReq.current) setAcquirePlan(plan);
+      })
+      .catch(() => {
+        if (reqId === potReq.current && acqId === acquireReq.current) {
+          setAcquirePlan({
+            material_id: materialId,
+            elements: [],
+            has_ready_potential: false,
+            ready_potential_ids: [],
+            compatible_potential_ids: [],
+            suggestions: [],
+            next_steps: ["Could not load acquire plan — check API / network, then reopen the Potential tab."],
+          });
+        }
+      });
   }, [materialId]);
+
+  useEffect(() => {
+    if (!material) return;
+    const elems = material.composition
+      .filter((c) => c.atomic_percent > 0)
+      .map((c) => c.symbol)
+      .join(" ");
+    if (elems) setUploadElements(elems);
+  }, [materialId, material]);
 
   useEffect(() => {
     if (tab !== "potential" || !materialId) return;
@@ -1236,6 +1292,7 @@ export default function App() {
       });
       setComposition(updated.composition);
       setMaterials((ms) => ms.map((m) => (m.id === updated.id ? updated : m)));
+      await refreshPotentials();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -1260,6 +1317,11 @@ export default function App() {
     const libId = ++libReq.current;
     const lib = await api<PotentialLibraryEntry[]>(`/api/potentials/library?${qs}`).catch(() => []);
     if (reqId === potReq.current && libId === libReq.current) setLibrary(lib);
+    const acqId = ++acquireReq.current;
+    const plan = await api<PotentialAcquirePlan>(
+      `/api/potentials/acquire?material_id=${encodeURIComponent(mat)}`,
+    ).catch(() => null);
+    if (reqId === potReq.current && acqId === acquireReq.current) setAcquirePlan(plan);
   }
 
   async function uploadPotential() {
@@ -1307,12 +1369,17 @@ export default function App() {
     setBusy(true);
     setError("");
     try {
+      // Only auto-attach when the library row declares a catalog target — never
+      // silently attach multi-element files onto an unrelated selected placeholder.
+      const attach = entry.maps_to_catalog_id || undefined;
       const pot = await api<Potential>("/api/potentials/library/download", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           library_id: entry.id,
-          attach_to_id: entry.maps_to_catalog_id || undefined,
+          attach_to_id: attach,
+          elements: entry.elements.length ? entry.elements : uploadElements.split(/[\s,]+/).filter(Boolean),
+          lammps_pair_style: entry.pair_style || undefined,
         }),
       });
       await refreshPotentials(pot.id);
@@ -1321,6 +1388,26 @@ export default function App() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function downloadAcquireSuggestion(s: PotentialAcquireSuggestion) {
+    if (!s.library_id || !s.downloadable) return;
+    await downloadLibraryEntry({
+      id: s.library_id,
+      name: s.title,
+      elements: s.elements,
+      pair_style: s.pair_style || "eam/alloy",
+      formalism: s.pair_style || "eam/alloy",
+      source: "nist",
+      entry_url: s.entry_url,
+      citation: s.citation,
+      doi: s.doi,
+      recommended_for: [],
+      warnings: s.warnings,
+      maps_to_catalog_id: s.catalog_id,
+      downloadable: true,
+      installed: s.installed,
+    });
   }
 
   async function importDownloadUrl() {
@@ -2354,8 +2441,15 @@ export default function App() {
                 Select a potential with a file on disk (●). Curated slots without files (○) and placeholders (◇)
                 need a NIST download or upload — missing coefficients are never synthesized.
               </p>
+              {potentials.length === 0 && (
+                <div className="alert alert-warn">
+                  No compatible catalog potentials for this composition. Use the Acquire workbench below (NIST browse /
+                  upload a cited file). Coefficients are never invented.
+                </div>
+              )}
               <Field label="Compatible potentials" htmlFor="pot-select">
                 <select id="pot-select" value={potentialId} onChange={(e) => setPotentialId(e.target.value)}>
+                  {potentials.length === 0 && <option value="">— none —</option>}
                   {potentials.map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.available ? "●" : p.is_placeholder ? "◇" : "○"} {p.name} [{p.source}]
@@ -2432,6 +2526,78 @@ export default function App() {
                   )}
                 </div>
               )}
+            </section>
+
+            <section className="panel stack">
+              <div className="panel-head">
+                <h2>Acquire / find potential</h2>
+                <span className="chip">
+                  <span className="chip-k">ready</span>
+                  <span className={`chip-v ${acquirePlan?.has_ready_potential ? "tone-ok" : "tone-warn"}`}>
+                    {acquirePlan?.has_ready_potential ? "yes" : "no"}
+                  </span>
+                </span>
+              </div>
+              <p className="hint">
+                Ranked NIST / OpenKIM actions for <code>{materialId || "—"}</code> (
+                {(acquirePlan?.elements || []).join("-") || "—"}). Find → download/import → attach → cite. Never invents
+                coefficients.
+              </p>
+              {acquirePlan?.next_steps?.map((step) => (
+                <div key={step} className="alert alert-warn">
+                  {step}
+                </div>
+              ))}
+              {!acquirePlan && <p className="hint">Loading acquire plan…</p>}
+              {acquirePlan && acquirePlan.suggestions.length === 0 && (
+                <p className="hint">
+                  {acquirePlan.next_steps[0] ||
+                    "No library suggestions — upload a published file or search NIST Colab."}
+                </p>
+              )}
+              <div className="stack lib-list">
+                {(acquirePlan?.suggestions || []).slice(0, 10).map((s) => (
+                  <div key={`${s.rank}-${s.library_id || s.title}`} className="lib-row">
+                    <div>
+                      <strong>
+                        #{s.rank} {s.title}
+                      </strong>
+                      <p className="hint">
+                        {s.action}
+                        {s.elements.length ? ` · ${s.elements.join("-")}` : ""}
+                        {s.pair_style ? ` · ${s.pair_style}` : ""}
+                        {s.installed ? " · installed" : ""}
+                        {s.catalog_id ? ` · → ${s.catalog_id}` : ""}
+                      </p>
+                      <p className="hint">{s.reason}</p>
+                      {s.warnings?.slice(0, 2).map((w) => (
+                        <div key={w} className="alert alert-warn">
+                          {w}
+                        </div>
+                      ))}
+                    </div>
+                    <div className="row">
+                      {s.entry_url ? (
+                        <a className="linkish" href={s.entry_url} target="_blank" rel="noreferrer">
+                          Open
+                        </a>
+                      ) : null}
+                      {s.downloadable ? (
+                        <button
+                          type="button"
+                          className="secondary"
+                          disabled={busy}
+                          onClick={() => void downloadAcquireSuggestion(s)}
+                        >
+                          {s.installed ? "Re-download" : "Download"}
+                        </button>
+                      ) : (
+                        <span className="hint">browse</span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </section>
 
             <div className="grid-2">

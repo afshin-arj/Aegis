@@ -174,6 +174,34 @@ class PotentialImportEntryRequest(BaseModel):
     entry_url: str
 
 
+class PotentialAcquireSuggestion(BaseModel):
+    rank: int
+    score: float
+    action: str  # download | browse | upload | literature
+    library_id: str | None = None
+    catalog_id: str | None = None
+    title: str
+    reason: str
+    elements: list[str] = Field(default_factory=list)
+    downloadable: bool = False
+    installed: bool = False
+    entry_url: str = ""
+    warnings: list[str] = Field(default_factory=list)
+    citation: str = ""
+    doi: str = ""
+    pair_style: str = ""
+
+
+class PotentialAcquireResponse(BaseModel):
+    material_id: str
+    elements: list[str]
+    has_ready_potential: bool = False
+    ready_potential_ids: list[str] = Field(default_factory=list)
+    compatible_potential_ids: list[str] = Field(default_factory=list)
+    suggestions: list[PotentialAcquireSuggestion] = Field(default_factory=list)
+    next_steps: list[str] = Field(default_factory=list)
+
+
 class Scenario(BaseModel):
     id: str
     fuel: FuelScenario

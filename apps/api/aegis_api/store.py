@@ -123,9 +123,23 @@ class DataStore:
         if shadow.get("source") == "curated":
             shadow["source"] = "curated"
         warnings = list(shadow.get("warnings") or [])
+        # Drop dry-run / missing-file placeholder copy once a real file is attached
+        drop_needles = (
+            "placeholder",
+            "dry-run only",
+            "not bundled",
+            "upload required",
+            "upload a published",
+            "not valid eam",
+            "demo placeholder",
+        )
+        warnings = [
+            w
+            for w in warnings
+            if not any(n in w.lower() for n in drop_needles)
+        ]
         note = "Local file attached — cite the original publication/DOI."
         if note not in warnings:
-            warnings = [w for w in warnings if "not bundled" not in w.lower() and "upload required" not in w.lower()]
             warnings.append(note)
         shadow["warnings"] = warnings
         # Keep curated catalog pristine; attachment map provides the file.
