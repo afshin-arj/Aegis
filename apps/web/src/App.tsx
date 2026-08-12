@@ -233,8 +233,6 @@ const PAIR_STYLE_WHITELIST = [
   "meam",
   "snap",
   "table",
-  "hybrid",
-  "hybrid/overlay",
   "zbl",
   "tersoff",
 ];
@@ -728,6 +726,8 @@ export default function App() {
   const [zblZ1, setZblZ1] = useState(74);
   const [zblZ2, setZblZ2] = useState(74);
   const [zblCut, setZblCut] = useState(1.0);
+  const [zblTypeI, setZblTypeI] = useState(1);
+  const [zblTypeJ, setZblTypeJ] = useState(1);
   const [zblDoi, setZblDoi] = useState("");
   const [zblCite, setZblCite] = useState("");
   const [zblAttest, setZblAttest] = useState(false);
@@ -809,6 +809,11 @@ export default function App() {
     }
     if (selectedPot && !selectedPot.available && !selectedPot.is_placeholder) {
       list.push("Potential file missing — upload or place under data/potentials/curated/");
+    }
+    if (selectedPot && (selectedPot.suitability || "").toLowerCase() === "ballistic_only") {
+      list.push(
+        "Potential is ballistic_only (e.g. ZBL-only) — not allowed for residual-damage MD; use a many-body host or Hybrid/ZBL stitch",
+      );
     }
     if (compositionTotal <= 0) list.push("Composition requires a positive atomic fraction");
     if (!(params.nx >= 2 && params.ny >= 2 && params.nz >= 2)) {
@@ -1339,7 +1344,21 @@ export default function App() {
     const plan = await api<PotentialAcquirePlan>(
       `/api/potentials/acquire?material_id=${encodeURIComponent(mat)}`,
     ).catch(() => null);
-    if (reqId === potReq.current && acqId === acquireReq.current) setAcquirePlan(plan);
+    if (reqId === potReq.current && acqId === acquireReq.current) {
+      setAcquirePlan(
+        plan ?? {
+          material_id: mat,
+          elements: [],
+          has_ready_potential: false,
+          ready_potential_ids: [],
+          compatible_potential_ids: [],
+          suggestions: [],
+          next_steps: [
+            "Could not load acquire plan — check API / network, then reopen the Potential tab.",
+          ],
+        },
+      );
+    }
   }
 
   async function stitchHybridZbl() {
@@ -1355,8 +1374,8 @@ export default function App() {
           elements: selectedPot.elements,
           zbl_pairs: [
             {
-              type_i: 1,
-              type_j: 1,
+              type_i: zblTypeI,
+              type_j: zblTypeJ,
               z_i: zblZ1,
               z_j: zblZ2,
               cutoff_A: zblCut,
@@ -1511,13 +1530,18 @@ export default function App() {
     setBusy(true);
     setError("");
     try {
+      // Free-form URL import never auto-attaches unless the user opted in via
+      // "Attach to selected placeholder" — avoids wiring a W file onto a Cr slot.
+      const attach =
+        uploadAttachTo && selectedPot && (!selectedPot.available || selectedPot.is_placeholder)
+          ? selectedPot.id
+          : undefined;
       const pot = await api<Potential>("/api/potentials/library/download", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           url: importUrl.trim(),
-          attach_to_id:
-            selectedPot && (!selectedPot.available || selectedPot.is_placeholder) ? selectedPot.id : undefined,
+          attach_to_id: attach,
           elements: uploadElements.split(/[\s,]+/).filter(Boolean),
           lammps_pair_style: uploadPairStyle,
           name: uploadName || undefined,
@@ -2635,8 +2659,11 @@ export default function App() {
                   ))}
                   {selectedPot.is_placeholder && (
                     <div className="alert alert-warn" role="status">
-                      Catalog placeholder — runs use synthetic dumps until a published potential is attached (NIST
-                      Zhou04 W below, or upload).
+                      Catalog placeholder — runs use synthetic dumps until a published potential is attached
+                      {selectedPot.id.toLowerCase().includes("zhou") ||
+                      (selectedPot.elements.length === 1 && selectedPot.elements[0] === "W")
+                        ? " (NIST Zhou04 W via Acquire / library below, or upload)."
+                        : " (Acquire / NIST library below, or upload a cited file)."}
                     </div>
                   )}
                   {!selectedPot.available && !selectedPot.is_placeholder && (
@@ -2663,12 +2690,55 @@ export default function App() {
                 {(acquirePlan?.elements || []).join("-") || "—"}). Find → download/import → attach → cite. Never invents
                 coefficients.
               </p>
-              {acquirePlan?.next_steps?.map((step) => (
-                <div key={step} className="alert alert-warn">
+              {material &&
+                (() => {
+                  const saved = material.composition
+                    .filter((c) => c.atomic_percent > 0)
+                    .map((c) => normalizeSymbol(c.symbol).toLowerCase())
+                    .sort()
+                    .join(",");
+                  const live = composition
+                    .filter((c) => c.atomic_percent > 0)
+                    .map((c) => normalizeSymbol(c.symbol).toLowerCase())
+                    .sort()
+                    .join(",");
+                  return saved && live && saved !== live ? (
+                    <div className="alert alert-warn" role="status">
+                      Composition hosts differ from the saved material — Save composition (Material tab) so Acquire /
+                      library ranking match what you will run.
+                    </div>
+                  ) : null;
+                })()}
+              {material &&
+                JSON.stringify(
+                  material.composition
+                    .filter((c) => c.atomic_percent > 0)
+                    .map((c) => [normalizeSymbol(c.symbol), Number(c.atomic_percent)]),
+                ) !==
+                  JSON.stringify(
+                    composition
+                      .filter((c) => c.atomic_percent > 0)
+                      .map((c) => [normalizeSymbol(c.symbol), Number(c.atomic_percent)]),
+                  ) && (
+                  <div className="alert alert-warn" role="status">
+                    Composition editor differs from the saved material — Acquire ranks the saved recipe. Save
+                    composition first if you changed hosts.
+                  </div>
+                )}
+              {acquirePlan?.next_steps?.map((step, i) => (
+                <div
+                  key={step}
+                  className={`alert ${acquirePlan.has_ready_potential && i === 0 ? "alert-ok" : "alert-warn"}`}
+                >
                   {step}
                 </div>
               ))}
               {!acquirePlan && <p className="hint">Loading acquire plan…</p>}
+              {acquirePlan &&
+                acquirePlan.next_steps?.[0]?.startsWith("Could not load") &&
+                acquirePlan.suggestions.length === 0 && (
+                  <p className="hint">Acquire plan unavailable — library browse and upload still work below.</p>
+                )}
               {acquirePlan && acquirePlan.suggestions.length === 0 && (
                 <p className="hint">
                   {acquirePlan.next_steps[0] ||
@@ -2769,10 +2839,10 @@ export default function App() {
                           <button
                             type="button"
                             className="secondary"
-                            disabled={busy || entry.installed}
+                            disabled={busy}
                             onClick={() => void downloadLibraryEntry(entry)}
                           >
-                            {entry.installed ? "Installed" : "Download"}
+                            {entry.installed ? "Re-download" : "Download"}
                           </button>
                         ) : (
                           <span className="hint">browse only</span>
@@ -2782,6 +2852,10 @@ export default function App() {
                   ))}
                 </div>
                 <h3>Import NIST Download URL</h3>
+                <p className="hint">
+                  Creates a new user potential unless “Attach to selected placeholder” is checked in Upload / attach
+                  below.
+                </p>
                 <Field label="Direct file URL" unit="ctcms.nist.gov/potentials/Download/…" htmlFor="imp-url">
                   <input
                     id="imp-url"
@@ -2826,7 +2900,9 @@ export default function App() {
                                 body: JSON.stringify({
                                   url: f.download_url,
                                   attach_to_id:
-                                    selectedPot && (!selectedPot.available || selectedPot.is_placeholder)
+                                    uploadAttachTo &&
+                                    selectedPot &&
+                                    (!selectedPot.available || selectedPot.is_placeholder)
                                       ? selectedPot.id
                                       : undefined,
                                   elements: uploadElements.split(/[\s,]+/).filter(Boolean),
@@ -2958,7 +3034,13 @@ export default function App() {
               </label>
               <button
                 type="button"
-                disabled={busy || !litContent.trim() || !litAttest}
+                disabled={
+                  busy ||
+                  !litContent.trim() ||
+                  !litAttest ||
+                  (!litDoi.trim() && !litUnpublished) ||
+                  !litCitation.trim()
+                }
                 onClick={() => void packageLiterature()}
               >
                 {uploadAttachTo && selectedPot && (!selectedPot.available || selectedPot.is_placeholder)
@@ -2991,6 +3073,32 @@ export default function App() {
                   />
                 </Field>
               </div>
+              <div className="row">
+                <Field label="LAMMPS typeᵢ" htmlFor="zbl-ti">
+                  <input
+                    id="zbl-ti"
+                    type="number"
+                    min={1}
+                    value={zblTypeI}
+                    onChange={(e) => setZblTypeI(Math.max(1, Number(e.target.value) || 1))}
+                  />
+                </Field>
+                <Field label="LAMMPS typeⱼ" htmlFor="zbl-tj">
+                  <input
+                    id="zbl-tj"
+                    type="number"
+                    min={1}
+                    value={zblTypeJ}
+                    onChange={(e) => setZblTypeJ(Math.max(1, Number(e.target.value) || 1))}
+                  />
+                </Field>
+              </div>
+              <p className="hint">
+                Types are 1-based LAMMPS atom types matching host element order
+                {selectedPot?.elements?.length
+                  ? ` (${selectedPot.elements.map((e, i) => `${i + 1}=${e}`).join(", ")})`
+                  : ""}.
+              </p>
               <Field label="Stitch DOI" htmlFor="zbl-doi">
                 <input id="zbl-doi" value={zblDoi} onChange={(e) => setZblDoi(e.target.value)} />
               </Field>
@@ -4795,6 +4903,24 @@ export default function App() {
               {selectedPot?.name || "Not selected"}
             </dd>
           </div>
+          {selectedPot?.suitability ? (
+            <div>
+              <dt>Suitability</dt>
+              <dd
+                className={
+                  selectedPot.suitability === "ballistic_only"
+                    ? "tone-fail"
+                    : selectedPot.suitability === "unvalidated"
+                      ? "tone-warn"
+                      : selectedPot.suitability === "cascade_literature"
+                        ? "tone-ok"
+                        : ""
+                }
+              >
+                {selectedPot.suitability}
+              </dd>
+            </div>
+          ) : null}
           <div>
             <dt>Scenario</dt>
             <dd>{scenario?.fuel || "Custom"} · {params.mode}</dd>

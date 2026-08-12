@@ -21,8 +21,6 @@ ALLOWED_STYLES = {
     "meam",
     "snap",
     "table",
-    "hybrid",
-    "hybrid/overlay",
     "zbl",
     "tersoff",
 }

@@ -503,15 +503,19 @@ def download_library_potential(body: PotentialDownloadRequest) -> Potential:
         "meam",
         "snap",
         "table",
-        "hybrid",
-        "hybrid/overlay",
+        "zbl",
+        "tersoff",
     }
     if style not in allowed_styles:
         # Still store file but mark pair style cautiously
         if style in {"", "other"}:
             style = guess_formalism("", filename)
         if style not in allowed_styles:
-            raise HTTPException(400, f"pair_style '{style}' not supported for auto-download")
+            raise HTTPException(
+                400,
+                f"pair_style '{style}' not supported for auto-download — "
+                "use Hybrid / ZBL stitch for hybrid/overlay assemblies",
+            )
 
     pot_id = attach_to or f"nist-{uuid.uuid4().hex[:10]}"
     dest_dir = DATA_ROOT / "potentials" / "user" / pot_id
@@ -610,8 +614,6 @@ async def upload_potential(
         "meam",
         "snap",
         "table",
-        "hybrid",
-        "hybrid/overlay",
         "zbl",
         "tersoff",
     }
@@ -619,7 +621,8 @@ async def upload_potential(
     if style not in allowed_styles:
         raise HTTPException(
             400,
-            f"pair_style '{meta_obj.lammps_pair_style}' not in whitelist: {sorted(allowed_styles)}",
+            f"pair_style '{meta_obj.lammps_pair_style}' not in whitelist: {sorted(allowed_styles)}. "
+            "Use Hybrid / ZBL stitch for hybrid/overlay assemblies.",
         )
     if not meta_obj.elements:
         raise HTTPException(400, "upload must declare at least one element")

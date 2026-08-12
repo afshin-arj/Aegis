@@ -49,11 +49,20 @@ def render_pair_coeff(template: str, file_path: str, elements: list[str]) -> str
 
     file_norm = file_path.replace("\\", "/")
     elems_str = " ".join(elements)
-    if "{elements}" in template:
-        return template.format(file=file_norm, elements=elems_str)
+    try:
+        if "{elements}" in template:
+            return template.format(file=file_norm, elements=elems_str)
+        formatted = template.format(file=file_norm)
+    except (KeyError, ValueError):
+        # Templates with unexpected braces or missing placeholders — append safely.
+        formatted = template.replace("{file}", file_norm).replace("{elements}", elems_str)
+        if "{elements}" not in template and elems_str and "pair_coeff" in formatted:
+            m = re.match(r"^(pair_coeff\s+\S+\s+\S+\s+\S+)\s*(.*)$", formatted.strip())
+            if m:
+                return f"{m.group(1)} {elems_str}".rstrip()
+        return formatted
     # Catalog entries often bake tokens like ``... {file} W He`` — replace trailing
     # element names with the live type order so implant/surface ions stay consistent.
-    formatted = template.format(file=file_norm)
     m = re.match(r"^(pair_coeff\s+\S+\s+\S+\s+\S+)\s*(.*)$", formatted.strip())
     if m:
         return f"{m.group(1)} {elems_str}".rstrip() if elems_str else m.group(1)

@@ -110,13 +110,13 @@ def build_hybrid_overlay_potential(
         "Hybrid/overlay ZBL stitch — verify inner cutoff vs PKA energy before cascade production.",
         provenance["honesty"],
         f"Host potential: {host_pot.get('id')} ({host_style}).",
+        "Suitability starts unvalidated — expert-review the stitch before HPC / production cascades.",
     ]
+    # Never inherit cascade_literature from the host — the overlay itself is unreviewed.
     host_suit = str(host_pot.get("suitability") or "")
-    suitability = (
-        "cascade_literature"
-        if host_suit in {"cascade_literature"} or host_pot.get("source") in {"nist", "literature"}
-        else "unvalidated"
-    )
+    if host_suit:
+        provenance["host_suitability"] = host_suit
+    suitability = "unvalidated"
 
     return {
         "id": pid,
