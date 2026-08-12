@@ -725,6 +725,12 @@ export default function App() {
   const [litContent, setLitContent] = useState("");
   const [litAttest, setLitAttest] = useState(false);
   const [litUnpublished, setLitUnpublished] = useState(false);
+  const [zblZ1, setZblZ1] = useState(74);
+  const [zblZ2, setZblZ2] = useState(74);
+  const [zblCut, setZblCut] = useState(1.0);
+  const [zblDoi, setZblDoi] = useState("");
+  const [zblCite, setZblCite] = useState("");
+  const [zblAttest, setZblAttest] = useState(false);
   const [busy, setBusy] = useState(false);
   const [compUnit, setCompUnit] = useState<"at%" | "wt%">("at%");
   const [projectFilter, setProjectFilter] = useState<string>("");
@@ -1334,6 +1340,40 @@ export default function App() {
       `/api/potentials/acquire?material_id=${encodeURIComponent(mat)}`,
     ).catch(() => null);
     if (reqId === potReq.current && acqId === acquireReq.current) setAcquirePlan(plan);
+  }
+
+  async function stitchHybridZbl() {
+    if (!selectedPot?.available || selectedPot.is_placeholder) return;
+    setBusy(true);
+    setError("");
+    try {
+      const pot = await api<Potential>("/api/potentials/hybrid-stitch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          host_potential_id: selectedPot.id,
+          elements: selectedPot.elements,
+          zbl_pairs: [
+            {
+              type_i: 1,
+              type_j: 1,
+              z_i: zblZ1,
+              z_j: zblZ2,
+              cutoff_A: zblCut,
+            },
+          ],
+          doi: zblDoi,
+          citation: zblCite,
+          attestation: zblAttest,
+          name: `ZBL overlay on ${selectedPot.id}`,
+        }),
+      });
+      await refreshPotentials(pot.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function packageLiterature() {
@@ -2924,6 +2964,56 @@ export default function App() {
                 {uploadAttachTo && selectedPot && (!selectedPot.available || selectedPot.is_placeholder)
                   ? `Package & attach to ${selectedPot.id}`
                   : "Package literature potential"}
+              </button>
+            </section>
+
+            <section className="panel stack">
+              <h2>Hybrid / ZBL stitch</h2>
+              <p className="hint">
+                Overlay a published ZBL short-range repulsion on an existing on-disk host potential (
+                <code>pair_style hybrid/overlay … zbl</code>). Enter attested cutoffs from a paper — Aegis does not invent
+                Z or cutoffs.
+              </p>
+              <div className="row">
+                <Field label="Z₁" htmlFor="zbl-z1">
+                  <input id="zbl-z1" type="number" value={zblZ1} onChange={(e) => setZblZ1(Number(e.target.value))} />
+                </Field>
+                <Field label="Z₂" htmlFor="zbl-z2">
+                  <input id="zbl-z2" type="number" value={zblZ2} onChange={(e) => setZblZ2(Number(e.target.value))} />
+                </Field>
+                <Field label="cutoff (Å)" htmlFor="zbl-cut">
+                  <input
+                    id="zbl-cut"
+                    type="number"
+                    step="0.1"
+                    value={zblCut}
+                    onChange={(e) => setZblCut(Number(e.target.value))}
+                  />
+                </Field>
+              </div>
+              <Field label="Stitch DOI" htmlFor="zbl-doi">
+                <input id="zbl-doi" value={zblDoi} onChange={(e) => setZblDoi(e.target.value)} />
+              </Field>
+              <Field label="Stitch citation" htmlFor="zbl-cite">
+                <input id="zbl-cite" value={zblCite} onChange={(e) => setZblCite(e.target.value)} />
+              </Field>
+              <label className="check-row">
+                <input type="checkbox" checked={zblAttest} onChange={(e) => setZblAttest(e.target.checked)} />
+                I attest Z/cutoff come from the cited published stitch recipe (not invented here).
+              </label>
+              <button
+                type="button"
+                disabled={
+                  busy ||
+                  !selectedPot?.available ||
+                  Boolean(selectedPot?.is_placeholder) ||
+                  !zblAttest ||
+                  !zblDoi.trim() ||
+                  !zblCite.trim()
+                }
+                onClick={() => void stitchHybridZbl()}
+              >
+                Build hybrid/overlay on {selectedPot?.id || "…"}
               </button>
             </section>
           </div>

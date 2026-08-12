@@ -131,6 +131,7 @@ class Potential(BaseModel):
     suitability: str | None = None  # unvalidated | cascade_literature | near_equilibrium | ballistic_only
     provenance: dict[str, Any] | None = None
     provenance_path: str | None = None
+    pair_coeff_lines: list[str] | None = None  # multi-line hybrid/overlay coeffs
 
 
 class PotentialUploadMeta(BaseModel):
@@ -165,6 +166,28 @@ class PotentialLiteratureRequest(BaseModel):
     attestation: bool = False
     unpublished_research: bool = False
     attach_to_id: str | None = None
+
+
+class PotentialZblPair(BaseModel):
+    type_i: int = 1
+    type_j: int = 1
+    z_i: int
+    z_j: int
+    cutoff_A: float
+
+
+class PotentialHybridStitchRequest(BaseModel):
+    """Assemble hybrid/overlay host + ZBL from an existing pot + attested published cutoffs."""
+
+    host_potential_id: str
+    name: str = ""
+    elements: list[str] | None = None
+    zbl_pairs: list[PotentialZblPair]
+    doi: str = ""
+    citation: str = ""
+    source_url: str = ""
+    notes: str = ""
+    attestation: bool = False
 
 
 class PotentialLibraryEntry(BaseModel):

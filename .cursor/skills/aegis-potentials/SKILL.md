@@ -23,6 +23,7 @@ API:
 - `POST /api/potentials/library/download` (`library_id` or `url`)
 - `POST /api/potentials/library/import-entry` (scrape NIST entry page for files)
 - `POST /api/potentials/from-literature` — package published file text + DOI/provenance
+- `POST /api/potentials/hybrid-stitch` — hybrid/overlay host + attested ZBL pairs
 
 Attachments for curated slots live in gitignored `attachments.json` + `user/`.
 
@@ -33,12 +34,24 @@ Attachments for curated slots live in gitignored `attachments.json` + `user/`.
 - `suitability`: `unvalidated` by default; `zbl` → `ballistic_only`
 - **Never invents** coefficients — paste published SI/NIST file bodies only
 
+## Hybrid / ZBL stitch
+
+- Host pot must be on-disk non-placeholder
+- User supplies Z numbers + cutoff + DOI/citation + attestation
+- Emits `pair_style hybrid/overlay <host> zbl` and `pair_coeff_lines`
+- Templates use `render_pair_block` for multi-line coeffs
+
+## Suitability gates
+
+- Job submit: refuse `ballistic_only` (except placeholders → dry-run)
+- HPC export: refuse `unvalidated` for literature/hybrid/user sources
+
 ## Upload
 
 - Files land in `data/potentials/user/<id>/` (gitignored)
 - Indexed in `user_index.json`
 - Optional `attach_to_id` fills a missing/placeholder catalog entry
-- Tag `source: user|nist|literature`
+- Tag `source: user|nist|literature|hybrid_stitch`
 - Optional DOI/attestation on upload routes through the literature packager
 
 ## Rules
@@ -50,4 +63,4 @@ Attachments for curated slots live in gitignored `attachments.json` + `user/`.
 - Filter picker by material composition ⊆ potential elements.
 - Prefer citing DOI / NIST entry URL in the UI.
 - Acquire wizard ranks downloads over browse; multi-element universal-mixing files carry honesty warnings.
-- Literature packs start `unvalidated` — not cascade-ready until expert/smoke validation (Phase C).
+- Literature packs start `unvalidated` — not cascade-ready until expert review; hybrid stitch needs attested cutoffs.

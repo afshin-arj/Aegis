@@ -37,6 +37,7 @@ from aegis_schema import (  # noqa: E402
     PotentialAcquireResponse,
     PotentialDownloadRequest,
     PotentialFormalism,
+    PotentialHybridStitchRequest,
     PotentialImportEntryRequest,
     PotentialLibraryEntry,
     PotentialLiteratureRequest,
@@ -788,6 +789,62 @@ def package_literature_potential(body: PotentialLiteratureRequest) -> Potential:
     return store.add_user_potential(Potential(**{k: v for k, v in packed.items() if k in Potential.model_fields}))
 
 
+@app.post("/api/potentials/hybrid-stitch", response_model=Potential)
+def hybrid_zbl_stitch(body: PotentialHybridStitchRequest) -> Potential:
+    """Assemble hybrid/overlay host + ZBL from an existing pot + attested published cutoffs."""
+    from aegis_api.hybrid_stitch import build_hybrid_overlay_potential, validate_hybrid_stitch
+
+    host = store.get_potential(body.host_potential_id)
+    if not host:
+        raise HTTPException(404, "host_potential_id not found")
+    host_file = store.resolve_potential_file(host)
+    if not host_file or not host.available or host.is_placeholder:
+        raise HTTPException(400, "Host potential must be an on-disk non-placeholder file.")
+    els = body.elements or list(host.elements)
+    pairs = [p.model_dump() for p in body.zbl_pairs]
+    errs = validate_hybrid_stitch(
+        host_pair_style=host.lammps_pair_style,
+        elements=els,
+        zbl_pairs=pairs,
+        citation=body.citation,
+        doi=body.doi,
+        attestation=body.attestation,
+    )
+    if errs:
+        raise HTTPException(400, "; ".join(errs))
+    rel = str(host_file.relative_to(DATA_ROOT)).replace("\\", "/")
+    packed = build_hybrid_overlay_potential(
+        data_root=DATA_ROOT,
+        host_pot=host.model_dump(mode="json"),
+        host_file_rel=rel,
+        elements=els,
+        zbl_pairs=pairs,
+        citation=body.citation,
+        doi=body.doi,
+        source_url=body.source_url,
+        notes=body.notes,
+        name=body.name,
+    )
+    return store.add_user_potential(Potential(**{k: v for k, v in packed.items() if k in Potential.model_fields}))
+
+
+def _suitability_gate(potential: Potential, *, for_hpc: bool = False) -> None:
+    """Raise HTTPException when suitability forbids the requested action."""
+    suit = (potential.suitability or "").strip().lower()
+    if suit == "ballistic_only":
+        raise HTTPException(
+            400,
+            "Potential suitability is ballistic_only (e.g. ZBL-only) — not allowed for residual-damage MD / HPC export. "
+            "Use a many-body or hybrid/overlay stitch with a published host potential.",
+        )
+    if for_hpc and suit in {"", "unvalidated"} and potential.source in {"literature", "hybrid_stitch", "user"}:
+        raise HTTPException(
+            400,
+            "HPC export refuses unvalidated literature/hybrid/user potentials. "
+            "Mark suitability after expert review, or use a NIST-downloaded published file with citation.",
+        )
+
+
 @app.post("/api/jobs", response_model=JobInfo)
 def create_job(body: JobCreate) -> JobInfo:
     from aegis_api.coverage import validate_cascade_pka, validate_potential_coverage
@@ -812,6 +869,8 @@ def create_job(body: JobCreate) -> JobInfo:
             400,
             "Selected potential is not runnable. Upload a published potential file.",
         )
+    if not potential.is_placeholder:
+        _suitability_gate(potential, for_hpc=False)
     try:
         validate_potential_coverage(material, potential, body.run_params)
         validate_cascade_pka(material, body.run_params)
@@ -852,6 +911,8 @@ def create_campaign(body: DoeCampaignCreate) -> DoeCampaignInfo:
         raise HTTPException(400, "Selected potential has no file on disk.")
     if not potential.available and not potential.is_placeholder:
         raise HTTPException(400, "Selected potential is not runnable.")
+    if not potential.is_placeholder:
+        _suitability_gate(potential, for_hpc=False)
     try:
         validate_potential_coverage(material, potential, body.base.run_params)
         validate_cascade_pka(material, body.base.run_params)
@@ -889,6 +950,9 @@ def export_job_hpc(job_id: str, body: HpcExportRequest) -> FileResponse:
     info = jobs.get(job_id)
     if not info:
         raise HTTPException(404, "job not found")
+    pot = store.get_potential(info.potential_id)
+    if pot and not pot.is_placeholder:
+        _suitability_gate(pot, for_hpc=True)
     job_dir = RUNS_ROOT / job_id
     in_path = job_dir / "in.aegis"
     need_prepare = True
@@ -934,6 +998,17 @@ def export_campaign_hpc(campaign_id: str, body: HpcExportRequest) -> FileRespons
     info = campaigns.get(campaign_id)
     if not info:
         raise HTTPException(404, "campaign not found")
+    # Suitability gate from first case job's potential (campaigns share one base pot)
+    for case in info.cases:
+        if not case.job_id:
+            continue
+        job_info = jobs.get(case.job_id)
+        if not job_info:
+            continue
+        pot = store.get_potential(job_info.potential_id)
+        if pot and not pot.is_placeholder:
+            _suitability_gate(pot, for_hpc=True)
+        break
     root = RUNS_ROOT / "campaigns" / campaign_id / "hpc_bundle"
     if root.exists():
         shutil.rmtree(root)

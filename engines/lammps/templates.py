@@ -60,6 +60,28 @@ def render_pair_coeff(template: str, file_path: str, elements: list[str]) -> str
     return f"{formatted} {elems_str}".strip() if elems_str else formatted
 
 
+def render_pair_block(potential: dict[str, Any], potential_file: str, elements: list[str]) -> tuple[str, str]:
+    """Return (pair_style_line_body, pair_coeff_block) for LAMMPS input templates.
+
+    Supports multi-line ``pair_coeff_lines`` for hybrid/overlay stitches.
+    """
+    pair_style = str(potential.get("lammps_pair_style") or "eam/alloy").strip()
+    lines = potential.get("pair_coeff_lines")
+    if isinstance(lines, list) and lines:
+        rendered: list[str] = []
+        for raw in lines:
+            s = str(raw).strip()
+            if not s:
+                continue
+            if "{file}" in s or "{elements}" in s:
+                rendered.append(render_pair_coeff(s, potential_file, elements))
+            else:
+                rendered.append(s)
+        return pair_style, "\n".join(rendered)
+    tmpl = str(potential.get("pair_coeff_template") or "pair_coeff * * {file} {elements}")
+    return pair_style, render_pair_coeff(tmpl, potential_file, elements)
+
+
 def _direction_unit(direction: str, seed: int, crystal: str = "bcc") -> tuple[float, float, float]:
     return crystal_reg.direction_unit(crystal, direction, seed)
 
@@ -428,10 +450,7 @@ def write_cascade_input(
     dump_every = int(params.get("dump_every", 1000))
     use_box_units = bool(structure_file)
 
-    pair_style = potential["lammps_pair_style"]
-    pair_coeff = render_pair_coeff(
-        potential["pair_coeff_template"], potential_file, elems
-    )
+    pair_style, pair_coeff = render_pair_block(potential, potential_file, elems)
     mass_pka = _approx_mass(primary)
     speed = math.sqrt(2.0 * E / mass_pka) * 98.226947
 
@@ -694,12 +713,7 @@ def write_implant_input(
         elems = elems + [ion]
     a = float(material.get("lattice_constant_A", 3.165))
     nx, ny, nz = int(params["nx"]), int(params["ny"]), int(params["nz"])
-    pair_style = potential["lammps_pair_style"]
-    pair_coeff = render_pair_coeff(
-        potential.get("pair_coeff_template", "pair_coeff * * {file} {elements}"),
-        potential_file,
-        elems,
-    )
+    pair_style, pair_coeff = render_pair_block(potential, potential_file, elems)
     E = float(params.get("ion_energy_eV", 500))
     T = float(params["temperature_K"])
     seed = int(params["seed"])
@@ -862,12 +876,7 @@ def write_surface_input(
     nx, ny, nz = int(params["nx"]), int(params["ny"]), int(params["nz"])
     vacuum = max(1, int(params.get("vacuum_layers", 4)))
     nz_box = nz + vacuum
-    pair_style = potential["lammps_pair_style"]
-    pair_coeff = render_pair_coeff(
-        potential.get("pair_coeff_template", "pair_coeff * * {file} {elements}"),
-        potential_file,
-        elems,
-    )
+    pair_style, pair_coeff = render_pair_block(potential, potential_file, elems)
     E = float(params.get("ion_energy_eV", 50))
     T = float(params["temperature_K"])
     seed = int(params["seed"])
@@ -1092,12 +1101,7 @@ def write_interstitial_input(
     offset_A = float(offset) if offset not in (None, "") else 0.25 * a
     E_kick = float(params.get("interstitial_energy_eV", 0.0) or 0.0)
 
-    pair_style = potential["lammps_pair_style"]
-    pair_coeff = render_pair_coeff(
-        potential.get("pair_coeff_template", "pair_coeff * * {file} {elements}"),
-        potential_file,
-        elems,
-    )
+    pair_style, pair_coeff = render_pair_block(potential, potential_file, elems)
     masses = "\n".join(f"mass {i+1} {_approx_mass(sym)}" for i, sym in enumerate(elems))
     ensemble = _ensemble_fix(params)
     dump, dump_mod = _dump_command(params, "dump.interstitial.*.lammpstrj")
