@@ -124,10 +124,13 @@ class Potential(BaseModel):
     lammps_pair_style: str
     pair_coeff_template: str
     file_path: str | None = None
-    source: str = "curated"  # curated | user | nist
+    source: str = "curated"  # curated | user | nist | literature
     available: bool = False
     is_placeholder: bool = False
     library_id: str | None = None
+    suitability: str | None = None  # unvalidated | cascade_literature | near_equilibrium | ballistic_only
+    provenance: dict[str, Any] | None = None
+    provenance_path: str | None = None
 
 
 class PotentialUploadMeta(BaseModel):
@@ -138,6 +141,29 @@ class PotentialUploadMeta(BaseModel):
     pair_coeff_template: str = "pair_coeff * * {file} {elements}"
     notes: str = ""
     recommended_for: list[str] = Field(default_factory=lambda: ["cascade"])
+    attach_to_id: str | None = None
+    doi: str = ""
+    citation: str = ""
+    source_url: str = ""
+    attestation: bool = False
+    unpublished_research: bool = False
+
+
+class PotentialLiteratureRequest(BaseModel):
+    """Package published potential file text with DOI/provenance (never invent coeffs)."""
+
+    name: str = ""
+    elements: list[str]
+    lammps_pair_style: str = "eam/alloy"
+    formalism: PotentialFormalism = PotentialFormalism.EAM_ALLOY
+    doi: str = ""
+    citation: str = ""
+    source_url: str = ""
+    notes: str = ""
+    filename: str = "literature.potential"
+    content: str = ""  # published file body pasted from SI / paper
+    attestation: bool = False
+    unpublished_research: bool = False
     attach_to_id: str | None = None
 
 

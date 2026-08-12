@@ -44,6 +44,9 @@ type Potential = {
   formalism?: string;
   file_path?: string | null;
   library_id?: string | null;
+  suitability?: string | null;
+  provenance?: Record<string, unknown> | null;
+  provenance_path?: string | null;
 };
 type PotentialLibraryEntry = {
   id: string;
@@ -232,6 +235,8 @@ const PAIR_STYLE_WHITELIST = [
   "table",
   "hybrid",
   "hybrid/overlay",
+  "zbl",
+  "tersoff",
 ];
 
 const defaultParams: RunParams = {
@@ -713,6 +718,13 @@ export default function App() {
   const [entryUrl, setEntryUrl] = useState("");
   const [entryFiles, setEntryFiles] = useState<Array<{ filename: string; download_url: string }>>([]);
   const [acquirePlan, setAcquirePlan] = useState<PotentialAcquirePlan | null>(null);
+  const [litName, setLitName] = useState("");
+  const [litDoi, setLitDoi] = useState("");
+  const [litCitation, setLitCitation] = useState("");
+  const [litUrl, setLitUrl] = useState("");
+  const [litContent, setLitContent] = useState("");
+  const [litAttest, setLitAttest] = useState(false);
+  const [litUnpublished, setLitUnpublished] = useState(false);
   const [busy, setBusy] = useState(false);
   const [compUnit, setCompUnit] = useState<"at%" | "wt%">("at%");
   const [projectFilter, setProjectFilter] = useState<string>("");
@@ -1322,6 +1334,50 @@ export default function App() {
       `/api/potentials/acquire?material_id=${encodeURIComponent(mat)}`,
     ).catch(() => null);
     if (reqId === potReq.current && acqId === acquireReq.current) setAcquirePlan(plan);
+  }
+
+  async function packageLiterature() {
+    setBusy(true);
+    setError("");
+    try {
+      const elems = uploadElements.split(/[\s,]+/).filter(Boolean);
+      const pot = await api<Potential>("/api/potentials/from-literature", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: litName || "Literature potential",
+          elements: elems,
+          lammps_pair_style: uploadPairStyle,
+          formalism: uploadPairStyle.startsWith("eam")
+            ? uploadPairStyle
+            : uploadPairStyle === "meam"
+              ? "meam"
+              : uploadPairStyle === "snap"
+                ? "snap"
+                : uploadPairStyle === "table"
+                  ? "table"
+                  : "other",
+          doi: litDoi,
+          citation: litCitation,
+          source_url: litUrl,
+          content: litContent,
+          filename: litName ? `${litName.replace(/\s+/g, "_")}.pot` : "literature.potential",
+          attestation: litAttest,
+          unpublished_research: litUnpublished,
+          attach_to_id:
+            uploadAttachTo && selectedPot && (!selectedPot.available || selectedPot.is_placeholder)
+              ? selectedPot.id
+              : undefined,
+        }),
+      });
+      await refreshPotentials(pot.id);
+      setLitContent("");
+      setLitAttest(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function uploadPotential() {
@@ -2486,7 +2542,31 @@ export default function App() {
                             : "missing"}
                       </span>
                     </span>
+                    {selectedPot.suitability ? (
+                      <span className="chip">
+                        <span className="chip-k">suitability</span>
+                        <span
+                          className={`chip-v ${
+                            selectedPot.suitability === "cascade_literature"
+                              ? "tone-ok"
+                              : selectedPot.suitability === "ballistic_only"
+                                ? "tone-fail"
+                                : "tone-warn"
+                          }`}
+                        >
+                          {selectedPot.suitability.replace(/_/g, " ")}
+                        </span>
+                      </span>
+                    ) : null}
                   </div>
+                  {selectedPot.provenance ? (
+                    <p className="hint">
+                      Provenance: {String((selectedPot.provenance as { kind?: string }).kind || "recorded")}
+                      {(selectedPot.provenance as { doi?: string }).doi
+                        ? ` · DOI ${(selectedPot.provenance as { doi?: string }).doi}`
+                        : ""}
+                    </p>
+                  ) : null}
                   {selectedPot.citation && <p className="hint">{selectedPot.citation}</p>}
                   <div className="row">
                     {selectedPot.source_url && (
@@ -2779,6 +2859,73 @@ export default function App() {
                 </button>
               </section>
             </div>
+
+            <section className="panel stack">
+              <h2>Literature packager</h2>
+              <p className="hint">
+                Paste <strong>published</strong> potential file text (paper SI / NIST export) with a DOI. Aegis only
+                packages and records provenance — it never invents or fits coefficients. Starts as{" "}
+                <code>unvalidated</code> (ZBL → <code>ballistic_only</code>).
+              </p>
+              <div className="row">
+                <Field label="Display name" htmlFor="lit-name">
+                  <input id="lit-name" value={litName} onChange={(e) => setLitName(e.target.value)} />
+                </Field>
+                <Field label="DOI" htmlFor="lit-doi">
+                  <input
+                    id="lit-doi"
+                    value={litDoi}
+                    onChange={(e) => setLitDoi(e.target.value)}
+                    placeholder="10.xxxx/…"
+                  />
+                </Field>
+              </div>
+              <Field label="Citation" htmlFor="lit-cite">
+                <input
+                  id="lit-cite"
+                  value={litCitation}
+                  onChange={(e) => setLitCitation(e.target.value)}
+                  placeholder="Author et al., Journal (year)"
+                />
+              </Field>
+              <Field label="Source URL" htmlFor="lit-url">
+                <input id="lit-url" value={litUrl} onChange={(e) => setLitUrl(e.target.value)} />
+              </Field>
+              <Field label="Published file text" htmlFor="lit-body">
+                <textarea
+                  id="lit-body"
+                  rows={8}
+                  value={litContent}
+                  onChange={(e) => setLitContent(e.target.value)}
+                  placeholder="Paste full published .eam/.fs/.meam (etc.) content here…"
+                  style={{ width: "100%", fontFamily: "var(--mono)", fontSize: "0.8rem" }}
+                />
+              </Field>
+              <p className="hint">
+                Uses Elements / pair_style from the Upload panel above ({uploadElements || "—"} · {uploadPairStyle}).
+              </p>
+              <label className="check-row">
+                <input type="checkbox" checked={litAttest} onChange={(e) => setLitAttest(e.target.checked)} />
+                I attest this content is from the cited published source (not invented by Aegis / me for this form).
+              </label>
+              <label className="check-row">
+                <input
+                  type="checkbox"
+                  checked={litUnpublished}
+                  onChange={(e) => setLitUnpublished(e.target.checked)}
+                />
+                Unpublished research pot (DOI optional) — not for peer-reviewed citation
+              </label>
+              <button
+                type="button"
+                disabled={busy || !litContent.trim() || !litAttest}
+                onClick={() => void packageLiterature()}
+              >
+                {uploadAttachTo && selectedPot && (!selectedPot.available || selectedPot.is_placeholder)
+                  ? `Package & attach to ${selectedPot.id}`
+                  : "Package literature potential"}
+              </button>
+            </section>
           </div>
         )}
 

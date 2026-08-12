@@ -27,9 +27,18 @@ Data:
 - `data/potentials/library_index.json` — NIST/OpenKIM rows
 - `data/potentials/user/` + `attachments.json` — local files (gitignored)
 
+## Literature packager (Phase B)
+
+Paste **published** potential file text (or upload with attestation) plus DOI/citation.
+
+- `POST /api/potentials/from-literature`
+- Writes `data/potentials/user/<id>/` + `provenance.json`
+- Suitability starts as `unvalidated` (`zbl` → `ballistic_only`)
+- Still **never invents** coefficients — only packages user-supplied published content
+
 ## Honesty
 
 - No coefficient synthesis / AI “make potential” inventing params.
 - Multi-element Zhou04 universal-mixing file is offered for some alloys with explicit warnings.
-- Systems without downloadable rows (Re, Cr, Be, W–He, WC, …) use browse + upload.
-- Later phases: literature packager (cited params) and hybrid/ZBL stitch — still no invention.
+- Systems without downloadable rows (Re, Cr, Be, W–He, WC, …) use browse + upload / literature packager.
+- Later: hybrid/ZBL stitch (Phase C) — still no invention.

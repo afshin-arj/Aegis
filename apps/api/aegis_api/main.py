@@ -39,6 +39,7 @@ from aegis_schema import (  # noqa: E402
     PotentialFormalism,
     PotentialImportEntryRequest,
     PotentialLibraryEntry,
+    PotentialLiteratureRequest,
     PotentialUploadMeta,
     Scenario,
 )
@@ -596,6 +597,7 @@ async def upload_potential(
     file: UploadFile = File(...),
     meta: str = Form(...),
 ) -> Potential:
+    """Upload a published potential file; optional DOI/attestation for provenance."""
     try:
         meta_obj = PotentialUploadMeta.model_validate_json(meta)
     except ValidationError as exc:
@@ -609,6 +611,8 @@ async def upload_potential(
         "table",
         "hybrid",
         "hybrid/overlay",
+        "zbl",
+        "tersoff",
     }
     style = meta_obj.lammps_pair_style.strip().lower()
     if style not in allowed_styles:
@@ -622,6 +626,68 @@ async def upload_potential(
     if not content:
         raise HTTPException(400, "empty potential file")
     suffix = Path(file.filename or "potential.dat").name
+
+    # Optional literature provenance when attestation + DOI provided on upload
+    if meta_obj.attestation or meta_obj.doi or meta_obj.unpublished_research:
+        from aegis_api.literature_potentials import validate_literature_request, write_literature_package
+
+        errs = validate_literature_request(
+            elements=meta_obj.elements,
+            lammps_pair_style=style,
+            doi=meta_obj.doi,
+            citation=meta_obj.citation or meta_obj.notes,
+            attestation=meta_obj.attestation,
+            unpublished_research=meta_obj.unpublished_research,
+            content=content,
+        )
+        if errs:
+            raise HTTPException(400, "; ".join(errs))
+        packed = write_literature_package(
+            DATA_ROOT,
+            name=meta_obj.name,
+            elements=meta_obj.elements,
+            lammps_pair_style=style,
+            formalism=meta_obj.formalism.value if hasattr(meta_obj.formalism, "value") else str(meta_obj.formalism),
+            doi=meta_obj.doi,
+            citation=meta_obj.citation or meta_obj.notes,
+            source_url=meta_obj.source_url,
+            content=content,
+            filename=suffix,
+            attestation=meta_obj.attestation,
+            unpublished_research=meta_obj.unpublished_research,
+            notes=meta_obj.notes,
+            attach_to_id=meta_obj.attach_to_id,
+        )
+        if meta_obj.attach_to_id:
+            if not store.get_potential(meta_obj.attach_to_id):
+                raise HTTPException(404, "attach_to_id not found")
+            pot = store.attach_file(meta_obj.attach_to_id, packed["file_path"])
+            if not pot:
+                raise HTTPException(404, "attach target missing")
+            data = pot.model_dump()
+            for k in (
+                "citation",
+                "doi",
+                "source_url",
+                "warnings",
+                "lammps_pair_style",
+                "pair_coeff_template",
+                "suitability",
+                "provenance",
+                "provenance_path",
+                "elements",
+                "source",
+            ):
+                if packed.get(k) is not None:
+                    data[k] = packed[k]
+            try:
+                data["formalism"] = PotentialFormalism(
+                    packed["formalism"] if packed["formalism"] != "eam" else "eam"
+                ).value
+            except ValueError:
+                pass
+            return store.add_user_potential(Potential(**data))
+        return store.add_user_potential(Potential(**{k: v for k, v in packed.items() if k in Potential.model_fields}))
 
     if meta_obj.attach_to_id:
         if not store.get_potential(meta_obj.attach_to_id):
@@ -638,9 +704,11 @@ async def upload_potential(
         # Refresh pair style from upload meta when attaching
         data = pot.model_dump()
         data["lammps_pair_style"] = style
-        data["formalism"] = meta_obj.formalism
-        data["pair_coeff_template"] = meta_obj.pair_coeff_template
+        data["formalism"] = meta_obj.formalism.value if hasattr(meta_obj.formalism, "value") else str(meta_obj.formalism)
         data["elements"] = meta_obj.elements
+        data["pair_coeff_template"] = meta_obj.pair_coeff_template.replace(
+            "{elements}", " ".join(meta_obj.elements)
+        )
         if meta_obj.name:
             data["name"] = meta_obj.name
         return store.add_user_potential(Potential(**data))
@@ -650,22 +718,74 @@ async def upload_potential(
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / suffix
     dest.write_bytes(content)
+    rel = str(dest.relative_to(DATA_ROOT)).replace("\\", "/")
     pot = Potential(
         id=pot_id,
         name=meta_obj.name,
         formalism=meta_obj.formalism,
         elements=meta_obj.elements,
-        recommended_for=meta_obj.recommended_for,
-        citation=meta_obj.notes,
+        recommended_for=meta_obj.recommended_for or ["cascade"],
+        citation=meta_obj.notes or "User-uploaded potential — unvalidated by Aegis.",
         warnings=["User-uploaded potential — unvalidated by Aegis."],
         lammps_pair_style=style,
-        pair_coeff_template=meta_obj.pair_coeff_template,
-        file_path=str(dest.relative_to(DATA_ROOT)).replace("\\", "/"),
+        pair_coeff_template=meta_obj.pair_coeff_template.replace(
+            "{elements}", " ".join(meta_obj.elements)
+        ),
+        file_path=rel,
         source="user",
         available=True,
+        suitability="unvalidated",
     )
     store.add_user_potential(pot)
     return pot
+
+
+@app.post("/api/potentials/from-literature", response_model=Potential)
+def package_literature_potential(body: PotentialLiteratureRequest) -> Potential:
+    """Package pasted published potential text with DOI/provenance (no coefficient invention)."""
+    from aegis_api.literature_potentials import validate_literature_request, write_literature_package
+
+    content = (body.content or "").encode("utf-8")
+    errs = validate_literature_request(
+        elements=body.elements,
+        lammps_pair_style=body.lammps_pair_style,
+        doi=body.doi,
+        citation=body.citation,
+        attestation=body.attestation,
+        unpublished_research=body.unpublished_research,
+        content=content,
+    )
+    if errs:
+        raise HTTPException(400, "; ".join(errs))
+    formalism = body.formalism.value if hasattr(body.formalism, "value") else str(body.formalism)
+    packed = write_literature_package(
+        DATA_ROOT,
+        name=body.name,
+        elements=body.elements,
+        lammps_pair_style=body.lammps_pair_style,
+        formalism=formalism,
+        doi=body.doi,
+        citation=body.citation,
+        source_url=body.source_url,
+        content=content,
+        filename=body.filename or "literature.potential",
+        attestation=body.attestation,
+        unpublished_research=body.unpublished_research,
+        notes=body.notes,
+        attach_to_id=body.attach_to_id,
+    )
+    if body.attach_to_id:
+        if not store.get_potential(body.attach_to_id):
+            raise HTTPException(404, "attach_to_id not found")
+        pot = store.attach_file(body.attach_to_id, packed["file_path"])
+        if not pot:
+            raise HTTPException(404, "attach target missing")
+        data = pot.model_dump()
+        for k, v in packed.items():
+            if k in Potential.model_fields and v is not None:
+                data[k] = v
+        return store.add_user_potential(Potential(**data))
+    return store.add_user_potential(Potential(**{k: v for k, v in packed.items() if k in Potential.model_fields}))
 
 
 @app.post("/api/jobs", response_model=JobInfo)
