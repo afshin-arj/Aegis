@@ -33,6 +33,7 @@ from aegis_schema import (  # noqa: E402
     KmcRecommendRequest,
     MlKmcAnnealRequest,
     ClusterDynamicsRequest,
+    FirstPassageRequest,
     KmcRecommendResponse,
     KmcTier,
     LammpsRunParams,
@@ -52,6 +53,7 @@ from aegis_schema import (  # noqa: E402
 from kart.adapter import discover_kart, run_anneal_stub_or_real  # noqa: E402
 from ml_kmc.adapter import discover_ml_kmc, run_ml_kmc_anneal  # noqa: E402
 from cluster_dynamics.adapter import run_cluster_dynamics  # noqa: E402
+from first_passage.adapter import run_first_passage  # noqa: E402
 from mmonca.adapter import discover_mmonca  # noqa: E402
 from lammps.templates import write_cascade_input, write_implant_input  # noqa: E402
 
@@ -1377,6 +1379,57 @@ def post_cd_run(job_id: str, body: ClusterDynamicsRequest) -> dict[str, Any]:
             job_id,
             status=JobStatus.COMPLETED,
             message=f"cascade completed; CD failed: {exc}",
+            defect_summary=info.defect_summary,
+        )
+        raise HTTPException(500, str(exc)) from exc
+
+
+@app.get("/api/jobs/{job_id}/first-passage")
+def get_kps_summary(job_id: str) -> dict[str, Any]:
+    info = jobs.get(job_id)
+    if not info:
+        raise HTTPException(404, "job not found")
+    path = RUNS_ROOT / job_id / "kps_summary.json"
+    if path.exists():
+        return json.loads(path.read_text(encoding="utf-8"))
+    if info.kps_summary:
+        return info.kps_summary
+    raise HTTPException(404, "first-passage summary not ready")
+
+
+@app.post("/api/jobs/{job_id}/first-passage/run")
+def post_kps_run(job_id: str, body: FirstPassageRequest) -> dict[str, Any]:
+    info = jobs.get(job_id)
+    if not info:
+        raise HTTPException(404, "job not found")
+    if info.status != JobStatus.COMPLETED:
+        raise HTTPException(400, f"job status {info.status} cannot run kPS yet")
+    job_dir = RUNS_ROOT / job_id
+    jobs._update(job_id, status=JobStatus.ANNEALING, message="first-passage kPS")
+    try:
+        summary = run_first_passage(job_dir, temperature_K=body.temperature_K)
+        kmc_prov = None
+        if isinstance(summary.get("provenance"), dict):
+            try:
+                from aegis_schema import KmcProvenance
+
+                kmc_prov = KmcProvenance(**summary["provenance"])
+            except Exception:  # noqa: BLE001
+                kmc_prov = None
+        jobs._update(
+            job_id,
+            status=JobStatus.COMPLETED,
+            message="completed",
+            kps_summary=summary,
+            defect_summary=info.defect_summary,
+            kmc_provenance=kmc_prov or info.kmc_provenance,
+        )
+        return summary
+    except Exception as exc:  # noqa: BLE001
+        jobs._update(
+            job_id,
+            status=JobStatus.COMPLETED,
+            message=f"cascade completed; kPS failed: {exc}",
             defect_summary=info.defect_summary,
         )
         raise HTTPException(500, str(exc)) from exc

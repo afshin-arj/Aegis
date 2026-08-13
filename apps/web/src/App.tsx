@@ -143,6 +143,7 @@ type JobInfo = {
   mmonca_summary?: Record<string, unknown>;
   ml_kmc_summary?: Record<string, unknown>;
   cd_summary?: Record<string, unknown>;
+  kps_summary?: Record<string, unknown>;
   kmc_provenance?: KmcProvenance;
   surface_summary?: Record<string, unknown>;
   execution_mode?: string | null;
@@ -708,6 +709,7 @@ export default function App() {
   const [cdTimeS, setCdTimeS] = useState(1e6);
   const [cdVolume, setCdVolume] = useState(1e-9);
   const [cdSummary, setCdSummary] = useState<Record<string, unknown> | null>(null);
+  const [kpsSummary, setKpsSummary] = useState<Record<string, unknown> | null>(null);
   const [jobSnapshot, setJobSnapshot] = useState<{
     material_id: string;
     potential_id: string;
@@ -1789,6 +1791,28 @@ export default function App() {
       const info = await api<JobInfo>(`/api/jobs/${jobId}`);
       if (watchedJobId.current !== jobId) return;
       setCdSummary(summary);
+      setJob(info);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runFirstPassage() {
+    if (!job) return;
+    const jobId = job.id;
+    setBusy(true);
+    setError("");
+    try {
+      const summary = await api<Record<string, unknown>>(`/api/jobs/${jobId}/first-passage/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ temperature_K: kartTemperatureK }),
+      });
+      const info = await api<JobInfo>(`/api/jobs/${jobId}`);
+      if (watchedJobId.current !== jobId) return;
+      setKpsSummary(summary);
       setJob(info);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -5085,6 +5109,46 @@ export default function App() {
               {job?.status === "completed" && (
                 <button type="button" className="secondary" disabled={busy} onClick={() => void runClusterDynamics()}>
                   Run cluster dynamics
+                </button>
+              )}
+              {(kpsSummary || job?.kps_summary) && (
+                <>
+                  <h3>First-passage / kPS (spike)</h3>
+                  {(() => {
+                    const kp = (kpsSummary || job?.kps_summary || {}) as Record<string, unknown>;
+                    const mfpt = (kp.mfpt || {}) as Record<string, unknown>;
+                    const basins = (kp.basins || {}) as Record<string, unknown>;
+                    return (
+                      <div className="stack">
+                        <div className="chip-row">
+                          <span className="chip">
+                            <span className="chip-k">status</span>
+                            <span className="chip-v">{String(kp.status || "—")}</span>
+                          </span>
+                          <span className="chip">
+                            <span className="chip-k">MFPT</span>
+                            <span className="chip-v">
+                              {typeof mfpt.mfpt_s === "number" ? (mfpt.mfpt_s as number).toExponential(2) : "—"} s
+                            </span>
+                          </span>
+                          <span className="chip">
+                            <span className="chip-k">trapping</span>
+                            <span className="chip-v">{String(basins.trapping_risk || "—")}</span>
+                          </span>
+                          <span className="chip">
+                            <span className="chip-k">basins</span>
+                            <span className="chip-v">{String(basins.n_basins ?? "—")}</span>
+                          </span>
+                        </div>
+                        <p className="hint">{String(kp.note || "")}</p>
+                      </div>
+                    );
+                  })()}
+                </>
+              )}
+              {job?.status === "completed" && (
+                <button type="button" className="secondary" disabled={busy} onClick={() => void runFirstPassage()}>
+                  Run first-passage diagnostic
                 </button>
               )}
             </section>

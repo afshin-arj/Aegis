@@ -5,7 +5,7 @@ Aegis follows a **three-tier kinetic ladder** (Adjanor et al., *EPJ Nuclear Sci.
 | Tier | Method | Simulated window | Aegis status |
 |------|--------|------------------|--------------|
 | 1 | k-ART + hTST (off-lattice) | post-cascade anneal (ns–µs class) | **Wired** (`engines/kart`) |
-| 2 | First-passage / kPS | trapping / rare escapes | Phase H (planned) |
+| 2 | First-passage / kPS | trapping / rare escapes | **Spike** (`engines/first_passage`, 2-state MFPT) |
 | 3 | Stochastic cluster dynamics | reactor lifetimes | **Wired** (`engines/cluster_dynamics`, example catalog unvalidated) |
 | E | ML-KMC (ANN-LAC + composition ν) | CSA sluggish diffusion | **Wired** (`engines/ml_kmc`, heuristic unless user ONNX) |
 | — | MMonCa OKMC | comparison / object KMC | **Handoff v2** (clustered objects + binary probe; always `mmonca_compare`) |
@@ -54,7 +54,7 @@ kinetics chips, and constant-vs-hTST deltas when compare mode ran.
 2. **F** — hTST alignment, richer Energy.dat, prefactor compare — shipped
 3. **E** — ML-KMC (ANN-LAC / rigid lattice) — shipped
 4. **I** — richer MMonCa handoff — shipped
-5. **G** — stochastic cluster dynamics — this slice
-6. **H** — first-passage kPS
+5. **G** — stochastic cluster dynamics — shipped
+6. **H** — first-passage kPS spike — this slice
 
-See also: [engines/kart/SETUP.md](../engines/kart/SETUP.md), [engines/ml_kmc/SETUP.md](../engines/ml_kmc/SETUP.md), [engines/cluster_dynamics/SETUP.md](../engines/cluster_dynamics/SETUP.md).
+See also: [engines/kart/SETUP.md](../engines/kart/SETUP.md), [engines/ml_kmc/SETUP.md](../engines/ml_kmc/SETUP.md), [engines/cluster_dynamics/SETUP.md](../engines/cluster_dynamics/SETUP.md), [engines/first_passage/README.md](../engines/first_passage/README.md).

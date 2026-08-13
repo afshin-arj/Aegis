@@ -447,6 +447,13 @@ class ClusterDynamicsRequest(BaseModel):
     catalog_path: str | None = None
     seed: int = 1
 
+
+class FirstPassageRequest(BaseModel):
+    """First-passage / kPS diagnostic on existing event logs (Phase H spike)."""
+
+    temperature_K: float = Field(600.0, ge=1.0)
+
+
 class JobStatus(str, Enum):
     QUEUED = "queued"
     RUNNING = "running"
