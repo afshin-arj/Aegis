@@ -120,6 +120,10 @@ type EngineStatus = {
   ovito_version?: string | null;
   atomsk_found?: boolean;
   atomsk_path?: string;
+  ml_kmc_onnx_found?: boolean;
+  ml_kmc_onnx_path?: string;
+  onnxruntime_found?: boolean;
+  ml_kmc_message?: string;
 };
 type JobInfo = {
   id: string;
@@ -137,6 +141,7 @@ type JobInfo = {
   defect_summary?: Record<string, number | string | object>;
   kart_summary?: Record<string, unknown>;
   mmonca_summary?: Record<string, unknown>;
+  ml_kmc_summary?: Record<string, unknown>;
   kmc_provenance?: KmcProvenance;
   surface_summary?: Record<string, unknown>;
   execution_mode?: string | null;
@@ -693,6 +698,11 @@ export default function App() {
   const [kartDoeTemps, setKartDoeTemps] = useState("");
   const [kmcRecommend, setKmcRecommend] = useState<KmcRecommend | null>(null);
   const [kartSummary, setKartSummary] = useState<KartSummary | null>(null);
+  const [mlKmcSummary, setMlKmcSummary] = useState<Record<string, unknown> | null>(null);
+  const [mlKmcSteps, setMlKmcSteps] = useState(200);
+  const [mlKmcTempK, setMlKmcTempK] = useState(900);
+  const [mlKmcNu, setMlKmcNu] = useState<"composition_polynomial" | "constant">("composition_polynomial");
+  const [mlKmcOnnx, setMlKmcOnnx] = useState("");
   const [jobSnapshot, setJobSnapshot] = useState<{
     material_id: string;
     potential_id: string;
@@ -1216,6 +1226,12 @@ export default function App() {
             if (!cancelled) setKartSummary((info.kart_summary as KartSummary) || null);
           }
           try {
+            const mk = await api<Record<string, unknown>>(`/api/jobs/${watchedId}/ml-kmc`);
+            if (!cancelled) setMlKmcSummary(mk);
+          } catch {
+            if (!cancelled) setMlKmcSummary(info.ml_kmc_summary || null);
+          }
+          try {
             const tl = await api<{
               stages?: Array<{
                 id: string;
@@ -1297,6 +1313,7 @@ export default function App() {
       setLog("");
       setDefects(null);
       setKartSummary(null);
+      setMlKmcSummary(null);
       setCascadeTimeline(null);
       setDxaSummary(null);
       setJob(info);
@@ -1326,6 +1343,12 @@ export default function App() {
           if (reqId === loadJobReq.current) setKartSummary(ks);
         } catch {
           if (reqId === loadJobReq.current) setKartSummary((info.kart_summary as KartSummary) || null);
+        }
+        try {
+          const mk = await api<Record<string, unknown>>(`/api/jobs/${jobId}/ml-kmc`);
+          if (reqId === loadJobReq.current) setMlKmcSummary(mk);
+        } catch {
+          if (reqId === loadJobReq.current) setMlKmcSummary(info.ml_kmc_summary || null);
         }
         try {
           const tl = await api<{
@@ -1699,12 +1722,41 @@ export default function App() {
       setLog("");
       setDefects(null);
       setKartSummary(null);
+      setMlKmcSummary(null);
       setCascadeTimeline(null);
       setDxaSummary(null);
       setJob(info);
       setLogEpoch((n) => n + 1);
       setJobs((history) => [info, ...history.filter((item) => item.id !== info.id)]);
       setTab("run");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runMlKmc() {
+    if (!job) return;
+    const jobId = job.id;
+    setBusy(true);
+    setError("");
+    try {
+      const summary = await api<Record<string, unknown>>(`/api/jobs/${jobId}/ml-kmc/anneal`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          temperature_K: mlKmcTempK,
+          n_steps: mlKmcSteps,
+          structure_class: "random",
+          nu_model: mlKmcNu,
+          onnx_path: mlKmcOnnx.trim() || null,
+        }),
+      });
+      const info = await api<JobInfo>(`/api/jobs/${jobId}`);
+      if (watchedJobId.current !== jobId) return;
+      setMlKmcSummary(summary);
+      setJob(info);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -2103,6 +2155,7 @@ export default function App() {
                   setLog("");
                   setDefects(null);
                   setKartSummary(null);
+                  setMlKmcSummary(null);
                   setCascadeTimeline(null);
                   setDxaSummary(null);
                 }}
@@ -4367,6 +4420,55 @@ export default function App() {
                 </p>
               </fieldset>
             )}
+            <section className="panel stack">
+              <h3>ML-KMC (CSA sluggish diffusion)</h3>
+              <p className="hint">
+                Rigid-lattice vacancy KMC after a completed cascade (Huang 2023). ONNX weights are
+                user-supplied — Aegis does not ship the 32k NEB dataset. Heuristic barriers are
+                unvalidated.
+              </p>
+              <div className="row">
+                <Field label="ML-KMC temperature" unit="K" htmlFor="mlkmc-t">
+                  <input
+                    id="mlkmc-t"
+                    type="number"
+                    value={mlKmcTempK}
+                    onChange={(e) => setMlKmcTempK(Number(e.target.value))}
+                  />
+                </Field>
+                <Field label="KMC steps" htmlFor="mlkmc-steps">
+                  <input
+                    id="mlkmc-steps"
+                    type="number"
+                    value={mlKmcSteps}
+                    onChange={(e) => setMlKmcSteps(Number(e.target.value))}
+                  />
+                </Field>
+              </div>
+              <Field label="Attempt frequency" htmlFor="mlkmc-nu">
+                <select
+                  id="mlkmc-nu"
+                  value={mlKmcNu}
+                  onChange={(e) => setMlKmcNu(e.target.value as "composition_polynomial" | "constant")}
+                >
+                  <option value="composition_polynomial">composition polynomial ν(T, x)</option>
+                  <option value="constant">constant Γ₀ = 10¹³ Hz</option>
+                </select>
+              </Field>
+              {mlKmcNu === "constant" && kmcRecommend?.concentrated_alloy && (
+                <div className="alert alert-warn">
+                  Constant ν on a concentrated alloy mis-predicts sluggish diffusion (Huang 2023 Fig. 3.5).
+                </div>
+              )}
+              <Field label="ONNX model path" unit="optional" htmlFor="mlkmc-onnx">
+                <input
+                  id="mlkmc-onnx"
+                  placeholder="AEGIS_ML_KMC_ONNX or local .onnx"
+                  value={mlKmcOnnx}
+                  onChange={(e) => setMlKmcOnnx(e.target.value)}
+                />
+              </Field>
+            </section>
             <button type="button" disabled={busy || blockers.length > 0} onClick={runJob}>
               Submit job
             </button>
@@ -4811,6 +4913,59 @@ export default function App() {
                   </pre>
                 </>
               )}
+              {(mlKmcSummary || job?.ml_kmc_summary) && (
+                <>
+                  <h3>ML-KMC (rigid lattice)</h3>
+                  {(() => {
+                    const mk = (mlKmcSummary || job?.ml_kmc_summary || {}) as Record<string, unknown>;
+                    const prov = mk.provenance as KmcProvenance | undefined;
+                    const sro = mk.sro as { structure_class_hint?: string; alpha?: Array<number | null> } | undefined;
+                    return (
+                      <div className="stack">
+                        <div className="chip-row">
+                          <span className="chip">
+                            <span className="chip-k">status</span>
+                            <span className="chip-v">{String(mk.status || "—")}</span>
+                          </span>
+                          <span className="chip">
+                            <span className="chip-k">barriers</span>
+                            <span className="chip-v">{String(mk.barrier_source || "—")}</span>
+                          </span>
+                          {typeof mk.einstein_D_A2_s === "number" && (
+                            <span className="chip">
+                              <span className="chip-k">D</span>
+                              <span className="chip-v">{(mk.einstein_D_A2_s as number).toExponential(2)} Å²/s</span>
+                            </span>
+                          )}
+                          {sro?.structure_class_hint && (
+                            <span className="chip">
+                              <span className="chip-k">SRO</span>
+                              <span className="chip-v">{sro.structure_class_hint}</span>
+                            </span>
+                          )}
+                          {prov?.validation_status && (
+                            <span className="chip">
+                              <span className="chip-k">validation</span>
+                              <span className="chip-v">{prov.validation_status}</span>
+                            </span>
+                          )}
+                        </div>
+                        <p className="hint">{String(mk.message || "")}</p>
+                        {prov?.warnings?.map((w) => (
+                          <div key={w} className="alert alert-warn">
+                            {w}
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })()}
+                </>
+              )}
+              {job?.status === "completed" && (
+                <button type="button" className="secondary" disabled={busy} onClick={() => void runMlKmc()}>
+                  Run ML-KMC on this cascade
+                </button>
+              )}
             </section>
             <section className="panel stack">
               <h2>Defect markers</h2>
@@ -5009,6 +5164,25 @@ export default function App() {
                 </div>
                 <p className="hint">{engines?.mmonca_path || "Not required — KART is the primary KMC path"}</p>
                 <p className="hint">{engines?.mmonca_message}</p>
+              </div>
+              <div className="stack">
+                <h3>ML-KMC (Huang 2023)</h3>
+                <div className="chip-row">
+                  <span className="chip">
+                    <span className="chip-k">ONNX</span>
+                    <span className={`chip-v ${engines?.ml_kmc_onnx_found ? "tone-ok" : "tone-warn"}`}>
+                      {engines?.ml_kmc_onnx_found ? "found" : "user-supplied"}
+                    </span>
+                  </span>
+                  <span className="chip">
+                    <span className="chip-k">onnxruntime</span>
+                    <span className={`chip-v ${engines?.onnxruntime_found ? "tone-ok" : "tone-warn"}`}>
+                      {engines?.onnxruntime_found ? "found" : "optional"}
+                    </span>
+                  </span>
+                </div>
+                <p className="hint">{engines?.ml_kmc_onnx_path || "Set AEGIS_ML_KMC_ONNX for ANN-LAC weights"}</p>
+                <p className="hint">{engines?.ml_kmc_message}</p>
               </div>
               <div className="stack">
                 <h3>ASE (structures + DFT)</h3>

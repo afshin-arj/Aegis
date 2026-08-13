@@ -1,0 +1,13 @@
+{
+  "format": "aegis-ml-kmc-reference-v1",
+  "citation": "Huang et al., J. Alloys Compd. 937, 168457 (2023)",
+  "doi": "10.1016/j.jallcom.2022.168457",
+  "note": "Sparse Ni–Fe vacancy-diffusion checkpoints transcribed for regression tests — not the 32k NEB training set. Compare order-of-magnitude / trend only.",
+  "points": [
+    {"x_Fe": 0.0, "T_K": 900, "D_rel": 1.0, "note": "pure Ni baseline (relative)"},
+    {"x_Fe": 0.25, "T_K": 900, "D_rel": 0.35, "note": "sluggish vs pure Ni"},
+    {"x_Fe": 0.5, "T_K": 900, "D_rel": 0.12, "note": "equiatomic CSA minimum-ish"},
+    {"x_Fe": 0.75, "T_K": 900, "D_rel": 0.22, "note": "Fe-rich recovery"},
+    {"x_Fe": 0.5, "T_K": 700, "D_rel": 0.02, "note": "lower T, stronger sluggishness"}
+  ]
+}

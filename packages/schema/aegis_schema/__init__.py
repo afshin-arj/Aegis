@@ -425,6 +425,17 @@ class KartAnnealRequest(BaseModel):
     temperatures: list[float] | None = None
     prefactor_compare: bool = False
 
+
+class MlKmcAnnealRequest(BaseModel):
+    """Rigid-lattice ML-KMC anneal on an existing cascade job (Phase E)."""
+
+    temperature_K: float = Field(900.0, ge=1.0)
+    n_steps: int = Field(200, ge=1, le=1_000_000)
+    structure_class: Literal["random", "mmc"] = "random"
+    nu_model: Literal["constant", "composition_polynomial"] = "composition_polynomial"
+    onnx_path: str | None = None
+    seed: int = 1
+
 class JobStatus(str, Enum):
     QUEUED = "queued"
     RUNNING = "running"
@@ -452,6 +463,7 @@ class JobInfo(BaseModel):
     defect_summary: dict[str, Any] | None = None
     kart_summary: dict[str, Any] | None = None
     mmonca_summary: dict[str, Any] | None = None
+    ml_kmc_summary: dict[str, Any] | None = None
     kmc_provenance: KmcProvenance | None = None
     surface_summary: dict[str, Any] | None = None
     # Provenance for Results / UI badges
@@ -471,6 +483,10 @@ class EngineStatus(BaseModel):
     mmonca_found: bool = False
     mmonca_path: str | None = None
     mmonca_message: str = ""
+    ml_kmc_onnx_found: bool = False
+    ml_kmc_onnx_path: str | None = None
+    onnxruntime_found: bool = False
+    ml_kmc_message: str = ""
     ase_found: bool = False
     ase_message: str = ""
     ovito_found: bool = False

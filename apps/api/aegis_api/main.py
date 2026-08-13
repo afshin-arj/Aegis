@@ -31,6 +31,7 @@ from aegis_schema import (  # noqa: E402
     JobStatus,
     KartAnnealRequest,
     KmcRecommendRequest,
+    MlKmcAnnealRequest,
     KmcRecommendResponse,
     KmcTier,
     LammpsRunParams,
@@ -48,6 +49,7 @@ from aegis_schema import (  # noqa: E402
     Scenario,
 )
 from kart.adapter import discover_kart, run_anneal_stub_or_real  # noqa: E402
+from ml_kmc.adapter import discover_ml_kmc, run_ml_kmc_anneal  # noqa: E402
 from mmonca.adapter import discover_mmonca  # noqa: E402
 from lammps.templates import write_cascade_input, write_implant_input  # noqa: E402
 
@@ -112,6 +114,7 @@ def engines_status() -> EngineStatus:
             version = "found (version probe failed)"
     kart = discover_kart()
     mmonca = discover_mmonca()
+    mlk = discover_ml_kmc()
     from aegis_api.dxa import discover_ovito
     from aegis_api.lattice_relax import discover_ase, discover_atomsk
 
@@ -130,6 +133,10 @@ def engines_status() -> EngineStatus:
         mmonca_found=bool(mmonca.get("mmonca_found")),
         mmonca_path=mmonca.get("mmonca_path"),
         mmonca_message=mmonca.get("mmonca_message", ""),
+        ml_kmc_onnx_found=bool(mlk.get("ml_kmc_onnx_found")),
+        ml_kmc_onnx_path=mlk.get("ml_kmc_onnx_path"),
+        onnxruntime_found=bool(mlk.get("onnxruntime_found")),
+        ml_kmc_message=mlk.get("ml_kmc_message", ""),
         ase_found=bool(ase.get("ase_found")),
         ase_message=str(ase.get("ase_message", "")),
         ovito_found=bool(ovito.get("ovito_found")),
@@ -1227,6 +1234,78 @@ def post_kart_anneal(job_id: str, body: KartAnnealRequest) -> dict[str, Any]:
             status=JobStatus.COMPLETED,
             message=f"cascade completed; anneal failed: {exc}",
             kart_summary=err_summary,
+            defect_summary=info.defect_summary,
+        )
+        raise HTTPException(500, str(exc)) from exc
+
+
+@app.get("/api/jobs/{job_id}/ml-kmc")
+def get_ml_kmc_summary(job_id: str) -> dict[str, Any]:
+    info = jobs.get(job_id)
+    if not info:
+        raise HTTPException(404, "job not found")
+    path = RUNS_ROOT / job_id / "ml_kmc_summary.json"
+    if path.exists():
+        return json.loads(path.read_text(encoding="utf-8"))
+    if info.ml_kmc_summary:
+        return info.ml_kmc_summary
+    raise HTTPException(404, "ml-kmc summary not ready")
+
+
+@app.post("/api/jobs/{job_id}/ml-kmc/anneal")
+def post_ml_kmc_anneal(job_id: str, body: MlKmcAnnealRequest) -> dict[str, Any]:
+    """Phase E: rigid-lattice ML-KMC on a completed cascade (Huang 2023 path)."""
+    info = jobs.get(job_id)
+    if not info:
+        raise HTTPException(404, "job not found")
+    if info.status != JobStatus.COMPLETED:
+        raise HTTPException(400, f"job status {info.status} cannot anneal yet (need completed cascade)")
+    job_dir = RUNS_ROOT / job_id
+    from kmc.router import recommend_kmc
+
+    material = store.get_material(info.material_id) if info.material_id else None
+    router = recommend_kmc(
+        material=material.model_dump(mode="json") if material else None,
+        target_time_s=1.0,
+        temperature_K=float(body.temperature_K),
+        run_kart_anneal=False,
+        kart_found=False,
+        requested_tier="ml_kmc",
+    )
+    jobs._update(job_id, status=JobStatus.ANNEALING, message="ML-KMC anneal")
+    try:
+        summary = run_ml_kmc_anneal(
+            job_dir,
+            temperature_K=body.temperature_K,
+            n_steps=body.n_steps,
+            structure_class=body.structure_class,
+            nu_model=body.nu_model,
+            onnx_path=body.onnx_path,
+            seed=body.seed,
+            router=router,
+        )
+        kmc_prov = None
+        if isinstance(summary.get("provenance"), dict):
+            try:
+                from aegis_schema import KmcProvenance
+
+                kmc_prov = KmcProvenance(**summary["provenance"])
+            except Exception:  # noqa: BLE001
+                kmc_prov = None
+        jobs._update(
+            job_id,
+            status=JobStatus.COMPLETED,
+            message="completed",
+            ml_kmc_summary=summary,
+            defect_summary=info.defect_summary,
+            kmc_provenance=kmc_prov or info.kmc_provenance,
+        )
+        return summary
+    except Exception as exc:  # noqa: BLE001
+        jobs._update(
+            job_id,
+            status=JobStatus.COMPLETED,
+            message=f"cascade completed; ML-KMC failed: {exc}",
             defect_summary=info.defect_summary,
         )
         raise HTTPException(500, str(exc)) from exc

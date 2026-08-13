@@ -32,7 +32,7 @@ def build_provenance(
     sro_parameters: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     w = list(warnings or [])
-    if synthetic and validation_status not in {"stub", "handoff_ready"}:
+    if synthetic and validation_status not in {"stub", "handoff_ready", "unvalidated"}:
         validation_status = "stub"
     return {
         "format": "aegis-kmc-provenance-v1",
