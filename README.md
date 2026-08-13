@@ -47,8 +47,8 @@ Best-effort OpenMPI install (`apt` / `dnf` / `yum` / `brew`), Python venv + npm 
 | Already installed? | Behavior |
 |--------------------|----------|
 | `python` / `node` / `git` on PATH | Skipped |
-| `lmp.exe` / `lmp` found | Skipped if already MPI-capable; serial/GUI is replaced by `*-MSMPI` unless `AEGIS_LAMMPS_SERIAL_OK=1` |
-| `mpiexec` / `mpirun` found | Skipped (`AEGIS_INSTALL_MPI=0` to force skip) |
+| `lmp.exe` / `lmp` found | Skipped (no reinstall; set `AEGIS_FORCE_LAMMPS_INSTALL=1` to force) |
+| `mpiexec` / MS-MPI present | Skipped (`AEGIS_INSTALL_MPI=0` also skips) |
 | `third_party/kart` + binary | Skipped |
 
 **KART:** private GitLab project. Put `GITLAB_TOKEN` in a gitignored `.env` (or use SSH). Full obtain/build guide: [`engines/kart/SETUP.md`](engines/kart/SETUP.md). On Windows, build in **WSL** or **Docker**—native MSVC is unsupported.
