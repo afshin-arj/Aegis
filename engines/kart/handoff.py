@@ -273,6 +273,14 @@ neigh_modify delay 0 every 1 check no
     # KMC.sh-compatible env script (csh setenv style per kart-doc)
     box_edge = max(lx, ly, lz)
     topo_r = max(4.0, 2.2 * float(material.get("lattice_constant_A") or 3.165))
+    concentrated = _is_concentrated_alloy(material)
+    prefactor_mode = "htst" if concentrated else "constant"
+    min_event_searches = 25
+    trapping_risk = "low"
+    if temperature_K < 500 and max_kmc_time_s < 10:
+        trapping_risk = "medium"
+    if temperature_K < 400:
+        trapping_risk = "high"
     kmc = f"""#!/bin/csh
 # Aegis-generated KART launch template — edit TOPO_* / CRYST_* for your material.
 # Docs: https://kart-doc.readthedocs.io/
@@ -293,6 +301,10 @@ setenv MAX_TOPO_CUTOFF {0.85 * float(material.get('lattice_constant_A') or 3.165
 setenv MIN_TOPO_CUTOFF {0.55 * float(material.get('lattice_constant_A') or 3.165):.3f}
 setenv OSCILL_TREAT NONE
 setenv MIN_SIG_BARRIER 0.1
+setenv MIN_EVENT_SEARCHES {min_event_searches}
+setenv PREFACTOR_MODE {prefactor_mode}
+# For concentrated alloys Aegis sets PREFACTOR_MODE=htst (Adjanor 2025 / Huang 2023).
+# setenv USE_HTST_PREFACTOR .true.
 # setenv CRYST_TOPOID <identify on first run>
 # Launch: convert setenv→export then run kart binary (see engines/kart/SETUP.md)
 """
@@ -307,7 +319,7 @@ setenv MIN_SIG_BARRIER 0.1
             break
 
     meta = {
-        "format": "aegis-kart-handoff-v2",
+        "format": "aegis-kart-handoff-v3",
         "work_dir": str(work.relative_to(job_dir)).replace("\\", "/"),
         "temperature_K": temperature_K,
         "max_events": max_events,
@@ -316,6 +328,11 @@ setenv MIN_SIG_BARRIER 0.1
         "n_atoms": len(atoms),
         "box_A": {"lx": lx, "ly": ly, "lz": lz},
         "elements": elems[:ntypes],
+        "prefactor_mode": prefactor_mode,
+        "min_event_searches": min_event_searches,
+        "trapping_risk_hint": trapping_risk,
+        "concentrated_alloy": concentrated,
+        "structure_class": "as_cascade",
         "files": {
             "lammps_data": "conf.lammps",
             "kart_conf": ini_name,
@@ -330,12 +347,22 @@ setenv MIN_SIG_BARRIER 0.1
         "notes": [
             "Handoff follows kart-doc LAM+initial.conf conventions.",
             "Identify CRYST_TOPOID on a short scout run before production anneals.",
+            "prefactor_mode=htst recommended for concentrated alloys (Adjanor 2025 / Huang 2023).",
             "Aegis may stub events when the binary cannot complete a full KMC.sh launch.",
         ],
     }
     (work / "handoff.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     (job_dir / "kart_handoff.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     return meta
+
+
+def _is_concentrated_alloy(material: dict[str, Any]) -> bool:
+    active = [
+        float(c.get("atomic_percent") or 0)
+        for c in material.get("composition") or []
+        if float(c.get("atomic_percent") or 0) > 5.0
+    ]
+    return len(active) >= 2
 
 
 def parse_energy_dat(path: Path) -> list[dict[str, Any]]:
@@ -367,6 +394,33 @@ def parse_energy_dat(path: Path) -> list[dict[str, Any]]:
             }
         )
     return events
+
+
+def analyze_trapping(events: list[dict[str, Any]], *, flicker_barrier_eV: float = 0.15) -> dict[str, Any]:
+    """Heuristic flicker / trapping diagnostic from parsed KART events."""
+    if not events:
+        return {
+            "flicker_ratio": None,
+            "trapping_risk": "unknown",
+            "low_barrier_count": 0,
+            "total_events": 0,
+        }
+    barriers = [float(e.get("barrier_eV") or 0) for e in events]
+    low = sum(1 for b in barriers if b < flicker_barrier_eV)
+    total = len(barriers)
+    ratio = low / total if total else 0.0
+    risk = "low"
+    if ratio >= 0.5:
+        risk = "high"
+    elif ratio >= 0.25:
+        risk = "medium"
+    return {
+        "flicker_ratio": round(ratio, 4),
+        "trapping_risk": risk,
+        "low_barrier_count": low,
+        "total_events": total,
+        "flicker_threshold_eV": flicker_barrier_eV,
+    }
 
 
 def synthetic_events(

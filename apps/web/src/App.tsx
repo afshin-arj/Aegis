@@ -137,6 +137,7 @@ type JobInfo = {
   defect_summary?: Record<string, number | string | object>;
   kart_summary?: Record<string, unknown>;
   mmonca_summary?: Record<string, unknown>;
+  kmc_provenance?: KmcProvenance;
   surface_summary?: Record<string, unknown>;
   execution_mode?: string | null;
   structure_provenance?: Record<string, unknown> | null;
@@ -578,6 +579,29 @@ type KartSummary = {
   events?: KartEvent[];
   runs?: KartRun[];
   handoff?: string;
+  prefactor_mode?: string;
+  provenance?: KmcProvenance;
+  router?: KmcRecommend;
+};
+
+type KmcProvenance = {
+  tier: string;
+  synthetic: boolean;
+  prefactor_model: string;
+  trapping_risk: string;
+  validation_status: string;
+  target_time_s?: number;
+  flicker_ratio?: number | null;
+  warnings?: string[];
+};
+
+type KmcRecommend = {
+  recommended_tier: string;
+  warnings: string[];
+  notes: string[];
+  concentrated_alloy: boolean;
+  prefactor_model_hint: string;
+  trapping_risk_hint: string;
 };
 
 type DoeCampaign = {
@@ -651,6 +675,7 @@ export default function App() {
   const [kartMaxWallS, setKartMaxWallS] = useState(600);
   const [kartMaxKmcTimeS, setKartMaxKmcTimeS] = useState(1);
   const [kartDoeTemps, setKartDoeTemps] = useState("");
+  const [kmcRecommend, setKmcRecommend] = useState<KmcRecommend | null>(null);
   const [kartSummary, setKartSummary] = useState<KartSummary | null>(null);
   const [jobSnapshot, setJobSnapshot] = useState<{
     material_id: string;
@@ -1063,6 +1088,35 @@ export default function App() {
       .join(" ");
     if (elems) setUploadElements(elems);
   }, [materialId, material]);
+
+  useEffect(() => {
+    if (!materialId || tab !== "params") return;
+    const handle = window.setTimeout(() => {
+      api<KmcRecommend>("/api/kmc/recommend", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          material_id: materialId,
+          target_time_s: kartMaxKmcTimeS,
+          temperature_K: kartTemperatureK,
+          run_kart_anneal: runKart,
+          run_mmonca_okmc: runMmonca,
+          structure_kind: params.structure_kind || "single_crystal",
+        }),
+      })
+        .then((rec) => setKmcRecommend(rec))
+        .catch(() => setKmcRecommend(null));
+    }, 250);
+    return () => window.clearTimeout(handle);
+  }, [
+    tab,
+    materialId,
+    kartMaxKmcTimeS,
+    kartTemperatureK,
+    runKart,
+    runMmonca,
+    params.structure_kind,
+  ]);
 
   useEffect(() => {
     if (tab !== "potential" || !materialId) return;
@@ -4171,6 +4225,57 @@ export default function App() {
               />
               Confirm large cell (&gt;20³ unit cells)
             </label>
+            <section className="panel stack">
+              <h2>Post-cascade kMC</h2>
+              <p className="hint">
+                Three-tier ladder: k-ART (short off-lattice anneal) · ML-KMC / first-passage (Phase E/H) ·
+                stochastic cluster dynamics (Phase G, long-term). See docs/kmc.md.
+              </p>
+              {kmcRecommend ? (
+                <div className="chip-row">
+                  <span className="chip">
+                    <span className="chip-k">recommended</span>
+                    <span className="chip-v">{kmcRecommend.recommended_tier}</span>
+                  </span>
+                  {kmcRecommend.concentrated_alloy && (
+                    <span className="chip">
+                      <span className="chip-k">alloy</span>
+                      <span className="chip-v tone-warn">concentrated</span>
+                    </span>
+                  )}
+                  <span className="chip">
+                    <span className="chip-k">prefactor</span>
+                    <span className="chip-v">{kmcRecommend.prefactor_model_hint}</span>
+                  </span>
+                  <span className="chip">
+                    <span className="chip-k">trapping</span>
+                    <span
+                      className={`chip-v ${
+                        kmcRecommend.trapping_risk_hint === "high"
+                          ? "tone-fail"
+                          : kmcRecommend.trapping_risk_hint === "medium"
+                            ? "tone-warn"
+                            : ""
+                      }`}
+                    >
+                      {kmcRecommend.trapping_risk_hint}
+                    </span>
+                  </span>
+                </div>
+              ) : (
+                <p className="hint">Loading KMC router recommendation…</p>
+              )}
+              {kmcRecommend?.notes?.map((note) => (
+                <p key={note} className="hint">
+                  {note}
+                </p>
+              ))}
+              {kmcRecommend?.warnings?.map((w) => (
+                <div key={w} className="alert alert-warn">
+                  {w}
+                </div>
+              ))}
+            </section>
             <label className="check-row">
               <input type="checkbox" checked={runKart} onChange={(e) => setRunKart(e.target.checked)} />
               Queue k-ART anneal after MD
@@ -4230,8 +4335,8 @@ export default function App() {
                   />
                 </Field>
                 <p className="hint">
-                  DOE runs multiple anneals on the same cascade. Aegis writes a kart_work/T* handoff package per
-                  temperature (initial.conf, conf.lammps, KMC.sh.aegis).
+                  DOE runs multiple anneals on the same cascade. Handoff v3 sets MIN_EVENT_SEARCHES=25 and
+                  prefactor_mode=htst for concentrated alloys (KMC.sh.aegis).
                 </p>
               </fieldset>
             )}
@@ -4505,6 +4610,53 @@ export default function App() {
                   />
                 ))}
               </div>
+              {job?.kmc_provenance && (
+                <>
+                  <h3>KMC provenance</h3>
+                  <div className="chip-row">
+                    <span className="chip">
+                      <span className="chip-k">tier</span>
+                      <span className="chip-v">{job.kmc_provenance.tier}</span>
+                    </span>
+                    <span className="chip">
+                      <span className="chip-k">prefactor</span>
+                      <span className="chip-v">{job.kmc_provenance.prefactor_model}</span>
+                    </span>
+                    <span className="chip">
+                      <span className="chip-k">trapping</span>
+                      <span
+                        className={`chip-v ${
+                          job.kmc_provenance.trapping_risk === "high"
+                            ? "tone-fail"
+                            : job.kmc_provenance.trapping_risk === "medium"
+                              ? "tone-warn"
+                              : ""
+                        }`}
+                      >
+                        {job.kmc_provenance.trapping_risk}
+                        {job.kmc_provenance.flicker_ratio != null
+                          ? ` · flicker ${(job.kmc_provenance.flicker_ratio * 100).toFixed(0)}%`
+                          : ""}
+                      </span>
+                    </span>
+                    <span className="chip">
+                      <span className="chip-k">validation</span>
+                      <span className="chip-v">{job.kmc_provenance.validation_status}</span>
+                    </span>
+                    {job.kmc_provenance.synthetic && (
+                      <span className="chip">
+                        <span className="chip-k">synthetic</span>
+                        <span className="chip-v tone-warn">yes</span>
+                      </span>
+                    )}
+                  </div>
+                  {job.kmc_provenance.warnings?.map((w) => (
+                    <div key={w} className="alert alert-warn">
+                      {w}
+                    </div>
+                  ))}
+                </>
+              )}
               {(kartSummary || job?.kart_summary) && (
                 <>
                   <h3>k-ART anneal</h3>
@@ -4518,6 +4670,37 @@ export default function App() {
                             <span className="chip-k">status</span>
                             <span className="chip-v">{ks?.status || "—"}</span>
                           </span>
+                          {ks?.prefactor_mode && (
+                            <span className="chip">
+                              <span className="chip-k">prefactor</span>
+                              <span className="chip-v">{ks.prefactor_mode}</span>
+                            </span>
+                          )}
+                          {ks?.provenance?.trapping_risk && (
+                            <span className="chip">
+                              <span className="chip-k">trapping</span>
+                              <span
+                                className={`chip-v ${
+                                  ks.provenance.trapping_risk === "high"
+                                    ? "tone-fail"
+                                    : ks.provenance.trapping_risk === "medium"
+                                      ? "tone-warn"
+                                      : ""
+                                }`}
+                              >
+                                {ks.provenance.trapping_risk}
+                                {ks.provenance.flicker_ratio != null
+                                  ? ` · flicker ${(ks.provenance.flicker_ratio * 100).toFixed(0)}%`
+                                  : ""}
+                              </span>
+                            </span>
+                          )}
+                          {ks?.provenance?.validation_status && (
+                            <span className="chip">
+                              <span className="chip-k">validation</span>
+                              <span className="chip-v">{ks.provenance.validation_status}</span>
+                            </span>
+                          )}
                           {ks?.doe && (
                             <span className="chip">
                               <span className="chip-k">DOE</span>
@@ -4955,6 +5138,21 @@ export default function App() {
             <dt>Cell</dt>
             <dd>{params.nx} × {params.ny} × {params.nz} unit cells</dd>
           </div>
+          {(kmcRecommend || job?.kmc_provenance) && (
+            <div>
+              <dt>KMC</dt>
+              <dd>
+                {job?.kmc_provenance?.tier || kmcRecommend?.recommended_tier || "—"}
+                {kmcRecommend?.prefactor_model_hint
+                  ? ` · ${kmcRecommend.prefactor_model_hint}`
+                  : job?.kmc_provenance?.prefactor_model
+                    ? ` · ${job.kmc_provenance.prefactor_model}`
+                    : ""}
+                {(job?.kmc_provenance?.trapping_risk || kmcRecommend?.trapping_risk_hint) &&
+                  ` · trap ${job?.kmc_provenance?.trapping_risk || kmcRecommend?.trapping_risk_hint}`}
+              </dd>
+            </div>
+          )}
         </dl>
         <p className="recipe-note">
           D–D and D–T are irradiation scenario presets for cascade or implantation studies, not plasma-scale predictions.

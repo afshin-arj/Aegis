@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -8,7 +9,13 @@ import time
 from pathlib import Path
 from typing import Any
 
-from kart.handoff import build_kart_package, parse_energy_dat, synthetic_events
+from kmc.provenance import build_provenance, merge_router_warnings
+from kart.handoff import (
+    analyze_trapping,
+    build_kart_package,
+    parse_energy_dat,
+    synthetic_events,
+)
 
 
 EXPECTED_COMMIT = os.environ.get("AEGIS_KART_COMMIT", "62d66adf")
@@ -95,6 +102,7 @@ def _run_one_temperature(
     material: dict[str, Any] | None,
     potential: dict[str, Any] | None,
     info: dict[str, Any],
+    router: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     n_vac, n_sia = _defect_counts(job_dir)
     handoff = build_kart_package(
@@ -107,6 +115,8 @@ def _run_one_temperature(
         potential=potential,
     )
     work = job_dir / handoff["work_dir"]
+    prefactor_mode = handoff.get("prefactor_mode") or "constant"
+    trapping_hint = handoff.get("trapping_risk_hint") or "unknown"
     out: dict[str, Any] = {
         "temperature_K": temperature_K,
         "max_events": max_events,
@@ -117,7 +127,31 @@ def _run_one_temperature(
         "message": "",
         "events": [],
         "wall_elapsed_s": 0.0,
+        "handoff_format": handoff.get("format"),
+        "prefactor_mode": prefactor_mode,
     }
+
+    def _attach_provenance(
+        *,
+        synthetic: bool,
+        validation_status: str,
+        events: list[dict[str, Any]],
+    ) -> None:
+        trap = analyze_trapping(events)
+        risk = trap.get("trapping_risk") or trapping_hint
+        prov = build_provenance(
+            "kart",
+            synthetic=synthetic,
+            prefactor_model="htst" if prefactor_mode == "htst" else "constant",
+            structure_class="as_cascade",
+            trapping_risk=risk if risk in {"low", "medium", "high"} else "unknown",
+            validation_status=validation_status,
+            target_time_s=float(max_kmc_time_s),
+            flicker_ratio=trap.get("flicker_ratio"),
+            warnings=list(router.get("warnings") or []) if router else [],
+        )
+        out["trapping"] = trap
+        out["provenance"] = merge_router_warnings(prov, router)
 
     if not info.get("kart_found"):
         out["message"] = "KART binary not available — handoff written; events stubbed."
@@ -129,6 +163,7 @@ def _run_one_temperature(
             n_sia=n_sia,
         )
         out["status"] = "stubbed"
+        _attach_provenance(synthetic=True, validation_status="stub", events=out["events"])
         (work / "kart_run_summary.json").write_text(json.dumps(out, indent=2), encoding="utf-8")
         return out
 
@@ -163,6 +198,7 @@ def _run_one_temperature(
         out["message"] = (
             f"Parsed {len(out['events'])} events from Energy.dat at T={temperature_K} K."
         )
+        _attach_provenance(synthetic=False, validation_status="energy_dat", events=out["events"])
     else:
         out["events"] = synthetic_events(
             temperature_K=temperature_K,
@@ -173,9 +209,10 @@ def _run_one_temperature(
         )
         out["status"] = "handoff_ready"
         out["message"] = (
-            "KART binary present; aegis-kart-handoff-v2 package written under kart_work/. "
+            "KART binary present; aegis-kart-handoff-v3 package written under kart_work/. "
             "Launch via KMC.sh.aegis (WSL/Linux). Events shown are Aegis stubs until Energy.dat exists."
         )
+        _attach_provenance(synthetic=True, validation_status="handoff_ready", events=out["events"])
 
     (work / "kart_run_summary.json").write_text(json.dumps(out, indent=2), encoding="utf-8")
     return out
@@ -191,6 +228,7 @@ def run_anneal_stub_or_real(
     temperatures: list[float] | None = None,
     material: dict[str, Any] | None = None,
     potential: dict[str, Any] | None = None,
+    router: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Phase-2 anneal path: per-T handoff packages + optional DOE over temperatures."""
     info = discover_kart()
@@ -214,19 +252,23 @@ def run_anneal_stub_or_real(
             material=material,
             potential=potential,
             info=info,
+            router=router,
         )
         for T in temps
     ]
 
     primary = runs[0]
+    primary_prov = primary.get("provenance") if isinstance(primary.get("provenance"), dict) else None
     summary: dict[str, Any] = {
-        "format": "aegis-kart-summary-v2",
+        "format": "aegis-kart-summary-v3",
         "engine": "kart",
         "doe": len(runs) > 1,
         "temperatures_K": temps,
         "kart_found": bool(info.get("kart_found")),
         "kart_message": info.get("kart_message", ""),
+        "router": router,
         "runs": runs,
+        "provenance": primary_prov,
         # Back-compat fields for older UI consumers
         "temperature_K": primary["temperature_K"],
         "max_events": max_events,
@@ -238,6 +280,7 @@ def run_anneal_stub_or_real(
         ),
         "events": primary.get("events") or [],
         "handoff": primary.get("handoff"),
+        "prefactor_mode": primary.get("prefactor_mode"),
     }
     (job_dir / "kart_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     return summary

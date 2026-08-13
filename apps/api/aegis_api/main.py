@@ -30,6 +30,9 @@ from aegis_schema import (  # noqa: E402
     JobInfo,
     JobStatus,
     KartAnnealRequest,
+    KmcRecommendRequest,
+    KmcRecommendResponse,
+    KmcTier,
     LammpsRunParams,
     Material,
     MaterialUpdate,
@@ -1107,6 +1110,37 @@ def get_defects(job_id: str) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+@app.post("/api/kmc/recommend", response_model=KmcRecommendResponse)
+def recommend_kmc_route(body: KmcRecommendRequest) -> KmcRecommendResponse:
+    """Preview KMC tier routing for UI (Adjanor 2025 / Huang 2023 ladder)."""
+    from kmc.router import recommend_kmc
+
+    material = store.get_material(body.material_id)
+    if not material:
+        raise HTTPException(404, "material not found")
+    kart_info = discover_kart()
+    plan = recommend_kmc(
+        material=material.model_dump(mode="json"),
+        target_time_s=body.target_time_s,
+        temperature_K=body.temperature_K,
+        run_kart_anneal=body.run_kart_anneal,
+        run_mmonca_okmc=body.run_mmonca_okmc,
+        kart_found=bool(kart_info.get("kart_found")),
+        structure_kind=body.structure_kind,
+        requested_tier=body.kmc_tier.value if body.kmc_tier else None,
+    )
+    return KmcRecommendResponse(
+        recommended_tier=KmcTier(plan["recommended_tier"]),
+        warnings=list(plan.get("warnings") or []),
+        notes=list(plan.get("notes") or []),
+        concentrated_alloy=bool(plan.get("concentrated_alloy")),
+        prefactor_model_hint=str(plan.get("prefactor_model_hint") or "unknown"),
+        trapping_risk_hint=str(plan.get("trapping_risk_hint") or "unknown"),
+        target_time_s=float(plan.get("target_time_s") or body.target_time_s),
+        temperature_K=float(plan.get("temperature_K") or body.temperature_K),
+    )
+
+
 @app.get("/api/jobs/{job_id}/kart")
 def get_kart_summary(job_id: str) -> dict[str, Any]:
     info = jobs.get(job_id)
@@ -1133,6 +1167,26 @@ def post_kart_anneal(job_id: str, body: KartAnnealRequest) -> dict[str, Any]:
         raise HTTPException(400, "no cascade dumps/defects available for handoff")
     jobs._update(job_id, status=JobStatus.ANNEALING, message="KART DOE anneal")
     try:
+        from kmc.router import recommend_kmc
+
+        material = store.get_material(info.material_id) if info.material_id else None
+        req_path = job_dir / "request.json"
+        req = json.loads(req_path.read_text(encoding="utf-8")) if req_path.exists() else {}
+        sk = str(
+            getattr(info.run_params.structure_kind, "value", info.run_params.structure_kind)
+            or "single_crystal"
+        )
+        router = recommend_kmc(
+            material=material.model_dump(mode="json") if material else None,
+            target_time_s=float(body.max_kmc_time_s),
+            temperature_K=float(body.temperature_K),
+            run_kart_anneal=True,
+            run_mmonca_okmc=bool(req.get("run_mmonca_okmc")),
+            kart_found=True,
+            structure_kind=sk.lower(),
+            defect_summary=info.defect_summary if isinstance(info.defect_summary, dict) else None,
+            requested_tier=req.get("kmc_tier"),
+        )
         summary = run_anneal_stub_or_real(
             job_dir,
             temperature_K=body.temperature_K,
@@ -1140,13 +1194,24 @@ def post_kart_anneal(job_id: str, body: KartAnnealRequest) -> dict[str, Any]:
             max_wall_s=body.max_wall_s,
             max_kmc_time_s=body.max_kmc_time_s,
             temperatures=body.temperatures,
+            material=material.model_dump(mode="json") if material else None,
+            router=router,
         )
+        kmc_prov = None
+        if isinstance(summary, dict) and isinstance(summary.get("provenance"), dict):
+            try:
+                from aegis_schema import KmcProvenance
+
+                kmc_prov = KmcProvenance(**summary["provenance"])
+            except Exception:  # noqa: BLE001
+                kmc_prov = None
         jobs._update(
             job_id,
             status=JobStatus.COMPLETED,
             message="completed",
             kart_summary=summary,
             defect_summary=info.defect_summary,
+            kmc_provenance=kmc_prov,
         )
         return summary
     except Exception as exc:  # noqa: BLE001

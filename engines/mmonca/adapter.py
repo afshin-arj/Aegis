@@ -6,6 +6,8 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from kmc.provenance import build_provenance, merge_router_warnings
+
 
 def discover_mmonca() -> dict[str, Any]:
     """Locate optional MMonCa object-KMC binary (Phase-3 comparison path)."""
@@ -48,6 +50,7 @@ def run_okmc_stub_or_real(
     *,
     temperature_K: float = 600.0,
     max_events: int = 1000,
+    router: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Write MMonCa-oriented handoff from defects; stub event evolution if binary missing."""
     info = discover_mmonca()
@@ -108,7 +111,7 @@ def run_okmc_stub_or_real(
         )
 
     out: dict[str, Any] = {
-        "format": "aegis-mmonca-summary-v1",
+        "format": "aegis-mmonca-summary-v2",
         "engine": "mmonca",
         "temperature_K": temperature_K,
         "max_events": max_events,
@@ -125,6 +128,22 @@ def run_okmc_stub_or_real(
             "vacancies": events[-1]["vacancies"] if events else n_v,
             "interstitials": events[-1]["interstitials"] if events else n_i,
         },
+        "provenance": merge_router_warnings(
+            build_provenance(
+                "mmonca_compare",
+                synthetic=True,
+                prefactor_model="unknown",
+                structure_class="as_cascade",
+                trapping_risk="unknown",
+                validation_status="stub" if not info["mmonca_found"] else "handoff_ready",
+                target_time_s=0.0,
+                warnings=[
+                    "MMonCa path is comparison-only — not the primary post-cascade kMC tier.",
+                    "Event curve is Aegis synthetic until real OKMC launch is wired.",
+                ],
+            ),
+            router,
+        ),
     }
     (job_dir / "mmonca_summary.json").write_text(json.dumps(out, indent=2), encoding="utf-8")
     (work / "run_summary.json").write_text(json.dumps(out, indent=2), encoding="utf-8")

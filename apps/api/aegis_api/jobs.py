@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from aegis_schema import JobCreate, JobInfo, JobStatus, Material, Potential
+from aegis_schema import JobCreate, JobInfo, JobStatus, KmcProvenance, KmcTier, Material, Potential
 
 from aegis_api.analysis import analyze_job_dir
 from lammps.templates import (
@@ -21,6 +21,8 @@ from lammps.templates import (
     write_surface_input,
 )
 from kart.adapter import run_anneal_stub_or_real
+from kmc.router import recommend_kmc
+from kart.adapter import discover_kart as discover_kart_engine
 from mmonca.adapter import run_okmc_stub_or_real
 
 
@@ -249,6 +251,7 @@ class JobManager:
             run_params=body.run_params,
             run_kart_anneal=body.run_kart_anneal,
             run_mmonca_okmc=body.run_mmonca_okmc,
+            kmc_tier=body.kmc_tier,
         )
         job_dir = self.runs_root / job_id
         job_dir.mkdir(parents=True, exist_ok=True)
@@ -268,6 +271,7 @@ class JobManager:
                     "run_mmonca_okmc": body.run_mmonca_okmc,
                     "mmonca_temperature_K": body.mmonca_temperature_K,
                     "mmonca_max_events": body.mmonca_max_events,
+                    "kmc_tier": body.kmc_tier.value if body.kmc_tier else None,
                 },
                 indent=2,
             ),
@@ -658,16 +662,31 @@ class JobManager:
 
             kart_summary = None
             mmonca_summary = None
+            kmc_provenance: KmcProvenance | None = None
             req = json.loads((job_dir / "request.json").read_text(encoding="utf-8"))
             info = self.get(job_id)
+            sk_anneal = str(
+                getattr(params.get("structure_kind"), "value", params.get("structure_kind"))
+                or "single_crystal"
+            ).lower()
+            kart_engine = discover_kart_engine()
+            router = recommend_kmc(
+                material=material.model_dump(mode="json"),
+                target_time_s=float(req.get("kart_max_kmc_time_s", 1.0)),
+                temperature_K=float(req.get("kart_temperature_K", 600)),
+                run_kart_anneal=bool(info and info.run_kart_anneal),
+                run_mmonca_okmc=bool(req.get("run_mmonca_okmc")),
+                kart_found=bool(kart_engine.get("kart_found")),
+                structure_kind=sk_anneal,
+                defect_summary=summary.get("summary"),
+                requested_tier=req.get("kmc_tier"),
+            )
             if info and info.run_kart_anneal:
                 self._update(job_id, status=JobStatus.ANNEALING, message="KART anneal")
                 with log_path.open("a", encoding="utf-8") as log:
                     log.write("[Aegis] starting KART anneal path\n")
-                sk_anneal = str(
-                    getattr(params.get("structure_kind"), "value", params.get("structure_kind"))
-                    or "single_crystal"
-                ).lower()
+                    if router.get("warnings"):
+                        log.write(f"[Aegis] KMC router: {router.get('recommended_tier')}\n")
                 try:
                     if self._is_cancelled(job_id):
                         return
@@ -680,6 +699,7 @@ class JobManager:
                         temperatures=req.get("kart_anneal_temperatures"),
                         material=material.model_dump(mode="json"),
                         potential=potential.model_dump(mode="json"),
+                        router=router,
                     )
                     if isinstance(kart_summary, dict) and sk_anneal not in {"", "single_crystal"}:
                         kart_summary["ws_proxy_warning"] = (
@@ -689,6 +709,11 @@ class JobManager:
                         )
                         prev = kart_summary.get("message") or ""
                         kart_summary["message"] = f"{prev} {kart_summary['ws_proxy_warning']}".strip()
+                    if isinstance(kart_summary.get("provenance"), dict):
+                        try:
+                            kmc_provenance = KmcProvenance(**kart_summary["provenance"])
+                        except Exception:  # noqa: BLE001
+                            pass
                 except Exception as anneal_exc:  # noqa: BLE001
                     # Keep cascade COMPLETED — mirror POST /kart/anneal semantics
                     with log_path.open("a", encoding="utf-8") as log:
@@ -717,6 +742,7 @@ class JobManager:
                         job_dir,
                         temperature_K=float(req.get("mmonca_temperature_K", 600)),
                         max_events=int(req.get("mmonca_max_events", 1000)),
+                        router=router,
                     )
                     if isinstance(mmonca_summary, dict):
                         mmonca_summary["synthetic"] = True
@@ -725,6 +751,11 @@ class JobManager:
                                 f"structure_kind={sk_anneal}: MMonCa path is synthetic and fed by "
                                 "WS proxy counts — not a calibrated OKMC result."
                             )
+                        if not kmc_provenance and isinstance(mmonca_summary.get("provenance"), dict):
+                            try:
+                                kmc_provenance = KmcProvenance(**mmonca_summary["provenance"])
+                            except Exception:  # noqa: BLE001
+                                pass
                 except Exception as okmc_exc:  # noqa: BLE001
                     with log_path.open("a", encoding="utf-8") as log:
                         log.write(f"[Aegis] MMonCa failed (cascade kept): {okmc_exc}\n")
@@ -758,6 +789,21 @@ class JobManager:
                     )
                 except Exception:  # noqa: BLE001
                     pass
+            if kmc_provenance is None and router.get("warnings"):
+                try:
+                    kmc_provenance = KmcProvenance(
+                        tier=KmcTier(router["recommended_tier"]),
+                        synthetic=True,
+                        prefactor_model=(
+                            "htst" if router.get("prefactor_model_hint") == "htst" else "unknown"
+                        ),
+                        trapping_risk=router.get("trapping_risk_hint") or "unknown",
+                        validation_status="unvalidated",
+                        target_time_s=float(req.get("kart_max_kmc_time_s", 1.0)),
+                        warnings=list(router.get("warnings") or []),
+                    )
+                except Exception:  # noqa: BLE001
+                    kmc_provenance = None
             self._update(
                 job_id,
                 status=JobStatus.COMPLETED,
@@ -765,6 +811,7 @@ class JobManager:
                 defect_summary=summary.get("summary"),
                 kart_summary=kart_summary,
                 mmonca_summary=mmonca_summary,
+                kmc_provenance=kmc_provenance,
                 surface_summary=surface_summary,
                 execution_mode=execution_mode,
                 structure_provenance=struct_prov,

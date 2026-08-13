@@ -127,14 +127,22 @@ runs/<job_id>/kart_work/T600/
   initial.conf      # kART INI (box + type x y z)
   conf.lammps       # LAMMPS data
   in.lammps         # force helper (ENERGY_CALC=LAM)
-  KMC.sh.aegis      # setenv template (TEMPERATURE, NBRE_KMC_STEPS, TOTAL_TIME)
+  KMC.sh.aegis      # setenv template (TEMPERATURE, NBRE_KMC_STEPS, TOTAL_TIME,
+                    #                 MIN_EVENT_SEARCHES=25, PREFACTOR_MODE)
   defects_*.xyz     # vacancy / SIA overlays
-  handoff.json      # aegis-kart-handoff-v2 metadata
+  handoff.json      # aegis-kart-handoff-v3 metadata
 ```
+
+### Handoff v3 notes
+
+- **`PREFACTOR_MODE`**: `htst` when the material is a concentrated alloy (≥2 species >5 at%); otherwise `constant`.
+- **`MIN_EVENT_SEARCHES=25`**: raises the event-search floor for denser barrier catalogs (Adjanor 2025 practice).
+- **Trapping**: after `Energy.dat` exists, Aegis computes flicker ratio / trapping risk and stores them on `aegis-kart-summary-v3` + job `kmc_provenance`.
+- Tier routing / warnings: `POST /api/kmc/recommend` and `docs/kmc.md`.
 
 1. Build KART (WSL/Linux recommended on Windows).
 2. Copy/adapt `KMC.sh.aegis` → `KMC.sh`, set `CRYST_TOPOID` after a scout run (see kart-doc Si vacancy tutorial).
 3. Launch KART in that directory; when `Energy.dat` appears, Aegis will parse it on the next anneal refresh.
-4. DOE: set comma-separated temperatures in the UI, or `POST /api/jobs/{id}/kart/anneal`.
+4. DOE: set comma-separated temperatures in the UI, or `POST /api/jobs/{id}/kart/anneal` (router + provenance attached).
 
 Until a real `Energy.dat` exists, Results shows an honest **stub** barrier timeline for UI wiring.

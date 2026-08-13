@@ -24,6 +24,56 @@ class RunMode(str, Enum):
     INTERSTITIAL = "interstitial"  # insert impurities/SIAs along lattice directions
 
 
+class KmcTier(str, Enum):
+    """Post-cascade kinetic evolution path (see docs/kmc.md)."""
+
+    KART = "kart"
+    ML_KMC = "ml_kmc"
+    STOCHASTIC_CD = "stochastic_cd"
+    FIRST_PASSAGE = "first_passage"
+    MMONCA_COMPARE = "mmonca_compare"
+
+
+class KmcProvenance(BaseModel):
+    """Provenance for any kMC-tier summary (kart, mmonca, future ML-KMC / CD)."""
+
+    format: str = "aegis-kmc-provenance-v1"
+    tier: KmcTier
+    synthetic: bool = False
+    prefactor_model: Literal["constant", "htst", "composition_polynomial", "unknown"] = "unknown"
+    structure_class: Literal["random", "mmc", "as_cascade", "unknown"] = "as_cascade"
+    sro_parameters: dict[str, float] | None = None
+    trapping_risk: Literal["low", "medium", "high", "unknown"] = "unknown"
+    validation_status: Literal[
+        "energy_dat", "reference_curve", "stub", "handoff_ready", "unvalidated"
+    ] = "unvalidated"
+    target_time_s: float = 0.0
+    simulated_volume_cm3: float | None = None
+    flicker_ratio: float | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
+class KmcRecommendRequest(BaseModel):
+    material_id: str
+    target_time_s: float = Field(1.0, ge=0.0)
+    temperature_K: float = Field(600.0, ge=1.0)
+    run_kart_anneal: bool = False
+    run_mmonca_okmc: bool = False
+    structure_kind: str = "single_crystal"
+    kmc_tier: KmcTier | None = None
+
+
+class KmcRecommendResponse(BaseModel):
+    recommended_tier: KmcTier
+    warnings: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+    concentrated_alloy: bool = False
+    prefactor_model_hint: str = "unknown"
+    trapping_risk_hint: str = "unknown"
+    target_time_s: float = 1.0
+    temperature_K: float = 600.0
+
+
 class CrystalSystem(str, Enum):
     BCC = "bcc"
     FCC = "fcc"
@@ -359,6 +409,8 @@ class JobCreate(BaseModel):
     run_mmonca_okmc: bool = False
     mmonca_temperature_K: float = 600.0
     mmonca_max_events: int = 1000
+    # Optional override; null → router picks at job start
+    kmc_tier: KmcTier | None = None
 
 
 class KartAnnealRequest(BaseModel):
@@ -394,9 +446,11 @@ class JobInfo(BaseModel):
     run_params: LammpsRunParams
     run_kart_anneal: bool = False
     run_mmonca_okmc: bool = False
+    kmc_tier: KmcTier | None = None
     defect_summary: dict[str, Any] | None = None
     kart_summary: dict[str, Any] | None = None
     mmonca_summary: dict[str, Any] | None = None
+    kmc_provenance: KmcProvenance | None = None
     surface_summary: dict[str, Any] | None = None
     # Provenance for Results / UI badges
     execution_mode: str | None = None  # real_md | synthetic_proxy
