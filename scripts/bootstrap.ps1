@@ -55,13 +55,13 @@ function Ensure-WingetPackage([string]$Id, [string]$Name, [string]$CheckCommand)
     Write-Warn ("winget not found - install {0} manually if missing." -f $Name)
     return
   }
-  $list = & winget list --id $Id -e 2>$null | Out-String
+  $list = & winget list --id $Id -e --disable-interactivity 2>$null | Out-String
   if ($list -match [regex]::Escape($Id)) {
     Write-Ok ("{0} already installed (winget)" -f $Name)
     return
   }
   Write-Info ("Installing {0} via winget ({1})..." -f $Name, $Id)
-  & winget install --id $Id -e --accept-package-agreements --accept-source-agreements
+  & winget install --id $Id -e --accept-package-agreements --accept-source-agreements --disable-interactivity
   Refresh-Path
 }
 
@@ -85,6 +85,28 @@ function Find-Mpiexec {
   return $null
 }
 
+function Test-MsmpiAlreadyInstalled {
+  if (Find-Mpiexec) { return $true }
+  $winget = Get-Command winget -ErrorAction SilentlyContinue
+  if ($winget) {
+    foreach ($id in @("Microsoft.msmpi", "Microsoft.MPI")) {
+      $list = & winget list --id $id -e --disable-interactivity 2>$null | Out-String
+      if ($list -match [regex]::Escape($id)) { return $true }
+    }
+    $byName = & winget list --name "Microsoft MPI" --disable-interactivity 2>$null | Out-String
+    if ($byName -match '(?i)Microsoft\s+MPI|msmpi') { return $true }
+  }
+  # MSI / Add-Remove Programs style markers
+  $roots = @(
+    (Join-Path ${env:ProgramFiles} "Microsoft MPI"),
+    (Join-Path ${env:ProgramFiles(x86)} "Microsoft MPI")
+  )
+  foreach ($r in $roots) {
+    if ($r -and (Test-Path $r)) { return $true }
+  }
+  return $false
+}
+
 function Ensure-Mpi {
   Write-Step "MPI (Windows MS-MPI)"
   $existing = Find-Mpiexec
@@ -97,20 +119,38 @@ function Ensure-Mpi {
     Write-Info "Skipping MPI install (AEGIS_INSTALL_MPI=0)."
     return
   }
-  # Runtime package provides mpiexec for parallel LAMMPS launches
+  # Never re-run winget/MSI when MS-MPI is already on the machine (avoids uninstall UI hang).
+  if (Test-MsmpiAlreadyInstalled) {
+    Refresh-Path
+    $existing = Find-Mpiexec
+    if ($existing) {
+      Write-Ok ("MPI launcher already present: {0}" -f $existing)
+      $env:AEGIS_MPIEXEC = $existing
+      return
+    }
+    Write-Warn "Microsoft MPI appears installed but mpiexec is not on PATH. Set AEGIS_MPIEXEC; skipping reinstall."
+    return
+  }
+  $winget = Get-Command winget -ErrorAction SilentlyContinue
+  if (-not $winget) {
+    Write-Warn "winget not found — install MS-MPI runtime manually (msmpisetup.exe)."
+    return
+  }
+  Write-Info "Installing Microsoft MPI via winget (non-interactive)..."
   try {
-    Ensure-WingetPackage "Microsoft.msmpi" "Microsoft MPI" "mpiexec"
+    & winget install --id Microsoft.msmpi -e --accept-package-agreements --accept-source-agreements --disable-interactivity
   } catch {
     Write-Warn ("MS-MPI winget install issue: {0}" -f $_)
   }
   Refresh-Path
+  Start-Sleep -Seconds 1
   $existing = Find-Mpiexec
   if ($existing) {
     Write-Ok ("MPI launcher installed: {0}" -f $existing)
     $env:AEGIS_MPIEXEC = $existing
   } else {
     Write-Warn "mpiexec not found after MS-MPI attempt. Install from https://www.microsoft.com/en-us/download/details.aspx?id=105289"
-    Write-Warn "Parallel LAMMPS (mpi_procs>1) needs mpiexec + an MPI-enabled lmp (GUI installer is usually serial)."
+    Write-Warn "Not launching an interactive MPI installer (avoids uninstall/cancel hang on re-run)."
   }
 }
 
@@ -222,19 +262,22 @@ function Test-LammpsLooksSerial([string]$LmpPath) {
 function Ensure-Lammps {
   Write-Step "LAMMPS (Windows, prefer MS-MPI parallel build)"
   $existing = Find-Lammps
-  $wantMpi = $env:AEGIS_LAMMPS_SERIAL_OK -ne "1"
-  if ($existing -and $wantMpi -and -not (Test-LammpsLooksSerial $existing)) {
-    Write-Ok ("MPI-capable LAMMPS already present: {0}" -f $existing)
+  $force = $env:AEGIS_FORCE_LAMMPS_INSTALL -eq "1"
+
+  # Idempotent: if lmp exists, never re-run the NSIS installer (it prompts to uninstall).
+  if ($existing -and -not $force) {
     $env:AEGIS_LAMMPS_BIN = $existing
+    if (Test-LammpsLooksSerial $existing) {
+      Write-Ok ("LAMMPS already present (serial/GUI?): {0}" -f $existing)
+      Write-Info "Skipping installer re-run. Use Engines → Install parallel LAMMPS, or set AEGIS_FORCE_LAMMPS_INSTALL=1."
+    } else {
+      Write-Ok ("MPI-capable LAMMPS already present: {0}" -f $existing)
+    }
     return
   }
-  if ($existing -and -not $wantMpi) {
-    Write-Ok ("LAMMPS already present (serial OK): {0}" -f $existing)
-    $env:AEGIS_LAMMPS_BIN = $existing
-    return
-  }
-  if ($existing -and $wantMpi -and (Test-LammpsLooksSerial $existing)) {
-    Write-Info ("Found serial/GUI LAMMPS ({0}); installing official MS-MPI package so mpi_procs>1 works." -f $existing)
+
+  if ($force -and $existing) {
+    Write-Info ("AEGIS_FORCE_LAMMPS_INSTALL=1 — reinstalling over {0}" -f $existing)
   }
 
   $urls = @()
@@ -272,16 +315,22 @@ function Ensure-Lammps {
 
   if (-not $installer) {
     Write-Warn "Could not download LAMMPS installer. Continuing without it (Aegis dry-run still works)."
-    Write-Warn "Install manually from https://download.lammps.org/static/ then re-run."
+    Write-Warn "Install manually from https://packages.lammps.org/windows.html then re-run."
     return
   }
 
-  Write-Info "Running installer (silent if supported)..."
+  # Silent only — interactive mode shows "uninstall existing LAMMPS?" and hangs when cancelled.
+  Write-Info "Running silent installer (no UI). Set AEGIS_LAMMPS_INTERACTIVE=1 only if you intentionally want the GUI wizard."
   try {
-    $p = Start-Process -FilePath $installer -ArgumentList "/S" -PassThru -Wait
-    if ($p.ExitCode -ne 0) {
-      Write-Warn ("Silent install returned {0}; launching interactive installer..." -f $p.ExitCode)
-      Start-Process -FilePath $installer -Wait
+    if ($env:AEGIS_LAMMPS_INTERACTIVE -eq "1") {
+      Write-Warn "Interactive LAMMPS installer — finish or cancel the wizard to continue."
+      $p = Start-Process -FilePath $installer -PassThru -Wait
+    } else {
+      $p = Start-Process -FilePath $installer -ArgumentList "/S" -PassThru -Wait
+      if ($p.ExitCode -ne 0) {
+        Write-Warn ("Silent install returned {0}. Not launching interactive UI (avoids uninstall hang)." -f $p.ExitCode)
+        Write-Warn "If LAMMPS is already installed, this is OK. Else install from https://packages.lammps.org/windows.html"
+      }
     }
   } catch {
     Write-Warn ("Installer launch failed: {0}" -f $_)
@@ -737,8 +786,8 @@ try { Ensure-Ase } catch { Write-Warn ("ASE step error (continuing): {0}" -f $_)
 try { Ensure-Atomsk } catch { Write-Warn ("Atomsk step error (continuing): {0}" -f $_) }
 try { Ensure-Ovito } catch { Write-Warn ("OVITO step error (continuing): {0}" -f $_) }
 
-try { Ensure-Lammps } catch { Write-Warn ("LAMMPS step error (continuing): {0}" -f $_) }
 try { Ensure-Mpi } catch { Write-Warn ("MPI step error (continuing): {0}" -f $_) }
+try { Ensure-Lammps } catch { Write-Warn ("LAMMPS step error (continuing): {0}" -f $_) }
 try { Ensure-Kart } catch { Write-Warn ("KART step error (continuing): {0}" -f $_) }
 
 Save-EnvFile

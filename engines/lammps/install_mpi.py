@@ -138,7 +138,8 @@ def install_mpi_lammps_windows(
             "mpi": discover_mpi(),
         }
 
-    # NSIS silent flag used by LAMMPS Windows packages
+    # NSIS silent flag used by LAMMPS Windows packages — never fall back to
+    # interactive UI (re-install prompts "uninstall existing?" and hangs on cancel).
     try:
         proc = subprocess.run(
             [str(installer), "/S"],
@@ -148,10 +149,24 @@ def install_mpi_lammps_windows(
             check=False,
         )
         exit_code = proc.returncode
-        if exit_code != 0:
-            # Fall back to interactive (may require a desktop session)
-            proc2 = subprocess.run([str(installer)], timeout=900, check=False)
-            exit_code = proc2.returncode
+        if exit_code != 0 and not force:
+            path0 = _which_lammps()
+            if path0:
+                return {
+                    "ok": True,
+                    "skipped": True,
+                    "message": (
+                        f"Silent installer exited {exit_code}; LAMMPS already present at {path0}. "
+                        "Not opening interactive UI. Pass force=true only to reinstall."
+                    ),
+                    "installer": str(installer),
+                    "url": used_url,
+                    "exit_code": exit_code,
+                    "lammps_path": path0,
+                    "probe": probe_lammps_parallelism(path0),
+                    "mpi": discover_mpi(),
+                    "install": install_hint(),
+                }
     except Exception as exc:  # noqa: BLE001
         return {
             "ok": False,
