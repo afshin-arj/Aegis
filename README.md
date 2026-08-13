@@ -16,13 +16,13 @@ Select material and composition → attach a published interatomic potential →
 
 | Step | What you do | What Aegis produces |
 |------|-------------|---------------------|
-| 1 | Choose or name a project; browse prior jobs | Job history under `runs/` |
-| 2 | Optional: DEMO DOE sweep (energy × T, …) | Campaign summary + serial local jobs or HPC zip |
-| 3 | Choose PFM preset; edit composition (at%/wt%) | `material.json` |
-| 4 | Pick curated or uploaded potential | Validated `pair_style` / file path |
-| 5 | Select D–D / D–T / He / surface scenario; override fields | `run_params.json` |
-| 6 | Queue LAMMPS job (or export Slurm/PBS pack) | Live log, dumps, or remote `submit.slurm` |
-| 7 | Review structure + defects; optional k-ART / OKMC | Trajectory frames, vacancy / SIA proxy, clusters |
+| 1 | Name a project; browse prior jobs | Job history under `runs/` |
+| 2 | Choose PFM preset; edit composition (at%/wt%) | `material.json` |
+| 3 | Pick curated or uploaded potential | Validated `pair_style` / file path |
+| 4 | Select D–D / D–T / He / surface scenario | Scenario overrides |
+| 5 | **Simulate**: Compute (MPI / KMC threads) → cell → cascade → optional kMC | `run_params.json` |
+| 6 | **Run** (or export Slurm/PBS pack) | Live log, dumps, or remote `submit.slurm` |
+| 7 | **Results**; then **Campaigns** for sweeps | Defects, anneals, DOE tables |
 
 ---
 
@@ -32,12 +32,21 @@ Select material and composition → attach a published interatomic potential →
 setup_and_run.cmd
 ```
 
-Installs only what is missing (Python, Node, Git, API/UI deps, **LAMMPS Windows**, KART **clone**), then opens the UI at [http://127.0.0.1:5173](http://127.0.0.1:5173).
+Installs only what is missing (Python, Node, Git, API/UI deps, **LAMMPS Windows**, **MS-MPI**, KART **clone**), then opens the UI at [http://127.0.0.1:5173](http://127.0.0.1:5173).
+
+## Quick start (Linux / macOS)
+
+```bash
+bash setup_and_run.sh
+```
+
+Best-effort OpenMPI install (`apt` / `dnf` / `yum` / `brew`), Python venv + npm deps, then API + UI.
 
 | Already installed? | Behavior |
 |--------------------|----------|
 | `python` / `node` / `git` on PATH | Skipped |
-| `lmp.exe` found | Skipped |
+| `lmp.exe` / `lmp` found | Skipped |
+| `mpiexec` / `mpirun` found | Skipped (`AEGIS_INSTALL_MPI=0` to force skip) |
 | `third_party/kart` + binary | Skipped |
 
 **KART:** private GitLab project. Put `GITLAB_TOKEN` in a gitignored `.env` (or use SSH). Full obtain/build guide: [`engines/kart/SETUP.md`](engines/kart/SETUP.md). On Windows, build in **WSL** or **Docker**—native MSVC is unsupported.
@@ -84,6 +93,7 @@ Copy `.env.example` → `.env` (never commit secrets).
 | `AEGIS_LAMMPS_BIN` | Path to `lmp` / `lmp.exe` |
 | `AEGIS_MPIEXEC` | Optional path to `mpiexec` / `mpirun` (MS-MPI, OpenMPI, …) |
 | `AEGIS_MPI_PROCS` | Default MPI ranks when job `mpi_procs` is unset (default `1`) |
+| `AEGIS_INSTALL_MPI` | Set `0` to skip MS-MPI (Windows) / OpenMPI (Linux) bootstrap |
 | `AEGIS_OVITO_BIN` | Optional path to OVITO Pro `ovitos` (not GUI `ovito.exe`); bootstrap also tries `pip install -U ovito==3.15.5` |
 | `AEGIS_OVITO_PIP_SPEC` | Override OVITO pip pin (default `ovito==3.15.5`) |
 | `AEGIS_INSTALL_OVITO` | Set `0` to skip first-run OVITO pip (default: attempt; soft-fail) |
@@ -99,11 +109,13 @@ Copy `.env.example` → `.env` (never commit secrets).
 ## Repository layout
 
 ```
-setup_and_run.cmd     Windows bootstrap + UI
+setup_and_run.cmd     Windows bootstrap + UI (incl. MS-MPI)
+setup_and_run.sh      Linux/macOS bootstrap + UI (incl. OpenMPI)
 scripts/bootstrap.ps1
 apps/web/             React workbench
 apps/api/             FastAPI
 packages/schema/      Shared schemas
+engines/lammps/mpi.py MPI launch helpers
 engines/lammps/       Input templates
 engines/kart/         Adapter + SETUP.md
 data/                 Materials, scenarios, potentials

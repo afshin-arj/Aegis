@@ -107,6 +107,7 @@ def build_kart_package(
     potential: dict[str, Any] | None = None,
     prefactor_mode: str | None = None,
     work_suffix: str = "",
+    omp_threads: int = 1,
 ) -> dict[str, Any]:
     """Write a KART-oriented handoff directory from cascade artifacts.
 
@@ -116,9 +117,11 @@ def build_kart_package(
 
     ``prefactor_mode`` overrides the concentrated-alloy default (``htst`` vs ``constant``).
     ``work_suffix`` appends to the work dir name (e.g. ``_htst`` for compare mode).
+    ``omp_threads`` sets OMP_NUM_THREADS in the launch template (k-ART host threading).
     """
     material = material or {}
     potential = potential or {}
+    omp_n = max(1, min(int(omp_threads or 1), 256))
     suffix = f"_{work_suffix}" if work_suffix else ""
     work = job_dir / "kart_work" / f"T{int(round(temperature_K))}{suffix}"
     if work.exists():
@@ -316,6 +319,7 @@ setenv OSCILL_TREAT NONE
 setenv MIN_SIG_BARRIER 0.1
 setenv MIN_EVENT_SEARCHES {min_event_searches}
 setenv PREFACTOR_MODE {prefactor_mode}
+setenv OMP_NUM_THREADS {omp_n}
 {use_htst_line}# For concentrated alloys Aegis defaults PREFACTOR_MODE=htst (Adjanor 2025 / Huang 2023).
 # setenv CRYST_TOPOID <identify on first run>
 # Launch: convert setenv→export then run kart binary (see engines/kart/SETUP.md)
@@ -342,6 +346,7 @@ setenv PREFACTOR_MODE {prefactor_mode}
         "elements": elems[:ntypes],
         "prefactor_mode": prefactor_mode,
         "min_event_searches": min_event_searches,
+        "omp_threads": omp_n,
         "trapping_risk_hint": trapping_risk,
         "concentrated_alloy": concentrated,
         "structure_class": "as_cascade",

@@ -223,6 +223,7 @@ type RunParams = {
   cluster_cutoff_A: number;
   confirm_large: boolean;
   mpi_procs: number;
+  kmc_threads: number;
   run_dxa: boolean;
 };
 
@@ -230,13 +231,13 @@ type TabId = "projects" | "doe" | "material" | "potential" | "scenario" | "param
 
 const TABS: { id: TabId; step: string; label: string }[] = [
   { id: "projects", step: "01", label: "Projects" },
-  { id: "doe", step: "02", label: "Campaigns" },
-  { id: "material", step: "03", label: "Material" },
-  { id: "potential", step: "04", label: "Potential" },
-  { id: "scenario", step: "05", label: "Scenario" },
-  { id: "params", step: "06", label: "LAMMPS" },
-  { id: "run", step: "07", label: "Run" },
-  { id: "results", step: "08", label: "Results" },
+  { id: "material", step: "02", label: "Material" },
+  { id: "potential", step: "03", label: "Potential" },
+  { id: "scenario", step: "04", label: "Scenario" },
+  { id: "params", step: "05", label: "Simulate" },
+  { id: "run", step: "06", label: "Run" },
+  { id: "results", step: "07", label: "Results" },
+  { id: "doe", step: "08", label: "Campaigns" },
   { id: "engines", step: "09", label: "Engines" },
 ];
 
@@ -320,6 +321,7 @@ const defaultParams: RunParams = {
   cluster_cutoff_A: 3.5,
   confirm_large: false,
   mpi_procs: 1,
+  kmc_threads: 1,
   run_dxa: false,
 };
 
@@ -2183,6 +2185,31 @@ export default function App() {
               Group jobs by study name. Opening a job restores its status, log, and results; the current recipe is
               unchanged until you submit again.
             </p>
+            <section className="panel stack">
+              <h3>How to use the workbench</h3>
+              <ol className="hint" style={{ margin: 0, paddingLeft: "1.25rem" }}>
+                <li>
+                  <strong>Material</strong> — composition + lattice (save if you edit).
+                </li>
+                <li>
+                  <strong>Potential</strong> — acquire/upload a published file; avoid placeholders for real MD.
+                </li>
+                <li>
+                  <strong>Scenario</strong> — D–D / D–T preset or custom PKA/ion energies.
+                </li>
+                <li>
+                  <strong>Simulate</strong> — set Compute (MPI / KMC threads), cell, structure, cascade, then
+                  optional post-cascade kMC.
+                </li>
+                <li>
+                  <strong>Run</strong> — submit and watch the log; <strong>Results</strong> for defects / anneals.
+                </li>
+                <li>
+                  <strong>Campaigns</strong> — only after a single recipe works. <strong>Engines</strong> for
+                  LAMMPS/MPI/KART status.
+                </li>
+              </ol>
+            </section>
             <div className="row">
               <Field label="Active project" htmlFor="proj-active">
                 <input
@@ -3355,7 +3382,7 @@ export default function App() {
         {tab === "params" && (
           <section className="panel stack">
             <div className="panel-head">
-              <h2>LAMMPS parameters</h2>
+              <h2>Simulate</h2>
               <span className="chip">
                 <span className="chip-k">≈ sites</span>
                 <span className="chip-v">
@@ -3363,10 +3390,57 @@ export default function App() {
                 </span>
               </span>
             </div>
+            <div className="alert alert-warn">
+              Recommended order on this tab: <strong>Compute</strong> → Mode → System → Structure →
+              cascade/implant options → Post-cascade kMC → Submit on the next step (Run).
+            </div>
             <p className="hint">
-              Nanostructures (void, nanowire, GB, precipitate, import) are configured in the{" "}
-              <strong>Structure</strong> section below — not a separate tab.
+              Nanostructures (void, nanowire, GB, precipitate, import) are in the Structure section —
+              not a separate tab. Campaigns (DOE) come after you validate a single recipe.
             </p>
+            <fieldset className="fieldset">
+              <legend>Compute resources</legend>
+              <div className="row">
+                <Field label="LAMMPS MPI ranks" unit="procs" htmlFor="mpi-procs">
+                  <input
+                    id="mpi-procs"
+                    type="number"
+                    min={1}
+                    max={256}
+                    inputMode="numeric"
+                    value={params.mpi_procs}
+                    onChange={(e) => setParam("mpi_procs", Math.max(1, Number(e.target.value) || 1))}
+                  />
+                </Field>
+                <Field label="KMC threads" unit="OpenMP" htmlFor="kmc-threads">
+                  <input
+                    id="kmc-threads"
+                    type="number"
+                    min={1}
+                    max={256}
+                    inputMode="numeric"
+                    value={params.kmc_threads}
+                    onChange={(e) => setParam("kmc_threads", Math.max(1, Number(e.target.value) || 1))}
+                  />
+                </Field>
+              </div>
+              <p className="hint">
+                LAMMPS uses <code>mpiexec -n N</code> (needs MPI-enabled <code>lmp</code>). k-ART uses{" "}
+                <code>OMP_NUM_THREADS</code> in the handoff. ML-KMC / cluster dynamics stay serial today —
+                the thread field is recorded for provenance and future workers.
+              </p>
+              {params.mpi_procs > 1 && !engines?.mpi_found && (
+                <div className="alert alert-warn">
+                  MPI launcher not found — run setup_and_run (MS-MPI / OpenMPI) or set AEGIS_MPIEXEC.
+                </div>
+              )}
+              {params.mpi_procs > 1 && engines?.lammps_mpi_capable === false && (
+                <div className="alert alert-warn">
+                  This LAMMPS binary looks serial (common for Windows GUI installs). Parallel ranks need an
+                  MPI-enabled build.
+                </div>
+              )}
+            </fieldset>
             <fieldset className="fieldset">
               <legend>Mode & thermostat</legend>
               <div className="row">
@@ -3489,25 +3563,7 @@ export default function App() {
                     ))}
                   </select>
                 </Field>
-                <Field label="MPI ranks" unit="procs" htmlFor="mpi-procs">
-                  <input
-                    id="mpi-procs"
-                    type="number"
-                    min={1}
-                    max={256}
-                    inputMode="numeric"
-                    value={params.mpi_procs}
-                    onChange={(e) => setParam("mpi_procs", Math.max(1, Number(e.target.value) || 1))}
-                  />
-                </Field>
               </div>
-              {params.mpi_procs > 1 && (
-                <p className="hint">
-                  Local launch uses <code>mpiexec -n {params.mpi_procs} lmp -in in.aegis</code>. Needs an
-                  MPI-enabled LAMMPS build plus MS-MPI/OpenMPI (<code>AEGIS_MPIEXEC</code>). The Windows
-                  GUI installer is usually serial — check Engines.
-                </p>
-              )}
               {cascadeCellRec && (
                 <div className="stack" style={{ marginTop: "0.75rem" }}>
                   <div className="chip-row">
@@ -5370,6 +5426,11 @@ export default function App() {
                 <p className="hint">{engines?.lammps_version}</p>
                 <p className="hint">{engines?.mpi_path || engines?.mpi_message}</p>
                 <p className="hint">{engines?.lammps_parallel_hint}</p>
+                <p className="hint">
+                  Bootstrap installs MPI: Windows <code>setup_and_run.cmd</code> → MS-MPI (winget
+                  Microsoft.msmpi); Linux/macOS <code>setup_and_run.sh</code> → OpenMPI. Parallel MD still
+                  needs an MPI-enabled LAMMPS binary.
+                </p>
               </div>
               <div className="stack">
                 <h3>KART (k-ART)</h3>
@@ -5595,6 +5656,12 @@ export default function App() {
           <div>
             <dt>Cell</dt>
             <dd>{params.nx} × {params.ny} × {params.nz} unit cells</dd>
+          </div>
+          <div>
+            <dt>Compute</dt>
+            <dd>
+              LAMMPS MPI {params.mpi_procs} · KMC threads {params.kmc_threads}
+            </dd>
           </div>
           {(kmcRecommend || job?.kmc_provenance) && (
             <div>

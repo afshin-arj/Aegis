@@ -390,6 +390,8 @@ class LammpsRunParams(BaseModel):
     confirm_large: bool = False
     # Local MPI ranks for LAMMPS (1 = serial). Requires MPI-enabled lmp + mpiexec.
     mpi_procs: int = Field(1, ge=1, le=256)
+    # OpenMP / host threads for k-ART (and documented for other KMC engines).
+    kmc_threads: int = Field(1, ge=1, le=256)
     # Optional post-job OVITO DXA
     run_dxa: bool = False
 

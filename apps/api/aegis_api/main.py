@@ -1216,6 +1216,7 @@ def post_kart_anneal(job_id: str, body: KartAnnealRequest) -> dict[str, Any]:
             material=material.model_dump(mode="json") if material else None,
             router=router,
             prefactor_compare=bool(body.prefactor_compare),
+            omp_threads=int(getattr(info.run_params, "kmc_threads", 1) or 1),
         )
         kmc_prov = None
         if isinstance(summary, dict) and isinstance(summary.get("provenance"), dict):

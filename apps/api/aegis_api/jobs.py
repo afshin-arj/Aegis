@@ -711,6 +711,7 @@ class JobManager:
                         potential=potential.model_dump(mode="json"),
                         router=router,
                         prefactor_compare=bool(req.get("kart_prefactor_compare")),
+                        omp_threads=int(params.get("kmc_threads") or 1),
                     )
                     if isinstance(kart_summary, dict) and sk_anneal not in {"", "single_crystal"}:
                         kart_summary["ws_proxy_warning"] = (

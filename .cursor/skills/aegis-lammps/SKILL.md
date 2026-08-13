@@ -13,7 +13,8 @@ description: LAMMPS cascade/implant conventions for Aegis — run parameters, du
 - Templates: `engines/lammps/templates.py` (`read_data` when structure file present)
 - Jobs: `apps/api/aegis_api/jobs.py` — spawn `AEGIS_LAMMPS_BIN` (default `lmp`); MPI via `mpi_procs` + `AEGIS_MPIEXEC`
 - MPI helpers: `engines/lammps/mpi.py`
-- Params schema: `LammpsRunParams` in `packages/schema` (`mpi_procs`, default 1)
+- Params schema: `LammpsRunParams` in `packages/schema` (`mpi_procs`, `kmc_threads`)
+- Bootstrap: Windows `Ensure-Mpi` (MS-MPI) · Linux `setup_and_run.sh` (OpenMPI)
 - DXA: `apps/api/aegis_api/dxa.py` · lattice relax: `lattice_relax.py`
 
 ## Conventions
@@ -26,10 +27,11 @@ description: LAMMPS cascade/implant conventions for Aegis — run parameters, du
 - If LAMMPS missing, placeholder potential, or unsupported crystal: dry-run demo dump
 - WS analysis: `aegis-ws-proxy-v2` with crystal + optional sublattice (WC)
 - `mpi_procs>1` → `mpiexec -n N lmp -in in.aegis` (requires MPI-enabled LAMMPS; GUI/serial builds will fail)
+- `kmc_threads` → `OMP_NUM_THREADS` in k-ART `KMC.sh.aegis` (ML-KMC/CD remain serial)
 
 ## Parameter groups
 
-System (nx/ny/nz, boundary, seed, crystal_orient, mpi_procs, structure_kind/poly_*), thermostat, PKA/cascade, implant, interstitial, dynamics, output, analysis hooks, `run_dxa`.
+Compute (`mpi_procs`, `kmc_threads`), System (nx/ny/nz, boundary, seed, crystal_orient, structure_kind/poly_*), thermostat, PKA/cascade, implant, interstitial, dynamics, output, analysis hooks, `run_dxa`.
 
 ## Rules
 

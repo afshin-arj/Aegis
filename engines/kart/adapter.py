@@ -105,8 +105,10 @@ def _run_one_temperature(
     router: dict[str, Any] | None = None,
     prefactor_mode: str | None = None,
     work_suffix: str = "",
+    omp_threads: int = 1,
 ) -> dict[str, Any]:
     n_vac, n_sia = _defect_counts(job_dir)
+    omp_n = max(1, min(int(omp_threads or 1), 256))
     handoff = build_kart_package(
         job_dir,
         temperature_K=temperature_K,
@@ -117,6 +119,7 @@ def _run_one_temperature(
         potential=potential,
         prefactor_mode=prefactor_mode,
         work_suffix=work_suffix,
+        omp_threads=omp_n,
     )
     work = job_dir / handoff["work_dir"]
     mode = handoff.get("prefactor_mode") or "constant"
@@ -133,6 +136,7 @@ def _run_one_temperature(
         "wall_elapsed_s": 0.0,
         "handoff_format": handoff.get("format"),
         "prefactor_mode": mode,
+        "omp_threads": omp_n,
     }
 
     def _attach_provenance(
@@ -184,6 +188,8 @@ def _run_one_temperature(
     # picks up Energy.dat if the user/runtime produced one.
     binary = info["kart_binary"]
     t0 = time.perf_counter()
+    env = os.environ.copy()
+    env["OMP_NUM_THREADS"] = str(omp_n)
     try:
         proc = subprocess.run(
             [binary, "--help"],
@@ -192,6 +198,7 @@ def _run_one_temperature(
             text=True,
             timeout=min(30.0, max(5.0, max_wall_s)),
             check=False,
+            env=env,
         )
         out["stdout_tail"] = (proc.stdout or proc.stderr or "")[-2000:]
         out["exit_code"] = proc.returncode
@@ -267,12 +274,14 @@ def run_anneal_stub_or_real(
     potential: dict[str, Any] | None = None,
     router: dict[str, Any] | None = None,
     prefactor_compare: bool = False,
+    omp_threads: int = 1,
 ) -> dict[str, Any]:
     """Phase-2 anneal path: per-T handoff packages + optional DOE / prefactor compare."""
     info = discover_kart()
     temps = [float(t) for t in (temperatures or [temperature_K]) if float(t) > 0]
     if not temps:
         temps = [float(temperature_K)]
+    omp_n = max(1, min(int(omp_threads or 1), 256))
 
     # Load material/potential from job dir when not provided
     if material is None and (job_dir / "material.json").exists():
@@ -296,6 +305,7 @@ def run_anneal_stub_or_real(
                 router=router,
                 prefactor_mode="constant",
                 work_suffix="constant",
+                omp_threads=omp_n,
             )
             htst_run = _run_one_temperature(
                 job_dir,
@@ -309,6 +319,7 @@ def run_anneal_stub_or_real(
                 router=router,
                 prefactor_mode="htst",
                 work_suffix="htst",
+                omp_threads=omp_n,
             )
             pair = _compare_prefactor_pair(const_run, htst_run)
             compares.append({"temperature_K": T, **pair})
@@ -328,6 +339,7 @@ def run_anneal_stub_or_real(
                 potential=potential,
                 info=info,
                 router=router,
+                omp_threads=omp_n,
             )
             for T in temps
         ]
@@ -362,6 +374,7 @@ def run_anneal_stub_or_real(
         "events": primary.get("events") or [],
         "handoff": primary.get("handoff"),
         "prefactor_mode": primary.get("prefactor_mode"),
+        "omp_threads": omp_n,
         "kinetics": primary.get("kinetics"),
     }
     (job_dir / "kart_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
