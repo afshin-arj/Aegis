@@ -103,6 +103,11 @@ type EngineStatus = {
   lammps_found: boolean;
   lammps_path?: string;
   lammps_version?: string;
+  lammps_mpi_capable?: boolean | null;
+  lammps_parallel_hint?: string;
+  mpi_found?: boolean;
+  mpi_path?: string;
+  mpi_message?: string;
   kart_found: boolean;
   kart_root?: string;
   kart_binary?: string;
@@ -217,6 +222,7 @@ type RunParams = {
   ws_lattice_A: number | null;
   cluster_cutoff_A: number;
   confirm_large: boolean;
+  mpi_procs: number;
   run_dxa: boolean;
 };
 
@@ -313,6 +319,7 @@ const defaultParams: RunParams = {
   ws_lattice_A: null,
   cluster_cutoff_A: 3.5,
   confirm_large: false,
+  mpi_procs: 1,
   run_dxa: false,
 };
 
@@ -3482,7 +3489,25 @@ export default function App() {
                     ))}
                   </select>
                 </Field>
+                <Field label="MPI ranks" unit="procs" htmlFor="mpi-procs">
+                  <input
+                    id="mpi-procs"
+                    type="number"
+                    min={1}
+                    max={256}
+                    inputMode="numeric"
+                    value={params.mpi_procs}
+                    onChange={(e) => setParam("mpi_procs", Math.max(1, Number(e.target.value) || 1))}
+                  />
+                </Field>
               </div>
+              {params.mpi_procs > 1 && (
+                <p className="hint">
+                  Local launch uses <code>mpiexec -n {params.mpi_procs} lmp -in in.aegis</code>. Needs an
+                  MPI-enabled LAMMPS build plus MS-MPI/OpenMPI (<code>AEGIS_MPIEXEC</code>). The Windows
+                  GUI installer is usually serial — check Engines.
+                </p>
+              )}
               {cascadeCellRec && (
                 <div className="stack" style={{ marginTop: "0.75rem" }}>
                   <div className="chip-row">
@@ -5316,9 +5341,35 @@ export default function App() {
                       {engines?.lammps_found ? "found" : "missing"}
                     </span>
                   </span>
+                  <span className="chip">
+                    <span className="chip-k">MPI launcher</span>
+                    <span className={`chip-v ${engines?.mpi_found ? "tone-ok" : "tone-warn"}`}>
+                      {engines?.mpi_found ? "found" : "not found"}
+                    </span>
+                  </span>
+                  <span className="chip">
+                    <span className="chip-k">lmp MPI</span>
+                    <span
+                      className={`chip-v ${
+                        engines?.lammps_mpi_capable === true
+                          ? "tone-ok"
+                          : engines?.lammps_mpi_capable === false
+                            ? "tone-fail"
+                            : "tone-warn"
+                      }`}
+                    >
+                      {engines?.lammps_mpi_capable === true
+                        ? "likely"
+                        : engines?.lammps_mpi_capable === false
+                          ? "serial?"
+                          : "unknown"}
+                    </span>
+                  </span>
                 </div>
                 <p className="hint">{engines?.lammps_path || "Set AEGIS_LAMMPS_BIN or run setup_and_run.cmd"}</p>
                 <p className="hint">{engines?.lammps_version}</p>
+                <p className="hint">{engines?.mpi_path || engines?.mpi_message}</p>
+                <p className="hint">{engines?.lammps_parallel_hint}</p>
               </div>
               <div className="stack">
                 <h3>KART (k-ART)</h3>

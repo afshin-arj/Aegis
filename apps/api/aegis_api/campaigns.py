@@ -315,7 +315,11 @@ Generated for remote execution (Phase-4).
 
 ## Run locally / on login node
 ```bash
+# serial
 {req.lammps_bin} -in in.aegis
+
+# MPI (requires MPI-enabled LAMMPS)
+mpirun -np {req.cores} {req.lammps_bin} -in in.aegis
 ```
 
 ## Notes
@@ -337,7 +341,7 @@ Generated for remote execution (Phase-4).
 #SBATCH --time={req.walltime}
 {acct}{queue}set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
-{mod}{req.lammps_bin} -in in.aegis
+{mod}srun -n {req.cores} {req.lammps_bin} -in in.aegis
 """
         (out_dir / "submit.slurm").write_text(script, encoding="utf-8")
     elif req.scheduler == "pbs":
@@ -350,7 +354,7 @@ cd "$SLURM_SUBMIT_DIR"
 #PBS -l walltime={req.walltime}
 {acct}{queue}set -euo pipefail
 cd "$PBS_O_WORKDIR"
-{mod}{req.lammps_bin} -in in.aegis
+{mod}mpirun -np {req.cores} {req.lammps_bin} -in in.aegis
 """
         (out_dir / "submit.pbs").write_text(script, encoding="utf-8")
 

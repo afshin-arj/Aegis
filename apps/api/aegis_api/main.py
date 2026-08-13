@@ -121,14 +121,22 @@ def engines_status() -> EngineStatus:
     mlk = discover_ml_kmc()
     from aegis_api.dxa import discover_ovito
     from aegis_api.lattice_relax import discover_ase, discover_atomsk
+    from lammps.mpi import discover_mpi, probe_lammps_parallelism
 
     ase = discover_ase()
     ovito = discover_ovito()
     atomsk = discover_atomsk()
+    mpi = discover_mpi()
+    lmp_par = probe_lammps_parallelism(path)
     return EngineStatus(
         lammps_found=path is not None,
         lammps_path=path,
         lammps_version=version,
+        lammps_mpi_capable=lmp_par.get("lammps_mpi_capable"),
+        lammps_parallel_hint=str(lmp_par.get("lammps_parallel_hint") or ""),
+        mpi_found=bool(mpi.get("mpi_found")),
+        mpi_path=mpi.get("mpi_path"),
+        mpi_message=str(mpi.get("mpi_message") or ""),
         kart_root=kart.get("kart_root"),
         kart_found=bool(kart.get("kart_found")),
         kart_binary=kart.get("kart_binary"),

@@ -388,6 +388,8 @@ class LammpsRunParams(BaseModel):
     ws_lattice_A: float | None = None
     cluster_cutoff_A: float = 3.5
     confirm_large: bool = False
+    # Local MPI ranks for LAMMPS (1 = serial). Requires MPI-enabled lmp + mpiexec.
+    mpi_procs: int = Field(1, ge=1, le=256)
     # Optional post-job OVITO DXA
     run_dxa: bool = False
 
@@ -495,6 +497,11 @@ class EngineStatus(BaseModel):
     lammps_found: bool
     lammps_path: str | None = None
     lammps_version: str | None = None
+    lammps_mpi_capable: bool | None = None
+    lammps_parallel_hint: str = ""
+    mpi_found: bool = False
+    mpi_path: str | None = None
+    mpi_message: str = ""
     kart_root: str | None = None
     kart_found: bool
     kart_binary: str | None = None

@@ -558,14 +558,23 @@ class JobManager:
                         write_cascade_input(in_path, **write_kw)
                     if self._is_cancelled(job_id):
                         return
-                    log.write(f"[Aegis] launching {lmp_path} -in {in_path.name}\n")
+                    from lammps.mpi import build_lammps_command, resolve_mpi_procs
+
+                    mpi_n = resolve_mpi_procs(params)
+                    cmd = build_lammps_command(str(lmp_path), input_name=in_path.name, mpi_procs=mpi_n)
+                    log.write(f"[Aegis] launching {' '.join(cmd)} (mpi_procs={mpi_n})\n")
+                    if mpi_n > 1:
+                        log.write(
+                            "[Aegis] MPI note: LAMMPS must be an MPI-enabled build. "
+                            "Serial/GUI installers often fail or spawn N independent copies.\n"
+                        )
                     log.flush()
                     with self._lock:
                         info0 = self._jobs.get(job_id)
                         if info0 and info0.status == JobStatus.CANCELLED:
                             return
                     proc = subprocess.Popen(
-                        [lmp_path, "-in", in_path.name],
+                        cmd,
                         cwd=job_dir,
                         stdout=log,
                         stderr=subprocess.STDOUT,

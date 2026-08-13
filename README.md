@@ -82,6 +82,8 @@ Copy `.env.example` → `.env` (never commit secrets).
 | Variable | Purpose |
 |----------|---------|
 | `AEGIS_LAMMPS_BIN` | Path to `lmp` / `lmp.exe` |
+| `AEGIS_MPIEXEC` | Optional path to `mpiexec` / `mpirun` (MS-MPI, OpenMPI, …) |
+| `AEGIS_MPI_PROCS` | Default MPI ranks when job `mpi_procs` is unset (default `1`) |
 | `AEGIS_OVITO_BIN` | Optional path to OVITO Pro `ovitos` (not GUI `ovito.exe`); bootstrap also tries `pip install -U ovito==3.15.5` |
 | `AEGIS_OVITO_PIP_SPEC` | Override OVITO pip pin (default `ovito==3.15.5`) |
 | `AEGIS_INSTALL_OVITO` | Set `0` to skip first-run OVITO pip (default: attempt; soft-fail) |

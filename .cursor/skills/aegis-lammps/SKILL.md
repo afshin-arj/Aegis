@@ -11,8 +11,9 @@ description: LAMMPS cascade/implant conventions for Aegis — run parameters, du
 - Structure builders: `engines/lammps/structure/` (ASE alloy fill + WC hex / Atomsk mono-host / import → `structure.data`)
 - Legacy polycrystal seed helper: `engines/lammps/polycrystal.py` (not the MD path)
 - Templates: `engines/lammps/templates.py` (`read_data` when structure file present)
-- Jobs: `apps/api/aegis_api/jobs.py` — spawn `AEGIS_LAMMPS_BIN` (default `lmp`)
-- Params schema: `LammpsRunParams` in `packages/schema`
+- Jobs: `apps/api/aegis_api/jobs.py` — spawn `AEGIS_LAMMPS_BIN` (default `lmp`); MPI via `mpi_procs` + `AEGIS_MPIEXEC`
+- MPI helpers: `engines/lammps/mpi.py`
+- Params schema: `LammpsRunParams` in `packages/schema` (`mpi_procs`, default 1)
 - DXA: `apps/api/aegis_api/dxa.py` · lattice relax: `lattice_relax.py`
 
 ## Conventions
@@ -24,10 +25,11 @@ description: LAMMPS cascade/implant conventions for Aegis — run parameters, du
 - Prefer cascade/implant dumps over initial/stage bookmarks for defect analysis
 - If LAMMPS missing, placeholder potential, or unsupported crystal: dry-run demo dump
 - WS analysis: `aegis-ws-proxy-v2` with crystal + optional sublattice (WC)
+- `mpi_procs>1` → `mpiexec -n N lmp -in in.aegis` (requires MPI-enabled LAMMPS; GUI/serial builds will fail)
 
 ## Parameter groups
 
-System (nx/ny/nz, boundary, seed, crystal_orient, structure_kind/poly_*), thermostat, PKA/cascade, implant, interstitial, dynamics, output, analysis hooks, `run_dxa`.
+System (nx/ny/nz, boundary, seed, crystal_orient, mpi_procs, structure_kind/poly_*), thermostat, PKA/cascade, implant, interstitial, dynamics, output, analysis hooks, `run_dxa`.
 
 ## Rules
 
@@ -35,3 +37,4 @@ System (nx/ny/nz, boundary, seed, crystal_orient, structure_kind/poly_*), thermo
 - Large cells (>20³): require `confirm_large`.
 - Do not invent pair_style / coefficients; use catalog or user upload.
 - Crystal-aware interstitial geometries from the registry.
+- Do not silently fall back to serial when the user requested MPI — error if `mpiexec` is missing.
