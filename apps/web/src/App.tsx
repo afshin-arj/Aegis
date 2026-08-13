@@ -3435,9 +3435,41 @@ export default function App() {
                 </div>
               )}
               {params.mpi_procs > 1 && engines?.lammps_mpi_capable === false && (
-                <div className="alert alert-warn">
-                  This LAMMPS binary looks serial (common for Windows GUI installs). Parallel ranks need an
-                  MPI-enabled build.
+                <div className="alert alert-warn stack">
+                  <span>
+                    This LAMMPS binary looks serial (common for Windows GUI installs). Parallel ranks need the
+                    official <code>*-MSMPI</code> package — not just <code>mpiexec</code>.
+                  </span>
+                  <div className="chip-row">
+                    <button
+                      type="button"
+                      className="secondary"
+                      disabled={busy}
+                      onClick={async () => {
+                        setBusy(true);
+                        setError("");
+                        try {
+                          const r = await api<{ ok: boolean; message?: string }>(
+                            "/api/engines/lammps/install-mpi",
+                            { method: "POST" },
+                          );
+                          setEngines(await api<EngineStatus>("/api/engines/status"));
+                          if (!r.ok) {
+                            setError(r.message || "MPI LAMMPS install failed — see Engines");
+                          }
+                        } catch (err) {
+                          setError(err instanceof Error ? err.message : String(err));
+                        } finally {
+                          setBusy(false);
+                        }
+                      }}
+                    >
+                      Install parallel LAMMPS (MS-MPI)
+                    </button>
+                    <button type="button" className="secondary" onClick={() => setTab("engines")}>
+                      Open Engines
+                    </button>
+                  </div>
                 </div>
               )}
             </fieldset>
@@ -5427,10 +5459,46 @@ export default function App() {
                 <p className="hint">{engines?.mpi_path || engines?.mpi_message}</p>
                 <p className="hint">{engines?.lammps_parallel_hint}</p>
                 <p className="hint">
-                  Bootstrap installs MPI: Windows <code>setup_and_run.cmd</code> → MS-MPI (winget
-                  Microsoft.msmpi); Linux/macOS <code>setup_and_run.sh</code> → OpenMPI. Parallel MD still
-                  needs an MPI-enabled LAMMPS binary.
+                  Bootstrap installs MS-MPI + official <code>*-MSMPI</code> LAMMPS (not the GUI serial build).
+                  Linux/macOS: <code>setup_and_run.sh</code> installs OpenMPI; use an MPI-built <code>lmp</code>.
                 </p>
+                <div className="chip-row">
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={busy || engines?.lammps_mpi_capable === true}
+                    onClick={async () => {
+                      setBusy(true);
+                      setError("");
+                      try {
+                        const r = await api<{ ok: boolean; message?: string }>(
+                          "/api/engines/lammps/install-mpi?force=true",
+                          { method: "POST" },
+                        );
+                        setEngines(await api<EngineStatus>("/api/engines/status"));
+                        if (!r.ok) {
+                          setError(r.message || "MPI LAMMPS install failed");
+                        }
+                      } catch (err) {
+                        setError(err instanceof Error ? err.message : String(err));
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
+                  >
+                    {engines?.lammps_mpi_capable === true
+                      ? "Parallel LAMMPS ready"
+                      : "Install parallel LAMMPS (MS-MPI)"}
+                  </button>
+                  <a
+                    className="secondary btn-link"
+                    href="https://packages.lammps.org/windows.html"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    LAMMPS Windows packages
+                  </a>
+                </div>
               </div>
               <div className="stack">
                 <h3>KART (k-ART)</h3>

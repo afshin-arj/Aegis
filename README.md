@@ -32,7 +32,9 @@ Select material and composition → attach a published interatomic potential →
 setup_and_run.cmd
 ```
 
-Installs only what is missing (Python, Node, Git, API/UI deps, **LAMMPS Windows**, **MS-MPI**, KART **clone**), then opens the UI at [http://127.0.0.1:5173](http://127.0.0.1:5173).
+Installs only what is missing (Python, Node, Git, API/UI deps, **MS-MPI**, **MPI-capable LAMMPS** (`*-MSMPI.exe`, not the GUI serial build), KART **clone**), then opens the UI at [http://127.0.0.1:5173](http://127.0.0.1:5173).
+
+If Engines shows `lmp MPI = serial?`, use **Install parallel LAMMPS (MS-MPI)** on Simulate / Engines (or re-run setup). Then set **LAMMPS MPI ranks** &gt; 1 — Aegis launches `mpiexec -localonly N lmp -in …`.
 
 ## Quick start (Linux / macOS)
 
@@ -45,7 +47,7 @@ Best-effort OpenMPI install (`apt` / `dnf` / `yum` / `brew`), Python venv + npm 
 | Already installed? | Behavior |
 |--------------------|----------|
 | `python` / `node` / `git` on PATH | Skipped |
-| `lmp.exe` / `lmp` found | Skipped |
+| `lmp.exe` / `lmp` found | Skipped if already MPI-capable; serial/GUI is replaced by `*-MSMPI` unless `AEGIS_LAMMPS_SERIAL_OK=1` |
 | `mpiexec` / `mpirun` found | Skipped (`AEGIS_INSTALL_MPI=0` to force skip) |
 | `third_party/kart` + binary | Skipped |
 
@@ -94,6 +96,8 @@ Copy `.env.example` → `.env` (never commit secrets).
 | `AEGIS_MPIEXEC` | Optional path to `mpiexec` / `mpirun` (MS-MPI, OpenMPI, …) |
 | `AEGIS_MPI_PROCS` | Default MPI ranks when job `mpi_procs` is unset (default `1`) |
 | `AEGIS_INSTALL_MPI` | Set `0` to skip MS-MPI (Windows) / OpenMPI (Linux) bootstrap |
+| `AEGIS_LAMMPS_MPI_URL` | Override Windows `*-MSMPI.exe` installer URL |
+| `AEGIS_LAMMPS_SERIAL_OK` | Set `1` to keep a serial/GUI `lmp` and skip MSMPI upgrade |
 | `AEGIS_OVITO_BIN` | Optional path to OVITO Pro `ovitos` (not GUI `ovito.exe`); bootstrap also tries `pip install -U ovito==3.15.5` |
 | `AEGIS_OVITO_PIP_SPEC` | Override OVITO pip pin (default `ovito==3.15.5`) |
 | `AEGIS_INSTALL_OVITO` | Set `0` to skip first-run OVITO pip (default: attempt; soft-fail) |

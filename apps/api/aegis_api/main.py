@@ -1496,6 +1496,42 @@ def ovito_pip_install() -> dict[str, Any]:
         }
 
 
+@app.get("/api/engines/lammps/mpi-install")
+def lammps_mpi_install_hint() -> dict[str, Any]:
+    """How to obtain an MPI-enabled LAMMPS so ``mpi_procs>1`` actually parallelizes."""
+    from lammps.install_mpi import install_hint
+    from lammps.mpi import discover_mpi, probe_lammps_parallelism
+
+    lmp = os.environ.get("AEGIS_LAMMPS_BIN", "lmp")
+    path = shutil.which(lmp) or (lmp if Path(lmp).exists() else None)
+    return {
+        "install": install_hint(),
+        "lammps_path": path,
+        "probe": probe_lammps_parallelism(path),
+        "mpi": discover_mpi(),
+    }
+
+
+@app.post("/api/engines/lammps/install-mpi")
+def lammps_install_mpi(force: bool = False) -> dict[str, Any]:
+    """Windows: download/run official ``*-MSMPI.exe``. Other OS: return install hints."""
+    from lammps.install_mpi import install_hint, install_mpi_lammps_windows
+
+    try:
+        result = install_mpi_lammps_windows(force=force)
+        # Persist path for this API process when installer set it
+        path = result.get("lammps_path")
+        if path:
+            os.environ["AEGIS_LAMMPS_BIN"] = str(path)
+        return result
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "message": str(exc),
+            "install": install_hint(),
+        }
+
+
 @app.get("/api/jobs/{job_id}/cascade-timeline")
 def get_cascade_timeline(job_id: str) -> dict[str, Any]:
     """Heuristic growth/peak/quench/residual schedule written with the cascade input."""

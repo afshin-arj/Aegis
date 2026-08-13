@@ -201,21 +201,52 @@ function Find-Atomsk {
   return $null
 }
 
+function Test-LammpsLooksSerial([string]$LmpPath) {
+  if (-not $LmpPath) { return $true }
+  if ($LmpPath -match '(?i)GUI') { return $true }
+  try {
+    $proc = Start-Process -FilePath $LmpPath -ArgumentList @("-h") -NoNewWindow -Wait -PassThru `
+      -RedirectStandardOutput (Join-Path $env:TEMP "aegis-lmp-h.out") `
+      -RedirectStandardError (Join-Path $env:TEMP "aegis-lmp-h.err")
+    $text = ""
+    foreach ($f in @((Join-Path $env:TEMP "aegis-lmp-h.out"), (Join-Path $env:TEMP "aegis-lmp-h.err"))) {
+      if (Test-Path $f) { $text += (Get-Content $f -Raw -ErrorAction SilentlyContinue) }
+    }
+    $lower = $text.ToLowerInvariant()
+    if ($lower -match '\bmpi\b' -and $lower -notmatch '\bserial\b') { return $false }
+    if ($lower -match '\bserial\b') { return $true }
+  } catch { }
+  return $false
+}
+
 function Ensure-Lammps {
-  Write-Step "LAMMPS (Windows)"
+  Write-Step "LAMMPS (Windows, prefer MS-MPI parallel build)"
   $existing = Find-Lammps
-  if ($existing) {
-    Write-Ok ("LAMMPS already present: {0}" -f $existing)
+  $wantMpi = $env:AEGIS_LAMMPS_SERIAL_OK -ne "1"
+  if ($existing -and $wantMpi -and -not (Test-LammpsLooksSerial $existing)) {
+    Write-Ok ("MPI-capable LAMMPS already present: {0}" -f $existing)
     $env:AEGIS_LAMMPS_BIN = $existing
     return
   }
+  if ($existing -and -not $wantMpi) {
+    Write-Ok ("LAMMPS already present (serial OK): {0}" -f $existing)
+    $env:AEGIS_LAMMPS_BIN = $existing
+    return
+  }
+  if ($existing -and $wantMpi -and (Test-LammpsLooksSerial $existing)) {
+    Write-Info ("Found serial/GUI LAMMPS ({0}); installing official MS-MPI package so mpi_procs>1 works." -f $existing)
+  }
 
   $urls = @()
+  if ($env:AEGIS_LAMMPS_MPI_URL) { $urls += $env:AEGIS_LAMMPS_MPI_URL }
   if ($env:AEGIS_LAMMPS_URL) { $urls += $env:AEGIS_LAMMPS_URL }
+  # Prefer official MS-MPI builds (parallel). GUI packages are serial-only.
   $urls += @(
-    "https://download.lammps.org/static/LAMMPS-Win10-x64-GUI-latest.exe",
-    "https://download.lammps.org/static/LAMMPS-Win10-64bit-GUI-stable.exe",
-    "https://github.com/lammps/lammps/releases/download/stable_22Jul2025_update4/LAMMPS-Win10-64bit-GUI-22Jul2025_update4.exe"
+    "https://rpm.lammps.org/windows/LAMMPS-64bit-latest-MSMPI.exe",
+    "https://rpm.lammps.org/windows/LAMMPS-64bit-stable-MSMPI.exe",
+    "https://packages.lammps.org/windows/LAMMPS-64bit-latest-MSMPI.exe",
+    "https://packages.lammps.org/windows/LAMMPS-64bit-stable-MSMPI.exe",
+    "https://download.lammps.org/static/LAMMPS-Win10-x64-GUI-latest.exe"
   )
 
   $installer = $null
@@ -263,6 +294,11 @@ function Ensure-Lammps {
   if ($existing) {
     Write-Ok ("LAMMPS installed: {0}" -f $existing)
     $env:AEGIS_LAMMPS_BIN = $existing
+    if (Test-LammpsLooksSerial $existing) {
+      Write-Warn "Installed binary still looks serial. Prefer *-MSMPI.exe from https://packages.lammps.org/windows.html"
+    } else {
+      Write-Ok "LAMMPS help text suggests MPI support — set mpi_procs>1 in the UI to run parallel MD."
+    }
   } else {
     Write-Warn "LAMMPS installer finished but lmp.exe not found on PATH yet."
     Write-Warn "Open a new shell or set AEGIS_LAMMPS_BIN after install. Continuing (dry-run still works)."

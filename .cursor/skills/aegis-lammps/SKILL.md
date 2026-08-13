@@ -14,7 +14,8 @@ description: LAMMPS cascade/implant conventions for Aegis — run parameters, du
 - Jobs: `apps/api/aegis_api/jobs.py` — spawn `AEGIS_LAMMPS_BIN` (default `lmp`); MPI via `mpi_procs` + `AEGIS_MPIEXEC`
 - MPI helpers: `engines/lammps/mpi.py`
 - Params schema: `LammpsRunParams` in `packages/schema` (`mpi_procs`, `kmc_threads`)
-- Bootstrap: Windows `Ensure-Mpi` (MS-MPI) · Linux `setup_and_run.sh` (OpenMPI)
+- Bootstrap: Windows `Ensure-Mpi` (MS-MPI) + MS-MPI LAMMPS (`*-MSMPI.exe`) · Linux `setup_and_run.sh` (OpenMPI)
+- Install helper: `engines/lammps/install_mpi.py` · API `POST /api/engines/lammps/install-mpi`
 - DXA: `apps/api/aegis_api/dxa.py` · lattice relax: `lattice_relax.py`
 
 ## Conventions
@@ -26,7 +27,8 @@ description: LAMMPS cascade/implant conventions for Aegis — run parameters, du
 - Prefer cascade/implant dumps over initial/stage bookmarks for defect analysis
 - If LAMMPS missing, placeholder potential, or unsupported crystal: dry-run demo dump
 - WS analysis: `aegis-ws-proxy-v2` with crystal + optional sublattice (WC)
-- `mpi_procs>1` → `mpiexec -n N lmp -in in.aegis` (requires MPI-enabled LAMMPS; GUI/serial builds will fail)
+- `mpi_procs>1` → Windows: `mpiexec -localonly N lmp -in …` · Linux: `mpiexec -n N lmp -in …`
+  (requires MPI-enabled LAMMPS; GUI/serial builds must be replaced via Install parallel LAMMPS)
 - `kmc_threads` → `OMP_NUM_THREADS` in k-ART `KMC.sh.aegis` (ML-KMC/CD remain serial)
 
 ## Parameter groups

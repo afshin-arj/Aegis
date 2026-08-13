@@ -130,5 +130,8 @@ def build_lammps_command(
             f"mpi_procs={n} requested but no mpiexec/mpirun found. "
             "Set AEGIS_MPIEXEC or install MS-MPI/OpenMPI, or set mpi_procs=1."
         )
-    # MS-MPI / OpenMPI / Intel: mpiexec -n N …
+    # MS-MPI on Windows: prefer -localonly N (no SMPD password / network).
+    # OpenMPI / Intel / Linux: mpiexec -n N …
+    if os.name == "nt":
+        return [str(launcher), "-localonly", str(n), lammps_bin, "-in", input_name]
     return [str(launcher), "-n", str(n), lammps_bin, "-in", input_name]
