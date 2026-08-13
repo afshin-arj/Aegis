@@ -436,6 +436,17 @@ class MlKmcAnnealRequest(BaseModel):
     onnx_path: str | None = None
     seed: int = 1
 
+
+class ClusterDynamicsRequest(BaseModel):
+    """Stochastic cluster dynamics on a completed cascade (Phase G)."""
+
+    temperature_K: float = Field(600.0, ge=1.0)
+    target_time_s: float = Field(1e6, ge=0.0)
+    volume_cm3: float = Field(1e-9, gt=0.0)
+    max_events: int = Field(5000, ge=1, le=10_000_000)
+    catalog_path: str | None = None
+    seed: int = 1
+
 class JobStatus(str, Enum):
     QUEUED = "queued"
     RUNNING = "running"
@@ -464,6 +475,8 @@ class JobInfo(BaseModel):
     kart_summary: dict[str, Any] | None = None
     mmonca_summary: dict[str, Any] | None = None
     ml_kmc_summary: dict[str, Any] | None = None
+    cd_summary: dict[str, Any] | None = None
+    kps_summary: dict[str, Any] | None = None
     kmc_provenance: KmcProvenance | None = None
     surface_summary: dict[str, Any] | None = None
     # Provenance for Results / UI badges

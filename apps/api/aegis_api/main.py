@@ -32,6 +32,7 @@ from aegis_schema import (  # noqa: E402
     KartAnnealRequest,
     KmcRecommendRequest,
     MlKmcAnnealRequest,
+    ClusterDynamicsRequest,
     KmcRecommendResponse,
     KmcTier,
     LammpsRunParams,
@@ -50,6 +51,7 @@ from aegis_schema import (  # noqa: E402
 )
 from kart.adapter import discover_kart, run_anneal_stub_or_real  # noqa: E402
 from ml_kmc.adapter import discover_ml_kmc, run_ml_kmc_anneal  # noqa: E402
+from cluster_dynamics.adapter import run_cluster_dynamics  # noqa: E402
 from mmonca.adapter import discover_mmonca  # noqa: E402
 from lammps.templates import write_cascade_input, write_implant_input  # noqa: E402
 
@@ -1306,6 +1308,75 @@ def post_ml_kmc_anneal(job_id: str, body: MlKmcAnnealRequest) -> dict[str, Any]:
             job_id,
             status=JobStatus.COMPLETED,
             message=f"cascade completed; ML-KMC failed: {exc}",
+            defect_summary=info.defect_summary,
+        )
+        raise HTTPException(500, str(exc)) from exc
+
+
+@app.get("/api/jobs/{job_id}/cluster-dynamics")
+def get_cd_summary(job_id: str) -> dict[str, Any]:
+    info = jobs.get(job_id)
+    if not info:
+        raise HTTPException(404, "job not found")
+    path = RUNS_ROOT / job_id / "cd_summary.json"
+    if path.exists():
+        return json.loads(path.read_text(encoding="utf-8"))
+    if info.cd_summary:
+        return info.cd_summary
+    raise HTTPException(404, "cluster-dynamics summary not ready")
+
+
+@app.post("/api/jobs/{job_id}/cluster-dynamics/run")
+def post_cd_run(job_id: str, body: ClusterDynamicsRequest) -> dict[str, Any]:
+    info = jobs.get(job_id)
+    if not info:
+        raise HTTPException(404, "job not found")
+    if info.status != JobStatus.COMPLETED:
+        raise HTTPException(400, f"job status {info.status} cannot run CD yet")
+    job_dir = RUNS_ROOT / job_id
+    from kmc.router import recommend_kmc
+
+    material = store.get_material(info.material_id) if info.material_id else None
+    router = recommend_kmc(
+        material=material.model_dump(mode="json") if material else None,
+        target_time_s=float(body.target_time_s),
+        temperature_K=float(body.temperature_K),
+        requested_tier="stochastic_cd",
+    )
+    jobs._update(job_id, status=JobStatus.ANNEALING, message="cluster dynamics")
+    try:
+        summary = run_cluster_dynamics(
+            job_dir,
+            temperature_K=body.temperature_K,
+            target_time_s=body.target_time_s,
+            volume_cm3=body.volume_cm3,
+            max_events=body.max_events,
+            catalog_path=body.catalog_path,
+            seed=body.seed,
+            router=router,
+        )
+        kmc_prov = None
+        if isinstance(summary.get("provenance"), dict):
+            try:
+                from aegis_schema import KmcProvenance
+
+                kmc_prov = KmcProvenance(**summary["provenance"])
+            except Exception:  # noqa: BLE001
+                kmc_prov = None
+        jobs._update(
+            job_id,
+            status=JobStatus.COMPLETED,
+            message="completed",
+            cd_summary=summary,
+            defect_summary=info.defect_summary,
+            kmc_provenance=kmc_prov or info.kmc_provenance,
+        )
+        return summary
+    except Exception as exc:  # noqa: BLE001
+        jobs._update(
+            job_id,
+            status=JobStatus.COMPLETED,
+            message=f"cascade completed; CD failed: {exc}",
             defect_summary=info.defect_summary,
         )
         raise HTTPException(500, str(exc)) from exc

@@ -142,6 +142,7 @@ type JobInfo = {
   kart_summary?: Record<string, unknown>;
   mmonca_summary?: Record<string, unknown>;
   ml_kmc_summary?: Record<string, unknown>;
+  cd_summary?: Record<string, unknown>;
   kmc_provenance?: KmcProvenance;
   surface_summary?: Record<string, unknown>;
   execution_mode?: string | null;
@@ -703,6 +704,10 @@ export default function App() {
   const [mlKmcTempK, setMlKmcTempK] = useState(900);
   const [mlKmcNu, setMlKmcNu] = useState<"composition_polynomial" | "constant">("composition_polynomial");
   const [mlKmcOnnx, setMlKmcOnnx] = useState("");
+  const [cdTempK, setCdTempK] = useState(600);
+  const [cdTimeS, setCdTimeS] = useState(1e6);
+  const [cdVolume, setCdVolume] = useState(1e-9);
+  const [cdSummary, setCdSummary] = useState<Record<string, unknown> | null>(null);
   const [jobSnapshot, setJobSnapshot] = useState<{
     material_id: string;
     potential_id: string;
@@ -1314,6 +1319,7 @@ export default function App() {
       setDefects(null);
       setKartSummary(null);
       setMlKmcSummary(null);
+      setCdSummary(null);
       setCascadeTimeline(null);
       setDxaSummary(null);
       setJob(info);
@@ -1723,6 +1729,7 @@ export default function App() {
       setDefects(null);
       setKartSummary(null);
       setMlKmcSummary(null);
+      setCdSummary(null);
       setCascadeTimeline(null);
       setDxaSummary(null);
       setJob(info);
@@ -1756,6 +1763,32 @@ export default function App() {
       const info = await api<JobInfo>(`/api/jobs/${jobId}`);
       if (watchedJobId.current !== jobId) return;
       setMlKmcSummary(summary);
+      setJob(info);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runClusterDynamics() {
+    if (!job) return;
+    const jobId = job.id;
+    setBusy(true);
+    setError("");
+    try {
+      const summary = await api<Record<string, unknown>>(`/api/jobs/${jobId}/cluster-dynamics/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          temperature_K: cdTempK,
+          target_time_s: cdTimeS,
+          volume_cm3: cdVolume,
+        }),
+      });
+      const info = await api<JobInfo>(`/api/jobs/${jobId}`);
+      if (watchedJobId.current !== jobId) return;
+      setCdSummary(summary);
       setJob(info);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -4469,6 +4502,45 @@ export default function App() {
                 />
               </Field>
             </section>
+            <section className="panel stack">
+              <h3>Stochastic cluster dynamics (long-term)</h3>
+              <p className="hint">
+                Gillespie SSA on vacancy/SIA/cluster counts (Adjanor 2025). Rates come from a catalog —
+                the bundled example is unvalidated. Volume below 5×10⁻¹⁰ cm³ warns.
+              </p>
+              <div className="row">
+                <Field label="CD temperature" unit="K" htmlFor="cd-t">
+                  <input
+                    id="cd-t"
+                    type="number"
+                    value={cdTempK}
+                    onChange={(e) => setCdTempK(Number(e.target.value))}
+                  />
+                </Field>
+                <Field label="Target time" unit="s" htmlFor="cd-time">
+                  <input
+                    id="cd-time"
+                    type="number"
+                    value={cdTimeS}
+                    onChange={(e) => setCdTimeS(Number(e.target.value))}
+                  />
+                </Field>
+              </div>
+              <Field label="Simulated volume" unit="cm³" htmlFor="cd-vol">
+                <input
+                  id="cd-vol"
+                  type="number"
+                  step="1e-12"
+                  value={cdVolume}
+                  onChange={(e) => setCdVolume(Number(e.target.value))}
+                />
+              </Field>
+              {cdVolume < 5e-10 && (
+                <div className="alert alert-warn">
+                  Volume below 5×10⁻¹⁰ cm³ — finite-size side effects (Adjanor 2025).
+                </div>
+              )}
+            </section>
             <button type="button" disabled={busy || blockers.length > 0} onClick={runJob}>
               Submit job
             </button>
@@ -4974,6 +5046,45 @@ export default function App() {
               {job?.status === "completed" && (
                 <button type="button" className="secondary" disabled={busy} onClick={() => void runMlKmc()}>
                   Run ML-KMC on this cascade
+                </button>
+              )}
+              {(cdSummary || job?.cd_summary) && (
+                <>
+                  <h3>Cluster dynamics</h3>
+                  {(() => {
+                    const cd = (cdSummary || job?.cd_summary || {}) as Record<string, unknown>;
+                    const fin = (cd.final || {}) as Record<string, unknown>;
+                    return (
+                      <div className="stack">
+                        <div className="chip-row">
+                          <span className="chip">
+                            <span className="chip-k">events</span>
+                            <span className="chip-v">{String(cd.n_events ?? "—")}</span>
+                          </span>
+                          <span className="chip">
+                            <span className="chip-k">t</span>
+                            <span className="chip-v">{String(cd.simulated_time_s ?? "—")} s</span>
+                          </span>
+                          <span className="chip">
+                            <span className="chip-k">V</span>
+                            <span className={`chip-v ${cd.volume_warn ? "tone-warn" : ""}`}>
+                              {String(cd.volume_cm3 ?? "—")} cm³
+                            </span>
+                          </span>
+                          <span className="chip">
+                            <span className="chip-k">n_vac</span>
+                            <span className="chip-v">{String(fin.n_vac ?? "—")}</span>
+                          </span>
+                        </div>
+                        <p className="hint">{String(cd.message || "")}</p>
+                      </div>
+                    );
+                  })()}
+                </>
+              )}
+              {job?.status === "completed" && (
+                <button type="button" className="secondary" disabled={busy} onClick={() => void runClusterDynamics()}>
+                  Run cluster dynamics
                 </button>
               )}
             </section>

@@ -1,0 +1,26 @@
+{
+  "format": "aegis-cd-rate-catalog-v1",
+  "citation": "User-supplied / literature — do not treat defaults as calibrated RPV rates",
+  "volume_warn_cm3": 5e-10,
+  "channels": [
+    {
+      "id": "vac_absorb_sia",
+      "kind": "recombination",
+      "k0_cm3_s": 1.0e-12,
+      "note": "Placeholder second-order recombination prefactor — replace from catalog"
+    },
+    {
+      "id": "vac_emit",
+      "kind": "emission",
+      "k0_s": 1.0e3,
+      "e_bind_eV": 0.4,
+      "note": "Placeholder vacancy emission from clusters"
+    },
+    {
+      "id": "sia_absorb_vac",
+      "kind": "absorption",
+      "k0_cm3_s": 1.0e-12,
+      "note": "Placeholder SIA–vacancy absorption"
+    }
+  ]
+}
