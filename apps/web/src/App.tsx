@@ -4900,12 +4900,22 @@ export default function App() {
               )}
               {job?.mmonca_summary && (
                 <>
-                  <h3>MMonCa OKMC</h3>
+                  <h3>MMonCa OKMC (comparison only)</h3>
                   <div className="chip-row">
                     <span className="chip">
                       <span className="chip-k">status</span>
                       <span className="chip-v">{String((job.mmonca_summary as { status?: string }).status || "—")}</span>
                     </span>
+                    <span className="chip">
+                      <span className="chip-k">tier</span>
+                      <span className="chip-v">mmonca_compare</span>
+                    </span>
+                    {(job.mmonca_summary as { n_objects?: number }).n_objects != null && (
+                      <span className="chip">
+                        <span className="chip-k">objects</span>
+                        <span className="chip-v">{String((job.mmonca_summary as { n_objects?: number }).n_objects)}</span>
+                      </span>
+                    )}
                   </div>
                   <p className="hint">{String((job.mmonca_summary as { message?: string }).message || "")}</p>
                   <pre className="log" style={{ height: "auto", maxHeight: 160 }}>

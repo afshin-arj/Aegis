@@ -5,8 +5,10 @@ Aegis Phase-2 primary KMC path is **KART (k-ART)**. [MMonCa](https://www.science
 ## What Aegis does
 
 - Discovers `AEGIS_MMONCA_BIN` / `AEGIS_MMONCA_ROOT` / `third_party/mmonca`
-- Writes `runs/<job>/mmonca_work/handoff.json` from cascade defect proxies
-- Stubs an object-evolution timeline in Results when the binary is missing
+- Writes `runs/<job>/mmonca_work/` handoff **v2**: clustered vacancy/SIA objects (positions, sizes) plus optional DXA loops
+- Probes the binary when found; writes `run_mmonca.sh.aegis`
+- Always tags the path `mmonca_compare` — never the default post-cascade anneal
+- Stubs an object-evolution timeline in Results until a real OKMC trajectory is imported
 
 ## What Aegis does **not** do
 

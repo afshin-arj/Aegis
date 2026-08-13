@@ -8,7 +8,7 @@ Aegis follows a **three-tier kinetic ladder** (Adjanor et al., *EPJ Nuclear Sci.
 | 2 | First-passage / kPS | trapping / rare escapes | Phase H (planned) |
 | 3 | Stochastic cluster dynamics | reactor lifetimes | Phase G (planned) |
 | E | ML-KMC (ANN-LAC + composition ν) | CSA sluggish diffusion | **Wired** (`engines/ml_kmc`, heuristic unless user ONNX) |
-| — | MMonCa OKMC | comparison / object KMC | Comparison-only, marked synthetic |
+| — | MMonCa OKMC | comparison / object KMC | **Handoff v2** (clustered objects + binary probe; always `mmonca_compare`) |
 
 ## Honesty rules
 
@@ -52,8 +52,8 @@ kinetics chips, and constant-vs-hTST deltas when compare mode ran.
 
 1. **D** — schema, router, provenance, KART v3 flags, UI — shipped
 2. **F** — hTST alignment, richer Energy.dat, prefactor compare — shipped
-3. **E** — ML-KMC (ANN-LAC / rigid lattice) — this slice
-4. **I** — richer MMonCa handoff
+3. **E** — ML-KMC (ANN-LAC / rigid lattice) — shipped
+4. **I** — richer MMonCa handoff — this slice
 5. **G** — stochastic cluster dynamics
 6. **H** — first-passage kPS
 

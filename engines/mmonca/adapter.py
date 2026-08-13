@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from kmc.provenance import build_provenance, merge_router_warnings
+from mmonca.handoff import collect_okmc_objects
 
 
 def discover_mmonca() -> dict[str, Any]:
@@ -29,7 +30,7 @@ def discover_mmonca() -> dict[str, Any]:
 
     binary = next((str(c.resolve()) for c in candidates if c and c.exists() and c.is_file()), None)
     if binary:
-        msg = "MMonCa binary discovered. Phase-3 OKMC coupling is optional/stub-first."
+        msg = "MMonCa binary discovered. Comparison-only OKMC — Aegis writes object handoff v2 and probes the binary."
     elif tp.exists() or (root and Path(root).exists()):
         msg = "MMonCa sources/path present but binary not found. Build upstream and set AEGIS_MMONCA_BIN."
     else:
@@ -52,43 +53,64 @@ def run_okmc_stub_or_real(
     max_events: int = 1000,
     router: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Write MMonCa-oriented handoff from defects; stub event evolution if binary missing."""
+    """Write MMonCa object handoff v2; probe binary when present; never claim primary kMC."""
     info = discover_mmonca()
     work = job_dir / "mmonca_work"
     work.mkdir(parents=True, exist_ok=True)
-
-    defects: dict[str, Any] = {}
-    if (job_dir / "defects.json").exists():
-        try:
-            defects = json.loads((job_dir / "defects.json").read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            defects = {}
-    summary = defects.get("summary") or {}
-    n_v = int(summary.get("vacancies") or 0)
-    n_i = int(summary.get("interstitials") or 0)
+    pack = collect_okmc_objects(job_dir)
+    objects = list(pack.get("objects") or [])
+    scalars = pack.get("scalar_summary") or {}
+    n_v = int(scalars.get("vacancies") or 0)
+    n_i = int(scalars.get("interstitials") or 0)
 
     handoff = {
-        "format": "aegis-mmonca-handoff-v1",
+        "format": "aegis-mmonca-handoff-v2",
+        "tier": "mmonca_compare",
         "temperature_K": temperature_K,
         "max_events": max_events,
-        "objects": {
-            "vacancies": n_v,
-            "interstitials": n_i,
-            "clusters": int(summary.get("clusters") or 0),
-        },
+        "objects_file": "objects.json",
+        "n_objects": len(objects),
+        "scalar_summary": scalars,
         "notes": [
-            "Phase-3 optional OKMC path for comparison with k-ART.",
+            "Comparison-only object-KMC path — not the default post-cascade anneal.",
+            "Objects include clustered vacancies/SIAs from defects.json and optional DXA loops.",
             "Aegis does not redistribute MMonCa; configure locally.",
         ],
     }
+    (work / "objects.json").write_text(json.dumps(pack, indent=2), encoding="utf-8")
     (work / "handoff.json").write_text(json.dumps(handoff, indent=2), encoding="utf-8")
+    launch = f"""#!/bin/sh
+# Aegis MMonCa comparison launch template — edit for your MMonCa input dialect.
+# objects: {len(objects)}  T={temperature_K} K  max_events={max_events}
+# Usage: $AEGIS_MMONCA_BIN <your-input>   (see engines/mmonca/SETUP.md)
+echo "MMonCa comparison handoff in $(pwd)"
+"""
+    (work / "run_mmonca.sh.aegis").write_text(launch, encoding="utf-8")
 
-    # Synthetic object evolution for UI (vacancy–SIA recombination flavoured)
+    binary_probed = False
+    probe_message = ""
+    if info.get("mmonca_found") and info.get("mmonca_path"):
+        try:
+            import subprocess
+
+            proc = subprocess.run(
+                [str(info["mmonca_path"]), "--help"],
+                cwd=work,
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=False,
+            )
+            binary_probed = True
+            probe_message = (proc.stdout or proc.stderr or "")[-500:]
+        except Exception as exc:  # noqa: BLE001
+            probe_message = str(exc)
+
+    # Synthetic object evolution for UI until a real OKMC trajectory exists
     n = max(5, min(int(max_events), 40))
     events = []
     v, i = float(n_v), float(n_i)
     for step in range(1, n + 1):
-        # Prefer recombination while both species remain
         if v > 0 and i > 0 and step % 3 != 0:
             v -= 0.5
             i -= 0.5
@@ -105,41 +127,53 @@ def run_okmc_stub_or_real(
                 "kind": kind,
                 "vacancies": round(v, 2),
                 "interstitials": round(i, 2),
+                "n_objects": len(objects),
                 "time_s": 1e-9 * step * (600.0 / max(temperature_K, 1.0)),
                 "source": "aegis-mmonca-stub",
             }
         )
 
+    status = "stubbed"
+    if info["mmonca_found"]:
+        status = "handoff_ready" if binary_probed else "error"
+    message = info["mmonca_message"]
+    if binary_probed:
+        message = (
+            "MMonCa binary probed; object handoff v2 written. "
+            "Launch via run_mmonca.sh.aegis — comparison-only, not the primary kMC tier."
+        )
     out: dict[str, Any] = {
-        "format": "aegis-mmonca-summary-v2",
+        "format": "aegis-mmonca-summary-v3",
         "engine": "mmonca",
+        "tier": "mmonca_compare",
         "temperature_K": temperature_K,
         "max_events": max_events,
-        "status": "stubbed" if not info["mmonca_found"] else "handoff_ready",
-        "message": (
-            info["mmonca_message"]
-            if not info["mmonca_found"]
-            else "MMonCa binary present; handoff written. Full OKMC launch is operator-driven in Phase-3."
-        ),
+        "status": status,
+        "message": message,
         "mmonca_found": info["mmonca_found"],
+        "binary_probed": binary_probed,
+        "probe_tail": probe_message,
         "handoff": "mmonca_work/handoff.json",
+        "n_objects": len(objects),
+        "objects": objects[:80],
         "events": events,
         "final_objects": {
             "vacancies": events[-1]["vacancies"] if events else n_v,
             "interstitials": events[-1]["interstitials"] if events else n_i,
+            "clusters": len(objects),
         },
         "provenance": merge_router_warnings(
             build_provenance(
                 "mmonca_compare",
-                synthetic=True,
+                synthetic=not binary_probed,
                 prefactor_model="unknown",
                 structure_class="as_cascade",
                 trapping_risk="unknown",
-                validation_status="stub" if not info["mmonca_found"] else "handoff_ready",
+                validation_status="handoff_ready" if binary_probed else "stub",
                 target_time_s=0.0,
                 warnings=[
                     "MMonCa path is comparison-only — not the primary post-cascade kMC tier.",
-                    "Event curve is Aegis synthetic until real OKMC launch is wired.",
+                    "Event curve is Aegis synthetic until a real OKMC trajectory is imported.",
                 ],
             ),
             router,
