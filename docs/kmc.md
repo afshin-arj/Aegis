@@ -25,9 +25,9 @@ Aegis follows a **three-tier kinetic ladder** (Adjanor et al., *EPJ Nuclear Sci.
 - Outputs: `recommended_tier`, warnings, `prefactor_model_hint`, `trapping_risk_hint`.
 - Optional `JobCreate.kmc_tier` overrides the recommendation (note recorded in provenance).
 
-## k-ART handoff v3
+## k-ART handoff v3 / summary v4
 
-Under `runs/<job_id>/kart_work/T*/`:
+Under `runs/<job_id>/kart_work/T*/` (and `T*_constant` / `T*_htst` in prefactor-compare mode):
 
 ```text
 initial.conf · conf.lammps · in.lammps · KMC.sh.aegis · handoff.json
@@ -36,19 +36,22 @@ initial.conf · conf.lammps · in.lammps · KMC.sh.aegis · handoff.json
 `handoff.json` format **`aegis-kart-handoff-v3`** includes:
 
 - `prefactor_mode`: `htst` | `constant`
-- `MIN_EVENT_SEARCHES=25` in `KMC.sh.aegis`
+- `MIN_EVENT_SEARCHES=25` and optional `USE_HTST_PREFACTOR=.true.` in `KMC.sh.aegis`
 - Trapping diagnostics from `Energy.dat` (`analyze_trapping` → flicker ratio / risk)
+- Optional per-event `prefactor_Hz` / `rate_Hz` when Energy.dat columns allow
 
-Summaries use **`aegis-kart-summary-v3`**.
+Summaries use **`aegis-kart-summary-v4`** (adds `kinetics`, optional `prefactor_compare_results`).
 
 ## UI
 
-LAMMPS **Params** tab → **Post-cascade kMC** panel shows the live router recommendation. Results and the recipe aside show job-level `kmc_provenance` and per-run trapping / prefactor chips.
+LAMMPS **Params** tab → **Post-cascade kMC** panel shows the live router recommendation and optional
+**Prefactor compare** checkbox. Results and the recipe aside show job-level `kmc_provenance`,
+kinetics chips, and constant-vs-hTST deltas when compare mode ran.
 
 ## Phase roadmap (approved order)
 
-1. **D** — schema, router, provenance, KART v3 flags, UI (this document’s baseline)
-2. **F** — richer hTST / Energy.dat parsing (partially started in handoff)
+1. **D** — schema, router, provenance, KART v3 flags, UI — shipped
+2. **F** — hTST alignment, richer Energy.dat, prefactor compare — this slice
 3. **E** — ML-KMC (ANN-LAC)
 4. **I** — richer MMonCa handoff
 5. **G** — stochastic cluster dynamics

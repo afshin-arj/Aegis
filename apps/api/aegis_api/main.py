@@ -1196,6 +1196,7 @@ def post_kart_anneal(job_id: str, body: KartAnnealRequest) -> dict[str, Any]:
             temperatures=body.temperatures,
             material=material.model_dump(mode="json") if material else None,
             router=router,
+            prefactor_compare=bool(body.prefactor_compare),
         )
         kmc_prov = None
         if isinstance(summary, dict) and isinstance(summary.get("provenance"), dict):

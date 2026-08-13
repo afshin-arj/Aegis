@@ -135,14 +135,17 @@ runs/<job_id>/kart_work/T600/
 
 ### Handoff v3 notes
 
-- **`PREFACTOR_MODE`**: `htst` when the material is a concentrated alloy (≥2 species >5 at%); otherwise `constant`.
+- **`PREFACTOR_MODE`**: `htst` when the material is a concentrated alloy (≥2 species >5 at%); otherwise `constant`. Override via compare packages.
+- **`USE_HTST_PREFACTOR`**: set `.true.` when `PREFACTOR_MODE=htst`.
 - **`MIN_EVENT_SEARCHES=25`**: raises the event-search floor for denser barrier catalogs (Adjanor 2025 practice).
-- **Trapping**: after `Energy.dat` exists, Aegis computes flicker ratio / trapping risk and stores them on `aegis-kart-summary-v3` + job `kmc_provenance`.
+- **Trapping**: after `Energy.dat` exists, Aegis computes flicker ratio / trapping risk and stores them on summary + job `kmc_provenance`.
+- **Richer Energy.dat parse**: barriers plus optional `prefactor_Hz` / `rate_Hz` when extra columns exist; otherwise Arrhenius rate from Γ₀=10¹³ Hz is annotated for kinetics chips.
+- **Prefactor compare** (`kart_prefactor_compare` / `prefactor_compare`): writes `T*_constant` and `T*_htst` packages and reports Δ⟨Eₐ⟩.
 - Tier routing / warnings: `POST /api/kmc/recommend` and `docs/kmc.md`.
 
 1. Build KART (WSL/Linux recommended on Windows).
 2. Copy/adapt `KMC.sh.aegis` → `KMC.sh`, set `CRYST_TOPOID` after a scout run (see kart-doc Si vacancy tutorial).
 3. Launch KART in that directory; when `Energy.dat` appears, Aegis will parse it on the next anneal refresh.
-4. DOE: set comma-separated temperatures in the UI, or `POST /api/jobs/{id}/kart/anneal` (router + provenance attached).
+4. DOE: set comma-separated temperatures in the UI, or `POST /api/jobs/{id}/kart/anneal` (router + provenance attached). Optional `prefactor_compare: true`.
 
 Until a real `Energy.dat` exists, Results shows an honest **stub** barrier timeline for UI wiring.

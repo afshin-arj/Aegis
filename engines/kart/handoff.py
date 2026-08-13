@@ -105,16 +105,22 @@ def build_kart_package(
     max_kmc_time_s: float,
     material: dict[str, Any] | None = None,
     potential: dict[str, Any] | None = None,
+    prefactor_mode: str | None = None,
+    work_suffix: str = "",
 ) -> dict[str, Any]:
     """Write a KART-oriented handoff directory from cascade artifacts.
 
     Produces LAMMPS data + kART ``.conf`` + ``KMC.sh.aegis`` following upstream
     docs conventions (see kart-doc tutorial). Full auto-launch still requires a
     built binary and validated forcefield wiring.
+
+    ``prefactor_mode`` overrides the concentrated-alloy default (``htst`` vs ``constant``).
+    ``work_suffix`` appends to the work dir name (e.g. ``_htst`` for compare mode).
     """
     material = material or {}
     potential = potential or {}
-    work = job_dir / "kart_work" / f"T{int(round(temperature_K))}"
+    suffix = f"_{work_suffix}" if work_suffix else ""
+    work = job_dir / "kart_work" / f"T{int(round(temperature_K))}{suffix}"
     if work.exists():
         shutil.rmtree(work)
     work.mkdir(parents=True, exist_ok=True)
@@ -274,13 +280,20 @@ neigh_modify delay 0 every 1 check no
     box_edge = max(lx, ly, lz)
     topo_r = max(4.0, 2.2 * float(material.get("lattice_constant_A") or 3.165))
     concentrated = _is_concentrated_alloy(material)
-    prefactor_mode = "htst" if concentrated else "constant"
+    if prefactor_mode in {"htst", "constant"}:
+        mode = prefactor_mode
+    else:
+        mode = "htst" if concentrated else "constant"
+    prefactor_mode = mode
     min_event_searches = 25
     trapping_risk = "low"
     if temperature_K < 500 and max_kmc_time_s < 10:
         trapping_risk = "medium"
     if temperature_K < 400:
         trapping_risk = "high"
+    use_htst_line = (
+        "setenv USE_HTST_PREFACTOR .true.\n" if prefactor_mode == "htst" else "# setenv USE_HTST_PREFACTOR .true.\n"
+    )
     kmc = f"""#!/bin/csh
 # Aegis-generated KART launch template — edit TOPO_* / CRYST_* for your material.
 # Docs: https://kart-doc.readthedocs.io/
@@ -303,8 +316,7 @@ setenv OSCILL_TREAT NONE
 setenv MIN_SIG_BARRIER 0.1
 setenv MIN_EVENT_SEARCHES {min_event_searches}
 setenv PREFACTOR_MODE {prefactor_mode}
-# For concentrated alloys Aegis sets PREFACTOR_MODE=htst (Adjanor 2025 / Huang 2023).
-# setenv USE_HTST_PREFACTOR .true.
+{use_htst_line}# For concentrated alloys Aegis defaults PREFACTOR_MODE=htst (Adjanor 2025 / Huang 2023).
 # setenv CRYST_TOPOID <identify on first run>
 # Launch: convert setenv→export then run kart binary (see engines/kart/SETUP.md)
 """
@@ -365,10 +377,20 @@ def _is_concentrated_alloy(material: dict[str, Any]) -> bool:
     return len(active) >= 2
 
 
-def parse_energy_dat(path: Path) -> list[dict[str, Any]]:
-    """Parse KART Energy.dat into event records when present."""
+def parse_energy_dat(
+    path: Path,
+    *,
+    temperature_K: float | None = None,
+) -> list[dict[str, Any]]:
+    """Parse KART Energy.dat into event records when present.
+
+    Column layout varies by KART build. Aegis accepts:
+    - Minimal: step … barrier(at col 4) … dt(col 6) sim_t(col 7)
+    - Richer: optional prefactor / rate columns when ≥9 numeric fields present
+    """
     if not path.exists():
         return []
+    kB = 8.617333262145e-5
     events: list[dict[str, Any]] = []
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         s = line.strip()
@@ -384,16 +406,71 @@ def parse_energy_dat(path: Path) -> list[dict[str, Any]]:
             sim_t = float(parts[7])
         except ValueError:
             continue
-        events.append(
-            {
-                "event": step,
-                "barrier_eV": barrier,
-                "time_s": sim_t,
-                "dt_s": dt,
-                "source": "Energy.dat",
-            }
-        )
+        prefactor: float | None = None
+        rate: float | None = None
+        # Heuristic: trailing numeric fields beyond the classic 8-column layout
+        extras: list[float] = []
+        for p in parts[8:]:
+            try:
+                extras.append(float(p))
+            except ValueError:
+                break
+        if extras:
+            # Prefer values that look like attempt frequencies (1e9–1e16) as prefactor
+            for v in extras:
+                if 1e9 <= abs(v) <= 1e16:
+                    prefactor = v
+                    break
+            # Prefer values that look like rates (1e-20–1e20, not matching prefactor)
+            for v in extras:
+                if v != prefactor and 1e-30 < abs(v) < 1e20:
+                    # If barrier-consistent Arrhenius rate is closer, keep as rate
+                    rate = v
+                    break
+        if prefactor is None and temperature_K and temperature_K > 0:
+            # Default harmonic attempt when only barrier is known (honest provenance note)
+            prefactor = 1e13
+        if rate is None and prefactor is not None and temperature_K and temperature_K > 0:
+            kT = max(temperature_K, 1.0) * kB
+            rate = float(prefactor) * math.exp(-min(barrier / kT, 80.0))
+        rec: dict[str, Any] = {
+            "event": step,
+            "barrier_eV": barrier,
+            "time_s": sim_t,
+            "dt_s": dt,
+            "source": "Energy.dat",
+        }
+        if prefactor is not None:
+            rec["prefactor_Hz"] = prefactor
+        if rate is not None:
+            rec["rate_Hz"] = rate
+        events.append(rec)
     return events
+
+
+def summarize_event_kinetics(events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate barrier / prefactor / rate stats for compare mode and Results chips."""
+    if not events:
+        return {
+            "n_events": 0,
+            "mean_barrier_eV": None,
+            "median_barrier_eV": None,
+            "mean_prefactor_Hz": None,
+            "mean_rate_Hz": None,
+            "has_prefactors": False,
+        }
+    barriers = sorted(float(e["barrier_eV"]) for e in events if e.get("barrier_eV") is not None)
+    prefs = [float(e["prefactor_Hz"]) for e in events if e.get("prefactor_Hz") is not None]
+    rates = [float(e["rate_Hz"]) for e in events if e.get("rate_Hz") is not None]
+    mid = barriers[len(barriers) // 2] if barriers else None
+    return {
+        "n_events": len(events),
+        "mean_barrier_eV": round(sum(barriers) / len(barriers), 6) if barriers else None,
+        "median_barrier_eV": round(mid, 6) if mid is not None else None,
+        "mean_prefactor_Hz": round(sum(prefs) / len(prefs), 3) if prefs else None,
+        "mean_rate_Hz": (sum(rates) / len(rates)) if rates else None,
+        "has_prefactors": bool(prefs),
+    }
 
 
 def analyze_trapping(events: list[dict[str, Any]], *, flicker_barrier_eV: float = 0.15) -> dict[str, Any]:

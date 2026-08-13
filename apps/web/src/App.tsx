@@ -570,6 +570,7 @@ type KartRun = {
   message?: string;
   events?: KartEvent[];
   handoff?: string;
+  prefactor_mode?: string;
 };
 type KartSummary = {
   status?: string;
@@ -580,8 +581,22 @@ type KartSummary = {
   runs?: KartRun[];
   handoff?: string;
   prefactor_mode?: string;
+  kinetics?: {
+    n_events?: number;
+    mean_barrier_eV?: number | null;
+    mean_prefactor_Hz?: number | null;
+    has_prefactors?: boolean;
+  };
   provenance?: KmcProvenance;
   router?: KmcRecommend;
+  prefactor_compare?: boolean;
+  prefactor_compare_results?: Array<{
+    temperature_K: number;
+    delta_mean_barrier_eV?: number | null;
+    constant?: Record<string, unknown>;
+    htst?: Record<string, unknown>;
+    note?: string;
+  }>;
 };
 
 type KmcProvenance = {
@@ -674,6 +689,7 @@ export default function App() {
   const [kartMaxEvents, setKartMaxEvents] = useState(1000);
   const [kartMaxWallS, setKartMaxWallS] = useState(600);
   const [kartMaxKmcTimeS, setKartMaxKmcTimeS] = useState(1);
+  const [kartPrefactorCompare, setKartPrefactorCompare] = useState(false);
   const [kartDoeTemps, setKartDoeTemps] = useState("");
   const [kmcRecommend, setKmcRecommend] = useState<KmcRecommend | null>(null);
   const [kartSummary, setKartSummary] = useState<KartSummary | null>(null);
@@ -1670,6 +1686,7 @@ export default function App() {
             .filter((x) => Number.isFinite(x) && x > 0);
           return doe.length ? doe : null;
         })(),
+        kart_prefactor_compare: kartPrefactorCompare,
         run_mmonca_okmc: runMmonca,
         mmonca_temperature_K: kartTemperatureK,
         mmonca_max_events: kartMaxEvents,
@@ -1741,6 +1758,7 @@ export default function App() {
           max_wall_s: kartMaxWallS,
           max_kmc_time_s: kartMaxKmcTimeS,
           temperatures: doe.length ? doe : [kartTemperatureK],
+          prefactor_compare: kartPrefactorCompare,
         }),
       });
       const info = await api<JobInfo>(`/api/jobs/${jobId}`);
@@ -4334,9 +4352,18 @@ export default function App() {
                     onChange={(e) => setKartDoeTemps(e.target.value)}
                   />
                 </Field>
+                <label className="check-row">
+                  <input
+                    type="checkbox"
+                    checked={kartPrefactorCompare}
+                    onChange={(e) => setKartPrefactorCompare(e.target.checked)}
+                  />
+                  Prefactor compare (constant Γ₀ vs hTST handoffs)
+                </label>
                 <p className="hint">
-                  DOE runs multiple anneals on the same cascade. Handoff v3 sets MIN_EVENT_SEARCHES=25 and
-                  prefactor_mode=htst for concentrated alloys (KMC.sh.aegis).
+                  DOE runs multiple anneals on the same cascade. Handoff v3 sets MIN_EVENT_SEARCHES=25,
+                  PREFACTOR_MODE, and USE_HTST_PREFACTOR for hTST packages. Prefactor compare writes
+                  T*_constant and T*_htst packages side-by-side (Phase F).
                 </p>
               </fieldset>
             )}
@@ -4701,6 +4728,18 @@ export default function App() {
                               <span className="chip-v">{ks.provenance.validation_status}</span>
                             </span>
                           )}
+                          {ks?.kinetics?.mean_barrier_eV != null && (
+                            <span className="chip">
+                              <span className="chip-k">⟨Eₐ⟩</span>
+                              <span className="chip-v">{ks.kinetics.mean_barrier_eV.toFixed(3)} eV</span>
+                            </span>
+                          )}
+                          {ks?.prefactor_compare && (
+                            <span className="chip">
+                              <span className="chip-k">compare</span>
+                              <span className="chip-v">constant vs hTST</span>
+                            </span>
+                          )}
                           {ks?.doe && (
                             <span className="chip">
                               <span className="chip-k">DOE</span>
@@ -4715,11 +4754,20 @@ export default function App() {
                           )}
                         </div>
                         <p className="hint">{ks?.message}</p>
+                        {ks?.prefactor_compare_results?.map((cmp) => (
+                          <div key={`cmp-${cmp.temperature_K}`} className="alert alert-warn">
+                            T={cmp.temperature_K} K · Δ⟨Eₐ⟩(hTST−constant)={" "}
+                            {cmp.delta_mean_barrier_eV != null
+                              ? `${cmp.delta_mean_barrier_eV.toFixed(4)} eV`
+                              : "—"}
+                            {cmp.note ? ` · ${cmp.note}` : ""}
+                          </div>
+                        ))}
                         {runs ? (
                           runs.map((r) => (
-                            <div key={r.temperature_K} className="stack">
+                            <div key={`${r.handoff || r.temperature_K}-${r.prefactor_mode || ""}`} className="stack">
                               <h4>
-                                T = {r.temperature_K} K · {r.status}
+                                T = {r.temperature_K} K · {r.prefactor_mode || "prefactor?"} · {r.status}
                               </h4>
                               <KartTimeline
                                 events={r.events || []}

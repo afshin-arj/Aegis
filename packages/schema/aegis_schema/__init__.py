@@ -411,6 +411,8 @@ class JobCreate(BaseModel):
     mmonca_max_events: int = 1000
     # Optional override; null → router picks at job start
     kmc_tier: KmcTier | None = None
+    # Phase F: write constant-ν and hTST handoffs side-by-side
+    kart_prefactor_compare: bool = False
 
 
 class KartAnnealRequest(BaseModel):
@@ -421,7 +423,7 @@ class KartAnnealRequest(BaseModel):
     max_wall_s: float = Field(600.0, ge=1.0, le=86400.0)
     max_kmc_time_s: float = Field(1.0, ge=0.0)
     temperatures: list[float] | None = None
-
+    prefactor_compare: bool = False
 
 class JobStatus(str, Enum):
     QUEUED = "queued"

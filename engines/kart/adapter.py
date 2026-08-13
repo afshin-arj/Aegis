@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 import shutil
 import subprocess
@@ -14,6 +13,7 @@ from kart.handoff import (
     analyze_trapping,
     build_kart_package,
     parse_energy_dat,
+    summarize_event_kinetics,
     synthetic_events,
 )
 
@@ -103,6 +103,8 @@ def _run_one_temperature(
     potential: dict[str, Any] | None,
     info: dict[str, Any],
     router: dict[str, Any] | None = None,
+    prefactor_mode: str | None = None,
+    work_suffix: str = "",
 ) -> dict[str, Any]:
     n_vac, n_sia = _defect_counts(job_dir)
     handoff = build_kart_package(
@@ -113,9 +115,11 @@ def _run_one_temperature(
         max_kmc_time_s=max_kmc_time_s,
         material=material,
         potential=potential,
+        prefactor_mode=prefactor_mode,
+        work_suffix=work_suffix,
     )
     work = job_dir / handoff["work_dir"]
-    prefactor_mode = handoff.get("prefactor_mode") or "constant"
+    mode = handoff.get("prefactor_mode") or "constant"
     trapping_hint = handoff.get("trapping_risk_hint") or "unknown"
     out: dict[str, Any] = {
         "temperature_K": temperature_K,
@@ -128,7 +132,7 @@ def _run_one_temperature(
         "events": [],
         "wall_elapsed_s": 0.0,
         "handoff_format": handoff.get("format"),
-        "prefactor_mode": prefactor_mode,
+        "prefactor_mode": mode,
     }
 
     def _attach_provenance(
@@ -139,16 +143,24 @@ def _run_one_temperature(
     ) -> None:
         trap = analyze_trapping(events)
         risk = trap.get("trapping_risk") or trapping_hint
+        kinetics = summarize_event_kinetics(events)
+        out["kinetics"] = kinetics
+        warnings = list(router.get("warnings") or []) if router else []
+        if mode == "constant" and handoff.get("concentrated_alloy"):
+            warnings.append(
+                "Constant Γ₀ on a concentrated alloy — compare with hTST (kart_prefactor_compare) "
+                "before trusting sluggish-diffusion trends (Huang 2023)."
+            )
         prov = build_provenance(
             "kart",
             synthetic=synthetic,
-            prefactor_model="htst" if prefactor_mode == "htst" else "constant",
+            prefactor_model="htst" if mode == "htst" else "constant",
             structure_class="as_cascade",
             trapping_risk=risk if risk in {"low", "medium", "high"} else "unknown",
             validation_status=validation_status,
             target_time_s=float(max_kmc_time_s),
             flicker_ratio=trap.get("flicker_ratio"),
-            warnings=list(router.get("warnings") or []) if router else [],
+            warnings=warnings,
         )
         out["trapping"] = trap
         out["provenance"] = merge_router_warnings(prov, router)
@@ -191,12 +203,13 @@ def _run_one_temperature(
         out["status"] = "error"
 
     out["wall_elapsed_s"] = round(time.perf_counter() - t0, 3)
-    events = parse_energy_dat(work / "Energy.dat")
+    events = parse_energy_dat(work / "Energy.dat", temperature_K=temperature_K)
     if events:
         out["events"] = events[: max_events]
         out["status"] = "annealed"
         out["message"] = (
-            f"Parsed {len(out['events'])} events from Energy.dat at T={temperature_K} K."
+            f"Parsed {len(out['events'])} events from Energy.dat at T={temperature_K} K "
+            f"(prefactor_mode={mode})."
         )
         _attach_provenance(synthetic=False, validation_status="energy_dat", events=out["events"])
     else:
@@ -210,12 +223,36 @@ def _run_one_temperature(
         out["status"] = "handoff_ready"
         out["message"] = (
             "KART binary present; aegis-kart-handoff-v3 package written under kart_work/. "
-            "Launch via KMC.sh.aegis (WSL/Linux). Events shown are Aegis stubs until Energy.dat exists."
+            f"Launch via KMC.sh.aegis (WSL/Linux, PREFACTOR_MODE={mode}). "
+            "Events shown are Aegis stubs until Energy.dat exists."
         )
         _attach_provenance(synthetic=True, validation_status="handoff_ready", events=out["events"])
 
     (work / "kart_run_summary.json").write_text(json.dumps(out, indent=2), encoding="utf-8")
     return out
+
+
+def _compare_prefactor_pair(
+    constant_run: dict[str, Any],
+    htst_run: dict[str, Any],
+) -> dict[str, Any]:
+    """Side-by-side constant-ν vs hTST kinetics delta (Phase F5)."""
+    kc = constant_run.get("kinetics") or summarize_event_kinetics(constant_run.get("events") or [])
+    kh = htst_run.get("kinetics") or summarize_event_kinetics(htst_run.get("events") or [])
+    mb_c = kc.get("mean_barrier_eV")
+    mb_h = kh.get("mean_barrier_eV")
+    delta_barrier = None
+    if mb_c is not None and mb_h is not None:
+        delta_barrier = round(float(mb_h) - float(mb_c), 6)
+    return {
+        "constant": kc,
+        "htst": kh,
+        "delta_mean_barrier_eV": delta_barrier,
+        "note": (
+            "Compare packages written for constant Γ₀ vs hTST. "
+            "Deltas are meaningful only after real Energy.dat exists for both modes."
+        ),
+    }
 
 
 def run_anneal_stub_or_real(
@@ -229,8 +266,9 @@ def run_anneal_stub_or_real(
     material: dict[str, Any] | None = None,
     potential: dict[str, Any] | None = None,
     router: dict[str, Any] | None = None,
+    prefactor_compare: bool = False,
 ) -> dict[str, Any]:
-    """Phase-2 anneal path: per-T handoff packages + optional DOE over temperatures."""
+    """Phase-2 anneal path: per-T handoff packages + optional DOE / prefactor compare."""
     info = discover_kart()
     temps = [float(t) for t in (temperatures or [temperature_K]) if float(t) > 0]
     if not temps:
@@ -242,27 +280,66 @@ def run_anneal_stub_or_real(
     if potential is None and (job_dir / "potential.json").exists():
         potential = json.loads((job_dir / "potential.json").read_text(encoding="utf-8"))
 
-    runs = [
-        _run_one_temperature(
-            job_dir,
-            temperature_K=T,
-            max_events=int(max_events),
-            max_wall_s=float(max_wall_s),
-            max_kmc_time_s=float(max_kmc_time_s),
-            material=material,
-            potential=potential,
-            info=info,
-            router=router,
-        )
-        for T in temps
-    ]
+    runs: list[dict[str, Any]] = []
+    compares: list[dict[str, Any]] = []
+    if prefactor_compare:
+        for T in temps:
+            const_run = _run_one_temperature(
+                job_dir,
+                temperature_K=T,
+                max_events=int(max_events),
+                max_wall_s=float(max_wall_s),
+                max_kmc_time_s=float(max_kmc_time_s),
+                material=material,
+                potential=potential,
+                info=info,
+                router=router,
+                prefactor_mode="constant",
+                work_suffix="constant",
+            )
+            htst_run = _run_one_temperature(
+                job_dir,
+                temperature_K=T,
+                max_events=int(max_events),
+                max_wall_s=float(max_wall_s),
+                max_kmc_time_s=float(max_kmc_time_s),
+                material=material,
+                potential=potential,
+                info=info,
+                router=router,
+                prefactor_mode="htst",
+                work_suffix="htst",
+            )
+            pair = _compare_prefactor_pair(const_run, htst_run)
+            compares.append({"temperature_K": T, **pair})
+            # Prefer hTST as the primary run for UI/timeline when comparing
+            htst_run = {**htst_run, "prefactor_compare_pair": pair}
+            runs.append(htst_run)
+            runs.append(const_run)
+    else:
+        runs = [
+            _run_one_temperature(
+                job_dir,
+                temperature_K=T,
+                max_events=int(max_events),
+                max_wall_s=float(max_wall_s),
+                max_kmc_time_s=float(max_kmc_time_s),
+                material=material,
+                potential=potential,
+                info=info,
+                router=router,
+            )
+            for T in temps
+        ]
 
-    primary = runs[0]
+    primary = next((r for r in runs if r.get("prefactor_mode") == "htst"), runs[0])
     primary_prov = primary.get("provenance") if isinstance(primary.get("provenance"), dict) else None
     summary: dict[str, Any] = {
-        "format": "aegis-kart-summary-v3",
+        "format": "aegis-kart-summary-v4",
         "engine": "kart",
-        "doe": len(runs) > 1,
+        "doe": len(temps) > 1,
+        "prefactor_compare": bool(prefactor_compare),
+        "prefactor_compare_results": compares or None,
         "temperatures_K": temps,
         "kart_found": bool(info.get("kart_found")),
         "kart_message": info.get("kart_message", ""),
@@ -275,12 +352,17 @@ def run_anneal_stub_or_real(
         "status": primary["status"] if len(runs) == 1 else "doe_complete",
         "message": (
             primary["message"]
-            if len(runs) == 1
-            else f"DOE complete: {len(runs)} anneal temperatures."
+            if len(runs) == 1 and not prefactor_compare
+            else (
+                f"Prefactor compare complete: constant vs hTST at {len(temps)} T."
+                if prefactor_compare
+                else f"DOE complete: {len(temps)} anneal temperatures."
+            )
         ),
         "events": primary.get("events") or [],
         "handoff": primary.get("handoff"),
         "prefactor_mode": primary.get("prefactor_mode"),
+        "kinetics": primary.get("kinetics"),
     }
     (job_dir / "kart_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     return summary

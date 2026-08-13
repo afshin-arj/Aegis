@@ -272,6 +272,7 @@ class JobManager:
                     "mmonca_temperature_K": body.mmonca_temperature_K,
                     "mmonca_max_events": body.mmonca_max_events,
                     "kmc_tier": body.kmc_tier.value if body.kmc_tier else None,
+                    "kart_prefactor_compare": bool(body.kart_prefactor_compare),
                 },
                 indent=2,
             ),
@@ -700,6 +701,7 @@ class JobManager:
                         material=material.model_dump(mode="json"),
                         potential=potential.model_dump(mode="json"),
                         router=router,
+                        prefactor_compare=bool(req.get("kart_prefactor_compare")),
                     )
                     if isinstance(kart_summary, dict) and sk_anneal not in {"", "single_crystal"}:
                         kart_summary["ws_proxy_warning"] = (
