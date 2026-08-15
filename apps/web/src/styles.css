@@ -582,6 +582,56 @@ button.linkish:hover {
   margin: 0 0 0.85rem;
 }
 
+.panel-guide {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.75rem 0.9rem;
+  margin: 0 0 0.85rem;
+  border: 1px solid color-mix(in srgb, var(--line) 85%, transparent);
+  border-left: 3px solid var(--copper);
+  background: color-mix(in srgb, var(--panel) 92%, var(--copper));
+}
+
+.panel-guide-purpose {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.panel-guide-steps {
+  margin: 0;
+  padding-left: 1.2rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.panel-guide-steps li + li {
+  margin-top: 0.2rem;
+}
+
+.panel-guide-nav {
+  margin-top: 0.2rem;
+}
+
+.rail-title {
+  display: block;
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 0.55rem;
+  padding: 0 0.4rem;
+}
+
+.rail-next {
+  margin: 0.65rem 0.4rem 0;
+  font-size: 0.75rem;
+  color: var(--muted);
+  line-height: 1.35;
+}
+
 .field-helper {
   display: block;
   color: var(--copper);

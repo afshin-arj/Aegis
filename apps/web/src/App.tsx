@@ -241,6 +241,70 @@ const TABS: { id: TabId; step: string; label: string }[] = [
   { id: "engines", step: "09", label: "Engines" },
 ];
 
+const TAB_NEXT: Partial<Record<TabId, { next: TabId; label: string }>> = {
+  projects: { next: "material", label: "Material" },
+  material: { next: "potential", label: "Potential" },
+  potential: { next: "scenario", label: "Scenario" },
+  scenario: { next: "params", label: "Simulate" },
+  params: { next: "run", label: "Run" },
+  run: { next: "results", label: "Results" },
+  results: { next: "doe", label: "Campaigns" },
+  doe: { next: "engines", label: "Engines" },
+  engines: { next: "params", label: "Simulate" },
+};
+
+const TAB_BACK: Partial<Record<TabId, { back: TabId; label: string }>> = {
+  material: { back: "projects", label: "Projects" },
+  potential: { back: "material", label: "Material" },
+  scenario: { back: "potential", label: "Potential" },
+  params: { back: "scenario", label: "Scenario" },
+  run: { back: "params", label: "Simulate" },
+  results: { back: "run", label: "Run" },
+  doe: { back: "results", label: "Results" },
+  engines: { back: "projects", label: "Projects" },
+};
+
+function PanelGuide({
+  purpose,
+  steps,
+  backLabel,
+  nextLabel,
+  onBack,
+  onNext,
+}: {
+  purpose: string;
+  steps: string[];
+  backLabel?: string;
+  nextLabel?: string;
+  onBack?: () => void;
+  onNext?: () => void;
+}) {
+  return (
+    <section className="panel-guide" aria-label="What to do on this panel">
+      <p className="panel-guide-purpose">{purpose}</p>
+      <ol className="panel-guide-steps">
+        {steps.map((s) => (
+          <li key={s}>{s}</li>
+        ))}
+      </ol>
+      {(onBack || onNext) && (
+        <div className="chip-row panel-guide-nav">
+          {onBack && backLabel ? (
+            <button type="button" className="secondary" onClick={onBack}>
+              ← {backLabel}
+            </button>
+          ) : null}
+          {onNext && nextLabel ? (
+            <button type="button" className="secondary" onClick={onNext}>
+              Next: {nextLabel} →
+            </button>
+          ) : null}
+        </div>
+      )}
+    </section>
+  );
+}
+
 const PAIR_STYLE_WHITELIST = [
   "eam",
   "eam/alloy",
@@ -2149,6 +2213,7 @@ export default function App() {
       </div>
 
       <aside className="rail" aria-label="Workflow">
+        <span className="rail-title">Workflow</span>
         <nav>
           {TABS.map((t) => (
             <button
@@ -2163,6 +2228,13 @@ export default function App() {
             </button>
           ))}
         </nav>
+        {TAB_NEXT[tab] ? (
+          <p className="rail-next">
+            When this panel is done, open <strong>{TAB_NEXT[tab]!.label}</strong> (
+            {TABS.find((t) => t.id === TAB_NEXT[tab]!.next)?.step}) in this list — or use{" "}
+            <strong>Next</strong> on the panel.
+          </p>
+        ) : null}
       </aside>
 
       <main id="main" className="main">
@@ -2183,32 +2255,42 @@ export default function App() {
             </div>
             <p className="hint">
               Group jobs by study name. Opening a job restores its status, log, and results; the current recipe is
-              unchanged until you submit again.
+              unchanged until you submit again. Switch panels with the <strong>Workflow</strong> list on the left
+              (steps 01–09).
             </p>
             <section className="panel stack">
               <h3>How to use the workbench</h3>
               <ol className="hint" style={{ margin: 0, paddingLeft: "1.25rem" }}>
                 <li>
-                  <strong>Material</strong> — composition + lattice (save if you edit).
+                  <strong>Material</strong> — pick a PFM preset; edit composition if needed and save.
                 </li>
                 <li>
-                  <strong>Potential</strong> — acquire/upload a published file; avoid placeholders for real MD.
+                  <strong>Potential</strong> — choose a ● ready file (or acquire/upload). Placeholders only dry-run.
                 </li>
                 <li>
-                  <strong>Scenario</strong> — D–D / D–T preset or custom PKA/ion energies.
+                  <strong>Scenario</strong> — pick D–D / D–T / He / surface defaults (energies/T).
                 </li>
                 <li>
-                  <strong>Simulate</strong> — set Compute (MPI / KMC threads), cell, structure, cascade, then
-                  optional post-cascade kMC.
+                  <strong>Simulate</strong> — Compute (MPI/threads) → cell → cascade → optional kMC → Submit (or top
+                  bar).
                 </li>
                 <li>
-                  <strong>Run</strong> — submit and watch the log; <strong>Results</strong> for defects / anneals.
+                  <strong>Run</strong> — watch the live log; <strong>Results</strong> for structure / defects /
+                  anneals.
                 </li>
                 <li>
-                  <strong>Campaigns</strong> — only after a single recipe works. <strong>Engines</strong> for
-                  LAMMPS/MPI/KART status.
+                  <strong>Campaigns</strong> only after one recipe works. <strong>Engines</strong> if LAMMPS/MPI/KART
+                  looks wrong.
                 </li>
               </ol>
+              <div className="chip-row">
+                <button type="button" className="secondary" onClick={() => setTab("material")}>
+                  Next: Material →
+                </button>
+                <button type="button" className="secondary" onClick={() => setTab("engines")}>
+                  Check Engines
+                </button>
+              </div>
             </section>
             <div className="row">
               <Field label="Active project" htmlFor="proj-active">
@@ -2333,6 +2415,18 @@ export default function App() {
               Cartesian sweeps over the current material / potential / LAMMPS recipe. Local execution is serial with
               auto-refresh; disable local run to prepare an HPC bundle instead.
             </p>
+            <PanelGuide
+              purpose="Sweep one or two axes after a single recipe already works."
+              steps={[
+                "Do not start here — finish Simulate → Run → Results on one cell first.",
+                "Name the campaign, pick axes (energy, T, …) and ranges.",
+                "Local run is serial. Or export an HPC pack instead of running here.",
+              ]}
+              backLabel={TAB_BACK.doe?.label}
+              nextLabel={TAB_NEXT.doe?.label}
+              onBack={() => setTab("results")}
+              onNext={() => setTab("engines")}
+            />
             <Field label="Campaign name" htmlFor="doe-name">
               <input id="doe-name" value={doeName} onChange={(e) => setDoeName(e.target.value)} />
             </Field>
@@ -2557,6 +2651,18 @@ export default function App() {
                 </span>
               </div>
             </div>
+            <PanelGuide
+              purpose="Define the host material for this study."
+              steps={[
+                "Choose a PFM preset (or keep the current one).",
+                "Edit at% / wt% only if you need a custom alloy — then Save material.",
+                "Confirm crystal / composition looks right, then continue to Potential.",
+              ]}
+              backLabel={TAB_BACK.material?.label}
+              nextLabel={TAB_NEXT.material?.label}
+              onBack={() => setTab("projects")}
+              onNext={() => setTab("potential")}
+            />
             <p className="hint">{material?.description}</p>
             {material && crystalInfo && (
               <div className={`alert ${crystalSupported ? "alert-ok" : "alert-warn"}`} role="status">
@@ -2757,9 +2863,14 @@ export default function App() {
                 </button>
               </div>
             </div>
-            <button type="button" disabled={busy || compositionTotal <= 0} onClick={saveComposition}>
-              Normalize & save override
-            </button>
+            <div className="chip-row">
+              <button type="button" disabled={busy || compositionTotal <= 0} onClick={saveComposition}>
+                Normalize & save override
+              </button>
+              <button type="button" className="secondary" onClick={() => setTab("potential")}>
+                Next: Potential →
+              </button>
+            </div>
           </section>
         )}
 
@@ -2773,6 +2884,18 @@ export default function App() {
                   <span className="chip-v">{potentials.filter((p) => p.available).length}</span>
                 </span>
               </div>
+              <PanelGuide
+                purpose="Pick a real interatomic potential file for this composition."
+                steps={[
+                  "Prefer a ● ready entry in the dropdown — that file is on disk.",
+                  "If you only see ○ or ◇, use Acquire (NIST) or Upload a cited file. Coefficients are never invented.",
+                  "When pair_style and elements look right, continue to Scenario.",
+                ]}
+                backLabel={TAB_BACK.potential?.label}
+                nextLabel={TAB_NEXT.potential?.label}
+                onBack={() => setTab("material")}
+                onNext={() => setTab("scenario")}
+              />
               <p className="hint">
                 Select a potential with a file on disk (●). Curated slots without files (○) and placeholders (◇)
                 need a NIST download or upload — missing coefficients are never synthesized.
@@ -3346,6 +3469,18 @@ export default function App() {
         {tab === "scenario" && (
           <section className="panel stack">
             <h2>Irradiation scenario</h2>
+            <PanelGuide
+              purpose="Load default PKA / ion energies and temperature for a fusion-relevant case."
+              steps={[
+                "Choose a fuel preset (D–D, D–T, He, surface, …).",
+                "Read the chips — those values copy into Simulate. This is not a tokamak transport model.",
+                "Override energies later on Simulate if you need a custom PKA.",
+              ]}
+              backLabel={TAB_BACK.scenario?.label}
+              nextLabel={TAB_NEXT.scenario?.label}
+              onBack={() => setTab("potential")}
+              onNext={() => setTab("params")}
+            />
             <p className="hint">
               Fuel choices set default PKA/He energies and temperature. They are not a tokamak transport model.
             </p>
@@ -3390,14 +3525,19 @@ export default function App() {
                 </span>
               </span>
             </div>
-            <div className="alert alert-warn">
-              Recommended order on this tab: <strong>Compute</strong> → Mode → System → Structure →
-              cascade/implant options → Post-cascade kMC → Submit on the next step (Run).
-            </div>
-            <p className="hint">
-              Nanostructures (void, nanowire, GB, precipitate, import) are in the Structure section —
-              not a separate tab. Campaigns (DOE) come after you validate a single recipe.
-            </p>
+            <PanelGuide
+              purpose="Build one MD recipe, then submit (or go to Run)."
+              steps={[
+                "Compute first: MPI ranks for LAMMPS, OpenMP threads for k-ART.",
+                "Then Mode → System (cell) → Structure → cascade/implant options.",
+                "Optional post-cascade kMC at the bottom. Nanostructures live in Structure (not a separate tab).",
+                "Click Submit in the top bar, or Next: Run to watch the log.",
+              ]}
+              backLabel={TAB_BACK.params?.label}
+              nextLabel={TAB_NEXT.params?.label}
+              onBack={() => setTab("scenario")}
+              onNext={() => setTab("run")}
+            />
             <fieldset className="fieldset">
               <legend>Compute resources</legend>
               <div className="row">
@@ -4678,9 +4818,14 @@ export default function App() {
                 </div>
               )}
             </section>
-            <button type="button" disabled={busy || blockers.length > 0} onClick={runJob}>
-              Submit job
-            </button>
+            <div className="chip-row">
+              <button type="button" disabled={busy || blockers.length > 0} onClick={runJob}>
+                Submit job
+              </button>
+              <button type="button" className="secondary" onClick={() => setTab("run")}>
+                Next: Run →
+              </button>
+            </div>
           </section>
         )}
 
@@ -4703,6 +4848,18 @@ export default function App() {
                 </select>
               </Field>
             </div>
+            <PanelGuide
+              purpose="Watch the live LAMMPS (and kMC) log for the current job."
+              steps={[
+                "Submit from the top bar (or Simulate) if no job is running.",
+                "Pick a past job from Job history to reopen its log.",
+                "When status is completed or failed, go to Results. Export HPC pack if you run on a cluster.",
+              ]}
+              backLabel={TAB_BACK.run?.label}
+              nextLabel={TAB_NEXT.run?.label}
+              onBack={() => setTab("params")}
+              onNext={() => setTab("results")}
+            />
             {job ? (
               <>
                 <div className="chip-row">
@@ -4771,6 +4928,20 @@ export default function App() {
 
         {tab === "results" && (
           <div className="stack">
+            <section className="panel stack">
+              <PanelGuide
+                purpose="Inspect structure, defects, and optional post-cascade anneals."
+                steps={[
+                  "Scrub the trajectory; click cascade stages to jump in time.",
+                  "Read vacancy / SIA / cluster metrics. kMC / DXA appear only if you enabled them on Simulate.",
+                  "A single good recipe can then be swept on Campaigns. Re-edit Simulate to change the cell.",
+                ]}
+                backLabel={TAB_BACK.results?.label}
+                nextLabel={TAB_NEXT.results?.label}
+                onBack={() => setTab("run")}
+                onNext={() => setTab("doe")}
+              />
+            </section>
             <section className="panel">
               <StructureViewer jobId={job?.id || null} refreshKey={job?.status} />
             </section>
@@ -5419,6 +5590,18 @@ export default function App() {
         {tab === "engines" && (
           <section className="panel stack">
             <h2>Engines</h2>
+            <PanelGuide
+              purpose="Check whether LAMMPS, MPI, and kMC tools are ready — not a simulation step."
+              steps={[
+                "lmp should be found; for parallel MD, MPI launcher + lmp MPI = likely.",
+                "If lmp looks serial, use Install parallel LAMMPS (MS-MPI). Then return to Simulate and set ranks.",
+                "KART / OVITO / Atomsk are optional. Go back to Simulate when binaries look right.",
+              ]}
+              backLabel={TAB_BACK.engines?.label}
+              nextLabel={TAB_NEXT.engines?.label}
+              onBack={() => setTab("projects")}
+              onNext={() => setTab("params")}
+            />
             <div className="grid-2">
               <div className="stack">
                 <h3>LAMMPS</h3>
