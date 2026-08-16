@@ -1,0 +1,60 @@
+{
+  "id": "fe-self-pka-10kev",
+  "title": "α-Fe 10 keV self-ion cascade (structural)",
+  "summary": "BCC iron, 10³ cells, 300 K, one 10 keV Fe PKA. Uses the D–T scenario layout but the PKA is Fe — not the W default that used to leak in from the fuel preset.",
+  "warnings": [
+    "Catalog slot fe-eam-placeholder is not a real potential — Submit dry-runs until you download/upload a cited α-Fe EAM/FS.",
+    "If you pick D–T on Scenario after loading this, Aegis remaps pka_species to Fe (host), but still copies T/energy/cell from the preset unless you re-load this example.",
+    "10 keV in 10³ (~2000 atoms) can wrap; treat Results as a workflow check, not a published residual-damage number."
+  ],
+  "user_walkthrough": [
+    "Projects → Load into Simulate (this recipe).",
+    "Material: Iron (α-Fe) — PKA species must be Fe, not W.",
+    "Potential: Acquire Zhou04 Fe (or upload a cited file); avoid the placeholder for real MD.",
+    "Simulate: confirm pka_species=Fe, 10000 eV, 10×10×10, timestep 1 fs.",
+    "First run: mpi_procs=1. After Engines shows lmp MPI=likely, raise ranks.",
+    "Submit → Run → Results. Campaigns only after this single recipe finishes."
+  ],
+  "job": {
+    "project_name": "example-fe-cascade-10kev",
+    "material_id": "fe-pure",
+    "potential_id": "fe-eam-placeholder",
+    "scenario_id": "dt-divertor",
+    "run_kart_anneal": false,
+    "kart_temperature_K": 600,
+    "kart_max_events": 1000,
+    "run_mmonca_okmc": false,
+    "run_params": {
+      "mode": "cascade",
+      "nx": 10,
+      "ny": 10,
+      "nz": 10,
+      "boundary": "p p p",
+      "crystal_orient": "100",
+      "seed": 592856,
+      "ensemble": "nve",
+      "temperature_K": 300,
+      "damp_ps": 0.1,
+      "pka_species": "Fe",
+      "pka_energy_eV": 10000,
+      "pka_direction": "random",
+      "n_pkas": 1,
+      "pka_delay_steps": 0,
+      "pka_site": "center",
+      "pka_frac_x": 0.5,
+      "pka_frac_y": 0.5,
+      "pka_frac_z": 0.5,
+      "cascade_auto_stages": true,
+      "structure_kind": "single_crystal",
+      "timestep_fs": 1.0,
+      "max_steps": 20000,
+      "thermo_every": 100,
+      "dump_every": 500,
+      "cluster_cutoff_A": 3.5,
+      "confirm_large": false,
+      "mpi_procs": 1,
+      "kmc_threads": 1,
+      "run_dxa": false
+    }
+  }
+}

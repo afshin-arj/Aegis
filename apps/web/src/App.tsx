@@ -374,7 +374,7 @@ const defaultParams: RunParams = {
   precipitate_center_frac_y: 0.5,
   precipitate_center_frac_z: 0.5,
   structure_import_path: null,
-  timestep_fs: 0.001,
+  timestep_fs: 1,
   max_steps: 20000,
   neighbor_skin: 2,
   thermo_every: 100,
@@ -472,6 +472,23 @@ function normalizeSymbol(symbol: string): string {
   if (!s) return "";
   if (s.length === 1) return s.toUpperCase();
   return s[0].toUpperCase() + s.slice(1).toLowerCase();
+}
+
+function hostSymbolsOf(composition: ElementFraction[]): string[] {
+  return composition
+    .filter((el) => Number(el.atomic_percent) > 0)
+    .map((el) => normalizeSymbol(el.symbol))
+    .filter(Boolean);
+}
+
+function remapPkaToHosts(params: RunParams, hosts: string[]): RunParams {
+  const host0 = hosts[0];
+  if (!host0) return params;
+  const pka = normalizeSymbol(String(params.pka_species || ""));
+  if (!hosts.some((h) => h.toLowerCase() === pka.toLowerCase())) {
+    return { ...params, pka_species: host0 };
+  }
+  return params;
 }
 
 function massOfOrNull(symbol: string): number | null {
@@ -872,6 +889,10 @@ export default function App() {
   const acquireReq = useRef(0);
   const watchedJobId = useRef<string | null>(null);
   const modeDirty = useRef(false);
+  const skipScenarioDefaults = useRef(false);
+  const [examples, setExamples] = useState<
+    { id: string; title: string; summary: string; warnings: string[]; job: Record<string, unknown> }[]
+  >([]);
   const [logEpoch, setLogEpoch] = useState(0);
 
   const material = useMemo(() => materials.find((m) => m.id === materialId), [materials, materialId]);
@@ -1089,14 +1110,16 @@ export default function App() {
       api<JobInfo[]>("/api/jobs"),
       api<DoeCampaign[]>("/api/campaigns").catch(() => [] as DoeCampaign[]),
       api<{ crystals: CrystalInfo[] }>("/api/crystals").catch(() => ({ crystals: [] as CrystalInfo[] })),
+      api<{ examples: typeof examples }>("/api/examples").catch(() => ({ examples: [] })),
     ])
-      .then(([, m, s, e, history, camps, cry]) => {
+      .then(([, m, s, e, history, camps, cry, ex]) => {
         setMaterials(m);
         setScenarios(s);
         setEngines(e);
         setJobs(history);
         setCampaigns(camps);
         setCrystals(cry.crystals || []);
+        setExamples(ex.examples || []);
         const active = camps.find((c) => ["queued", "running"].includes(c.status));
         if (active) setCampaign(active);
         const first = m.find((x) => x.id === "w-pure") || m[0];
@@ -1245,13 +1268,16 @@ export default function App() {
   useEffect(() => {
     const sc = scenarios.find((s) => s.id === scenarioId);
     if (!sc) return;
+    if (skipScenarioDefaults.current) {
+      skipScenarioDefaults.current = false;
+      return;
+    }
     setParams((prev) => {
       const defaults = { ...(sc.defaults as Partial<RunParams>) };
       if (modeDirty.current) {
         delete defaults.mode;
         delete defaults.boundary;
       } else {
-        // Non-surface/implant scenarios must clear sticky free-surface boundaries
         const nextMode = String(defaults.mode ?? prev.mode);
         if (nextMode !== "surface" && nextMode !== "implant" && defaults.boundary == null) {
           defaults.boundary = "p p p";
@@ -1260,7 +1286,8 @@ export default function App() {
           defaults.boundary = "p p s";
         }
       }
-      return { ...prev, ...defaults } as RunParams;
+      const merged = { ...prev, ...defaults } as RunParams;
+      return remapPkaToHosts(merged, hostSymbolsOf(composition));
     });
   }, [scenarioId, scenarios]);
 
@@ -1750,6 +1777,44 @@ export default function App() {
     } finally {
       setBusy(false);
     }
+  }
+
+  function loadExampleRecipe(ex: {
+    title: string;
+    job: Record<string, unknown>;
+  }) {
+    const body = ex.job as {
+      project_name?: string;
+      material_id?: string;
+      potential_id?: string;
+      scenario_id?: string;
+      run_params?: Partial<RunParams>;
+      run_kart_anneal?: boolean;
+      kart_temperature_K?: number;
+    };
+    skipScenarioDefaults.current = true;
+    if (body.project_name) setProjectName(body.project_name);
+    if (body.material_id) {
+      setMaterialId(body.material_id);
+      const m = materials.find((x) => x.id === body.material_id);
+      if (m) {
+        setComposition(m.composition);
+        setLattice(m.lattice_constant_A);
+        setLatticeC(resolveLatticeC(m, null));
+      }
+    }
+    if (body.potential_id) setPotentialId(body.potential_id);
+    if (body.scenario_id) setScenarioId(body.scenario_id);
+    if (body.run_params) {
+      const hosts = hostSymbolsOf(
+        materials.find((x) => x.id === body.material_id)?.composition || composition,
+      );
+      setParams((prev) => remapPkaToHosts({ ...prev, ...body.run_params } as RunParams, hosts));
+    }
+    if (typeof body.run_kart_anneal === "boolean") setRunKart(body.run_kart_anneal);
+    if (typeof body.kart_temperature_K === "number") setKartTemperatureK(body.kart_temperature_K);
+    setError("");
+    setTab("params");
   }
 
   async function runJob() {
@@ -2292,6 +2357,31 @@ export default function App() {
                 </button>
               </div>
             </section>
+            {examples.length > 0 && (
+              <section className="panel stack">
+                <h3>Worked cascade examples</h3>
+                <p className="hint">
+                  Load a complete recipe into Simulate (does not submit). Placeholders only dry-run until you attach a
+                  published potential on the Potential tab.
+                </p>
+                {examples.map((ex) => (
+                  <div key={ex.id} className="stack" style={{ gap: "0.35rem" }}>
+                    <div className="chip-row">
+                      <strong>{ex.title}</strong>
+                      <button type="button" className="secondary" onClick={() => loadExampleRecipe(ex)}>
+                        Load into Simulate
+                      </button>
+                    </div>
+                    <p className="hint">{ex.summary}</p>
+                    {ex.warnings?.map((w) => (
+                      <p key={w} className="hint">
+                        {w}
+                      </p>
+                    ))}
+                  </div>
+                ))}
+              </section>
+            )}
             <div className="row">
               <Field label="Active project" htmlFor="proj-active">
                 <input
@@ -3482,7 +3572,8 @@ export default function App() {
               onNext={() => setTab("params")}
             />
             <p className="hint">
-              Fuel choices set default PKA/He energies and temperature. They are not a tokamak transport model.
+              Choosing a preset <strong>copies</strong> those values into Simulate. PKA species is remapped to a host
+              atom of the current material (D–T defaults say W, but Fe studies must kick Fe).
             </p>
             <div className="row">
               <Field label="Fuel preset" htmlFor="scenario">
@@ -4521,11 +4612,14 @@ export default function App() {
             <details className="advanced">
               <summary>Advanced dynamics & output</summary>
               <div className="row" style={{ marginTop: "0.75rem" }}>
-                <Field label="Timestep" unit="fs" htmlFor="dt">
+                <Field label="Timestep (metal: 1 fs → 0.001 ps)" unit="fs" htmlFor="dt">
                   <input
                     id="dt"
                     type="number"
-                    step="0.0001"
+                    min={0.01}
+                    max={20}
+                    step="0.1"
+                    inputMode="decimal"
                     value={params.timestep_fs}
                     onChange={(e) => setParam("timestep_fs", Number(e.target.value))}
                   />

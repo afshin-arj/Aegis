@@ -43,6 +43,24 @@ def _has_elem(elems: list[str], symbol: str) -> bool:
     return any(e.lower() == want for e in elems)
 
 
+def timestep_metal_ps(timestep_fs: float | None) -> float:
+    """Convert UI ``timestep_fs`` (femtoseconds) to LAMMPS metal timestep (picoseconds).
+
+    1 fs → 0.001 ps. Values below 0.05 are treated as already-picoseconds so older
+    recipes that stored ``0.001`` (meaning 1 fs in metal units) stay stable.
+    """
+    fs = float(timestep_fs) if timestep_fs is not None else 1.0
+    if fs <= 0:
+        fs = 1.0
+    if fs < 0.05:
+        return fs
+    return fs * 1e-3
+
+
+def _timestep_ps(params: dict[str, Any]) -> float:
+    return timestep_metal_ps(params.get("timestep_fs"))
+
+
 def render_pair_coeff(template: str, file_path: str, elements: list[str]) -> str:
     """Format pair_coeff, always mapping types to the live element list order."""
     import re
@@ -338,7 +356,7 @@ def plan_cascade_stages(
             ],
         }
 
-    dt_ps = max(float(timestep_fs), 1e-9) * 1e-3  # fs → ps
+    dt_ps = timestep_metal_ps(timestep_fs)
     scale = max(1.0, (max(energy_eV, 1.0) / 5000.0) ** 0.35)
     # ~14 ps metallic cascade window at 5 keV, weakly energy-scaled
     target_ps = 14.0 * scale
@@ -448,7 +466,7 @@ def write_cascade_input(
     a = float(material.get("lattice_constant_A", 3.165))
     nx, ny, nz = int(params["nx"]), int(params["ny"]), int(params["nz"])
     seed = int(params["seed"])
-    dt = float(params["timestep_fs"])
+    dt = _timestep_ps(params)
     steps = int(params["max_steps"])
     T = float(params["temperature_K"])
     E = float(params["pka_energy_eV"])
@@ -726,7 +744,7 @@ def write_implant_input(
     E = float(params.get("ion_energy_eV", 500))
     T = float(params["temperature_K"])
     seed = int(params["seed"])
-    dt = float(params["timestep_fs"])
+    dt = _timestep_ps(params)
     steps = int(params["max_steps"])
     ion_count = max(1, int(params.get("ion_count", 1)))
     angle_deg = float(params.get("ion_angle_deg", 0.0))
@@ -889,7 +907,7 @@ def write_surface_input(
     E = float(params.get("ion_energy_eV", 50))
     T = float(params["temperature_K"])
     seed = int(params["seed"])
-    dt = float(params["timestep_fs"])
+    dt = _timestep_ps(params)
     steps = int(params["max_steps"])
     n_impacts = max(1, int(params.get("surface_fluence_ions") or params.get("ion_count", 1)))
     angle_deg = float(params.get("ion_angle_deg", 0.0))
@@ -1098,7 +1116,7 @@ def write_interstitial_input(
     crystal = str(material.get("crystal", "bcc"))
     nx, ny, nz = int(params["nx"]), int(params["ny"]), int(params["nz"])
     seed = int(params["seed"])
-    dt = float(params["timestep_fs"])
+    dt = _timestep_ps(params)
     steps = int(params["max_steps"])
     T = float(params["temperature_K"])
     count = max(1, int(params.get("interstitial_count", 1)))

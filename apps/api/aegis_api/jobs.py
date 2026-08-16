@@ -510,7 +510,7 @@ class JobManager:
 
                         schedule = plan_cascade_stages(
                             energy_eV=float(params.get("pka_energy_eV") or 5000),
-                            timestep_fs=float(params.get("timestep_fs") or 0.001),
+                            timestep_fs=float(params.get("timestep_fs") or 1.0),
                             max_steps=int(params.get("max_steps") or 1000),
                             dump_every=int(params.get("dump_every") or 100),
                             auto=bool(params.get("cascade_auto_stages", True)),

@@ -378,7 +378,8 @@ class LammpsRunParams(BaseModel):
     precipitate_center_frac_y: float = Field(0.5, ge=0.0, le=1.0)
     precipitate_center_frac_z: float = Field(0.5, ge=0.0, le=1.0)
     structure_import_path: str | None = None  # relative to job dir or absolute for import kind
-    timestep_fs: float = 0.001
+    # Stored in femtoseconds; LAMMPS metal inputs convert to picoseconds (1 fs → 0.001 ps).
+    timestep_fs: float = Field(1.0, gt=0, le=20)
     max_steps: int = 20000
     neighbor_skin: float = 2.0
     thermo_every: int = 100

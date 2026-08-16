@@ -97,6 +97,34 @@ def health() -> dict[str, str]:
     return {"status": "ok", "service": "aegis"}
 
 
+@app.get("/api/examples")
+def list_recipe_examples() -> dict[str, Any]:
+    """Shipped workbench recipes under ``examples/`` (load into the UI; not auto-run)."""
+    root = REPO_ROOT / "examples"
+    out: list[dict[str, Any]] = []
+    if not root.is_dir():
+        return {"examples": out}
+    for job_path in sorted(root.glob("**/job.json")):
+        try:
+            data = json.loads(job_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict) or "job" not in data:
+            continue
+        rel = job_path.parent.relative_to(root).as_posix()
+        out.append(
+            {
+                "id": str(data.get("id") or rel),
+                "title": str(data.get("title") or rel),
+                "summary": str(data.get("summary") or ""),
+                "warnings": list(data.get("warnings") or []),
+                "path": rel,
+                "job": data["job"],
+            }
+        )
+    return {"examples": out}
+
+
 @app.get("/api/engines/status", response_model=EngineStatus)
 def engines_status() -> EngineStatus:
     lmp = os.environ.get("AEGIS_LAMMPS_BIN", "lmp")

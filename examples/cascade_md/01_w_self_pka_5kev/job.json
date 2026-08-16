@@ -1,0 +1,60 @@
+{
+  "id": "w-self-pka-5kev",
+  "title": "W 5 keV self-ion cascade (divertor-like)",
+  "summary": "BCC tungsten, 8³ cells, 600 K, one 5 keV W PKA at the cell center. Matches the D–D divertor scenario as a first workbench run.",
+  "warnings": [
+    "Catalog slot w-eam-demo is a placeholder — Submit produces a dry-run demo dump, not production MD.",
+    "Attach Zhou04 W (or another cited EAM/FS) on Potential before trusting defects.",
+    "8³ (~1024 atoms) is a demo cell; production 5 keV W cascades need a larger box to avoid periodic wrap."
+  ],
+  "user_walkthrough": [
+    "Projects → Load into Simulate (this recipe).",
+    "Material: confirm Tungsten (pure).",
+    "Potential: replace placeholder with a ● published W file (NIST Acquire / upload).",
+    "Scenario: D–D divertor-like (defaults already applied).",
+    "Simulate: Compute mpi_procs=1 for the first pass; keep cascade auto-stages on.",
+    "Submit (top bar) → Run log → Results structure + WS defects."
+  ],
+  "job": {
+    "project_name": "example-w-cascade-5kev",
+    "material_id": "w-pure",
+    "potential_id": "w-eam-demo",
+    "scenario_id": "dd-divertor",
+    "run_kart_anneal": false,
+    "kart_temperature_K": 600,
+    "kart_max_events": 1000,
+    "run_mmonca_okmc": false,
+    "run_params": {
+      "mode": "cascade",
+      "nx": 8,
+      "ny": 8,
+      "nz": 8,
+      "boundary": "p p p",
+      "crystal_orient": "100",
+      "seed": 592856,
+      "ensemble": "nve",
+      "temperature_K": 600,
+      "damp_ps": 0.1,
+      "pka_species": "W",
+      "pka_energy_eV": 5000,
+      "pka_direction": "random",
+      "n_pkas": 1,
+      "pka_delay_steps": 0,
+      "pka_site": "center",
+      "pka_frac_x": 0.5,
+      "pka_frac_y": 0.5,
+      "pka_frac_z": 0.5,
+      "cascade_auto_stages": true,
+      "structure_kind": "single_crystal",
+      "timestep_fs": 1.0,
+      "max_steps": 15000,
+      "thermo_every": 100,
+      "dump_every": 500,
+      "cluster_cutoff_A": 3.5,
+      "confirm_large": false,
+      "mpi_procs": 1,
+      "kmc_threads": 1,
+      "run_dxa": false
+    }
+  }
+}

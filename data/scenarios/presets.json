@@ -18,7 +18,7 @@
       "ny": 8,
       "nz": 8,
       "max_steps": 15000,
-      "timestep_fs": 0.001
+      "timestep_fs": 1.0
     }
   },
   {
@@ -40,7 +40,7 @@
       "ny": 10,
       "nz": 10,
       "max_steps": 25000,
-      "timestep_fs": 0.001
+      "timestep_fs": 1.0
     }
   },
   {
@@ -59,7 +59,7 @@
       "ny": 8,
       "nz": 12,
       "max_steps": 20000,
-      "timestep_fs": 0.001
+      "timestep_fs": 1.0
     }
   },
   {
@@ -81,7 +81,7 @@
       "ny": 8,
       "nz": 10,
       "max_steps": 15000,
-      "timestep_fs": 0.001
+      "timestep_fs": 1.0
     }
   },
   {
@@ -103,7 +103,7 @@
       "ny": 8,
       "nz": 10,
       "max_steps": 12000,
-      "timestep_fs": 0.001
+      "timestep_fs": 1.0
     }
   }
 ]
