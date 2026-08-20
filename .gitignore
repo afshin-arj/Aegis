@@ -19,6 +19,7 @@ apps/web/.vite/
 # Runtime
 runs/
 data/potentials/user/
+examples/cascade_md/_last_walkthrough.json
 third_party/kart/
 third_party/atomsk/
 tools/cache/

@@ -1,22 +1,22 @@
 {
   "id": "fe-self-pka-10kev",
-  "title": "α-Fe 10 keV self-ion cascade (structural)",
-  "summary": "BCC iron, 10³ cells, 300 K, one 10 keV Fe PKA. Uses the D–T scenario layout but the PKA is Fe — not the W default that used to leak in from the fuel preset.",
+  "title": "α-Fe 1 keV self-ion cascade (structural demo)",
+  "summary": "BCC iron, 12³ cells (~3456 atoms), 300 K, one 1 keV Fe PKA. Uses the D–T scenario id for workflow practice, but PKA species is Fe (host) — never the divertor preset’s W.",
   "warnings": [
-    "Catalog slot fe-eam-placeholder is not a real potential — Submit dry-runs until you download/upload a cited α-Fe EAM/FS.",
-    "If you pick D–T on Scenario after loading this, Aegis remaps pka_species to Fe (host), but still copies T/energy/cell from the preset unless you re-load this example.",
-    "10 keV in 10³ (~2000 atoms) can wrap; treat Results as a workflow check, not a published residual-damage number."
+    "Attach Zhou04 Fe via NIST (nist-zhou04-fe → fe-eam-placeholder catalog slot) before Submit for real MD.",
+    "Earlier 10 keV / 8³ recipes lost atoms on Zhou04 Fe (EAM rhomax). This demo uses 1 keV + 12³ + cascade safety timestep.",
+    "If you raise energy above ~2 keV without enlarging the cell or stitching ZBL, expect Lost atoms / unphysical WS counts."
   ],
   "user_walkthrough": [
-    "Projects → Load into Simulate (this recipe).",
-    "Material: Iron (α-Fe) — PKA species must be Fe, not W.",
-    "Potential: Acquire Zhou04 Fe (or upload a cited file); avoid the placeholder for real MD.",
-    "Simulate: confirm pka_species=Fe, 10000 eV, 10×10×10, timestep 1 fs.",
-    "First run: mpi_procs=1. After Engines shows lmp MPI=likely, raise ranks.",
-    "Submit → Run → Results. Campaigns only after this single recipe finishes."
+    "Projects → Load into Simulate.",
+    "Material: Iron (α-Fe) — PKA must stay Fe.",
+    "Potential: Acquire Zhou04 Fe; confirm Engines / Potential shows ● ready (not placeholder).",
+    "Simulate: 12³, 1000 eV, mpi_procs=1, auto-stages on.",
+    "Submit → Run → Results. Compare vacancy/SIA proxies to the W example.",
+    "Optional: raise energy and click Apply recommended cell before production studies."
   ],
   "job": {
-    "project_name": "example-fe-cascade-10kev",
+    "project_name": "example-fe-cascade-1kev",
     "material_id": "fe-pure",
     "potential_id": "fe-eam-placeholder",
     "scenario_id": "dt-divertor",
@@ -26,9 +26,9 @@
     "run_mmonca_okmc": false,
     "run_params": {
       "mode": "cascade",
-      "nx": 10,
-      "ny": 10,
-      "nz": 10,
+      "nx": 12,
+      "ny": 12,
+      "nz": 12,
       "boundary": "p p p",
       "crystal_orient": "100",
       "seed": 592856,
@@ -36,7 +36,7 @@
       "temperature_K": 300,
       "damp_ps": 0.1,
       "pka_species": "Fe",
-      "pka_energy_eV": 10000,
+      "pka_energy_eV": 1000,
       "pka_direction": "random",
       "n_pkas": 1,
       "pka_delay_steps": 0,
@@ -47,9 +47,9 @@
       "cascade_auto_stages": true,
       "structure_kind": "single_crystal",
       "timestep_fs": 1.0,
-      "max_steps": 20000,
+      "max_steps": 12000,
       "thermo_every": 100,
-      "dump_every": 500,
+      "dump_every": 400,
       "cluster_cutoff_A": 3.5,
       "confirm_large": false,
       "mpi_procs": 1,

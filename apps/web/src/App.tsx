@@ -972,6 +972,14 @@ export default function App() {
       list.push("Cell size needs nx, ny, nz ≥ 2");
     }
     if (largeCell && !params.confirm_large) list.push("Large cell (>20³) — confirm in LAMMPS tab");
+    if (
+      cascadeCellRec &&
+      Math.min(params.nx, params.ny, params.nz) < Math.ceil(cascadeCellRec.n * 0.45)
+    ) {
+      list.push(
+        `Cascade cell ${params.nx}×${params.ny}×${params.nz} is far below the PKA guide (≥${cascadeCellRec.n}³) — enlarge cell or lower energy (Apply recommended cell)`,
+      );
+    }
     if (material?.metadata_only) list.push("Material is metadata-only (no runnable lattice recipe)");
     if (material && !crystalSupported && !selectedPot?.is_placeholder) {
       list.push(`Crystal ${material.crystal} requires a supported lattice or a placeholder potential for verification runs`);
@@ -1062,6 +1070,7 @@ export default function App() {
     selectedPot,
     compositionTotal,
     largeCell,
+    cascadeCellRec,
     params.confirm_large,
     params.mode,
     params.nx,

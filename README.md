@@ -123,7 +123,7 @@ engines/lammps/mpi.py MPI launch helpers
 engines/lammps/       Input templates
 engines/kart/         Adapter + SETUP.md
 data/                 Materials, scenarios, potentials
-examples/cascade_md/  Worked W and α-Fe cascade recipes (UI + job.json)
+examples/cascade_md/  Worked W and Fe cascade recipes + walkthrough
 docs/assets/          README figures
 third_party/kart/     Local KART clone (gitignored)
 runs/                 Job artifacts (gitignored)

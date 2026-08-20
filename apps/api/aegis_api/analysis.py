@@ -174,11 +174,12 @@ def analyze_job_dir(
             interstitial_pts.append({**atom, "kind": "interstitial"})
             continue
         if occupied[best_i]:
+            # True WS interstitial: nearest site already claimed by another atom
             interstitial_pts.append({**atom, "kind": "interstitial"})
         else:
             occupied[best_i] = True
-            if best_d2 > (0.3 * a_ref) ** 2:
-                interstitial_pts.append({**atom, "kind": "displaced"})
+            # Do NOT count thermal / mildly displaced on-site atoms as interstitials —
+            # that inflated SIA counts to ~N_atoms after finite-T cascades.
 
     vacancies = [
         {"id": i, "x": s[0], "y": s[1], "z": s[2], "kind": "vacancy"}
@@ -193,14 +194,22 @@ def analyze_job_dir(
         note = "Polycrystal WS uses a single global lattice — approximate; prefer OVITO DXA per grain."
     if nano_note:
         note = f"{note} {nano_note}".strip() if note else nano_note
+    n_vac = len(vacancies)
+    n_sia = len(interstitial_pts)
+    if len(atoms_use) > 0 and (n_vac + n_sia) > 0.25 * len(atoms_use):
+        melt = (
+            f"High defect fraction (V={n_vac}, SIA={n_sia} on {len(atoms_use)} atoms) — "
+            "cell may be too small for this PKA energy, or the cascade still hot; enlarge cell / lower E."
+        )
+        note = f"{note} {melt}".strip() if note else melt
     summary: dict[str, Any] = {
         "summary": {
             "n_atoms": len(atoms),
             "n_atoms_analyzed": len(atoms_use),
             "analysis_sampled": analysis_sampled,
             "n_sites": len(sites),
-            "vacancies": len(vacancies),
-            "interstitials": len(interstitial_pts),
+            "vacancies": n_vac,
+            "interstitials": n_sia,
             "clusters": len(clusters),
             "dump": dump_path.name,
             "ws_lattice_A": a_ref,

@@ -498,7 +498,7 @@ def write_cascade_input(
 
     schedule = plan_cascade_stages(
         energy_eV=E,
-        timestep_fs=dt,
+        timestep_fs=float(params.get("timestep_fs") or 1.0),
         max_steps=steps,
         dump_every=dump_every,
         auto=auto_stages,
@@ -594,6 +594,8 @@ def write_cascade_input(
     sites_comment = "\n".join(f"        # {n}" for n in site_notes)
 
     # Staged dynamics block
+    # Growth uses a finer timestep — high PKA ke on plain EAM often blows rhomax / loses atoms at full dt.
+    dt_growth = max(dt / 10.0, 1e-6)
     stage_lines: list[str] = []
     if schedule["auto"]:
         for idx, st in enumerate(schedule["stages"]):
@@ -601,15 +603,23 @@ def write_cascade_input(
             nrun = int(st["steps"])
             sid = st["id"]
             undump = "undump 1\n" if idx > 0 else ""
+            # Scale growth steps so physical time ≈ original schedule fraction
+            if sid == "growth" and dt_growth < dt:
+                nrun_eff = max(nrun, int(round(nrun * (dt / dt_growth))))
+                dt_line = f"timestep {dt_growth}"
+            else:
+                nrun_eff = nrun
+                dt_line = f"timestep {dt}"
             stage_lines.append(
                 textwrap.dedent(
                     f"""\
-                    # --- Stage: {st['label']} ({sid}) steps={nrun} dump_every={every} ---
+                    # --- Stage: {st['label']} ({sid}) steps={nrun_eff} dump_every={every} ---
                     print "Aegis cascade stage start: {sid}"
+                    {dt_line}
                     {undump}dump 1 all custom {every} dump.cascade.*.lammpstrj id type x y z
                     dump_modify 1 sort id pad 9
                     write_dump all custom dump.stage.{sid}.lammpstrj id type x y z modify sort id
-                    run {nrun}
+                    run {nrun_eff}
                     print "Aegis cascade stage end: {sid}"
                     """
                 )
@@ -631,12 +641,21 @@ def write_cascade_input(
         dynamics_header = textwrap.dedent(
             f"""\
             run 0
-            timestep {dt}
+            # High-energy PKAs can drive EAM tables off-range; do not abort the whole job.
+            thermo_modify lost ignore
+            print "Aegis: thermo_modify lost ignore (cascade safety; check log for Lost atoms)"
+            timestep {dt_growth}
             {dynamics}
             """
         )
     else:
-        dynamics_header = dynamics
+        dynamics_header = textwrap.dedent(
+            f"""\
+            thermo_modify lost ignore
+            print "Aegis: thermo_modify lost ignore (cascade safety; check log for Lost atoms)"
+            {dynamics}
+            """
+        )
 
     script = textwrap.dedent(
         f"""\

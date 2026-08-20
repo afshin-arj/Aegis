@@ -1,40 +1,52 @@
-# Cascade MD examples
+# Cascade MD examples — deepened
 
-Two complete workbench recipes a new user can load and submit.
+Two complete workbench recipes exercised end-to-end (Projects → … → Results).
 
-| Folder | What it is | Typical first result |
-|--------|------------|----------------------|
-| `01_w_self_pka_5kev` | ITER-like W, 5 keV self-ion, 8³, 600 K | Dry-run until a published W potential is attached |
-| `02_fe_self_pka_10kev` | α-Fe, 10 keV self-ion, 10³, 300 K | Same; PKA is **Fe**, not the D–T preset’s W |
+| Folder | Material | Demo recipe | Potential slot |
+|--------|----------|-------------|----------------|
+| `01_w_self_pka_5kev` | BCC W | **1 keV** self-PKA, **12³**, 600 K | `w-fs-cascade` ← NIST Zhou04 W |
+| `02_fe_self_pka_10kev` | BCC Fe | **1 keV** self-PKA, **12³**, 300 K | `fe-eam-placeholder` ← NIST Zhou04 Fe |
+
+Folder names keep older “5 keV / 10 keV” labels for stable paths; the **job.json** energies are the demo-safe values that finish on a serial Windows GUI `lmp`.
 
 ## As a user (UI)
 
-1. Start Aegis (`setup_and_run.cmd` / `.sh`).
-2. **Projects** → **Worked cascade examples** → **Load into Simulate**.
-3. **Potential** — placeholders only emit synthetic dumps. Acquire/upload a cited EAM/FS (e.g. Zhou04 from NIST).
-4. **Engines** — for `mpi_procs > 1` you need MS-MPI/`mpiexec` **and** an MPI-built `lmp`.
-5. **Submit** (top bar) → **Run** log → **Results**.
+1. `setup_and_run.cmd` / `.sh`
+2. **Projects → Worked cascade examples → Load into Simulate**
+3. **Potential → Acquire** Zhou04 (NIST) if the slot is still ○/◇
+4. **Engines** — confirm `lmp` found (MPI ranks stay 1 until `lmp MPI=likely`)
+5. **Submit → Run → Results**
+6. **Campaigns** only after one cell completes
 
-Do not start on **Campaigns** until one cell finishes.
-
-## As a user (files)
-
-Each folder has `job.json`: metadata plus a `job` object matching `POST /api/jobs` (`JobCreate`).
-
-```text
-examples/cascade_md/<name>/job.json
-```
-
-`GET /api/examples` lists them for the UI.
-
-## Checks these recipes exist to catch
-
-- Scenario D–T defaults used to set `pka_species=W` even on Fe — submit then failed coverage/PKA checks.
-- **Timestep** is labeled **fs**. LAMMPS metal units are **ps**. Typing `1` must become `timestep 0.001`, not a 1 ps (unstable) cascade.
-- Placeholder potentials must not pretend to be production MD.
-
-Validate locally:
+## Finish both sims from CLI
 
 ```bash
+# API must be running on :8000
 python examples/cascade_md/validate_examples.py
+python examples/cascade_md/walkthrough_user.py
+# Full-size demo (longer): set AEGIS_EXAMPLE_SHORTEN=0
 ```
+
+`walkthrough_user.py` hits health, materials, scenarios, acquire/download, structure preview, KMC recommend, both jobs, defects, timeline, trajectory, campaigns list.
+
+## Bugs found while finishing these runs (and fixed)
+
+1. **Timestep fs→ps** (earlier) — UI fs must become LAMMPS metal ps.
+2. **Scenario PKA host leak** (earlier) — D–T defaults must not force W on Fe.
+3. **Fe 10 keV / tiny cell** — Zhou04 EAM blew `rhomax` → Lost atoms → job failed. Cascade inputs now use a **finer growth timestep** + `thermo_modify lost ignore`, and demos use **1 keV / 12³**.
+4. **Stage planner** was passed metal `dt` as `timestep_fs` — now passes the UI fs value.
+5. **WS “interstitials”** counted every thermally displaced on-site atom → SIA ≈ N_atoms. Residual WS now counts only true site conflicts / unmapped atoms; high defect fractions get an explicit note.
+
+## Panel checklist (what we exercised)
+
+| Panel | Check |
+|-------|--------|
+| Projects | Examples list + load recipe |
+| Material | w-pure / fe-pure |
+| Potential | NIST download attach |
+| Scenario | dd-divertor / dt-divertor with host PKA remap |
+| Simulate | Compute, cell guide, structure preview (SC + void), KMC recommend |
+| Run | Live job status through completed |
+| Results | Defects, cascade timeline (4 stages), trajectory frames |
+| Campaigns | List endpoint (empty OK) |
+| Engines | LAMMPS / MPI / OVITO status |
