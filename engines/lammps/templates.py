@@ -413,6 +413,57 @@ def plan_cascade_stages(
     }
 
 
+def apply_growth_timestep_scaling(
+    schedule: dict[str, Any],
+    *,
+    dt_ps: float,
+    growth_factor: float = 10.0,
+) -> dict[str, Any]:
+    """Rewrite stage step ranges so they match LAMMPS TIMESTEP after finer growth dt.
+
+    Growth runs at ``dt_ps / growth_factor`` with proportionally more steps so physical
+    time is preserved. Timeline / OVITO scrubbers must use the scaled ranges.
+    """
+    if not schedule.get("auto"):
+        return schedule
+    dt = max(float(dt_ps), 1e-9)
+    dt_growth = max(dt / max(float(growth_factor), 1.0), 1e-6)
+    if dt_growth >= dt:
+        return schedule
+    ratio = dt / dt_growth
+    out = dict(schedule)
+    stages: list[dict[str, Any]] = []
+    t0 = 0
+    for st in schedule.get("stages") or []:
+        row = dict(st)
+        nrun = int(row.get("steps") or 0)
+        every = max(1, int(row.get("dump_every") or 1))
+        if row.get("id") == "growth":
+            nrun = max(nrun, int(round(nrun * ratio)))
+            every = max(1, int(round(every * ratio)))
+            row["timestep_ps"] = dt_growth
+        else:
+            row["timestep_ps"] = dt
+        row["steps"] = nrun
+        row["dump_every"] = every
+        row["timestep_start"] = t0
+        row["timestep_end"] = t0 + nrun
+        t0 += nrun
+        stages.append(row)
+    out["stages"] = stages
+    out["total_steps"] = t0
+    out["growth_dt_ps"] = dt_growth
+    out["cascade_dt_ps"] = dt
+    note = str(out.get("note") or "")
+    extra = (
+        f" Growth uses timestep {dt_growth:g} ps ({ratio:g}× steps); "
+        "ranges below match LAMMPS TIMESTEP after PKA."
+    )
+    if "Growth uses timestep" not in note:
+        out["note"] = (note + extra).strip()
+    return out
+
+
 def _geometry_block(
     *,
     material: dict[str, Any],
@@ -503,6 +554,11 @@ def write_cascade_input(
         dump_every=dump_every,
         auto=auto_stages,
     )
+    # Growth uses a finer timestep — scale steps *before* persisting timeline so
+    # Results scrubber / OVITO ranges match actual LAMMPS TIMESTEP values.
+    dt_growth = max(dt / 10.0, 1e-6)
+    schedule = apply_growth_timestep_scaling(schedule, dt_ps=dt, growth_factor=10.0)
+
     # Persist timeline next to input for OVITO / UI
     timeline_path = path.parent / "cascade_timeline.json"
     timeline_path.write_text(json.dumps(schedule, indent=2), encoding="utf-8")
@@ -593,9 +649,7 @@ def write_cascade_input(
     pka_script = "\n".join(pka_blocks)
     sites_comment = "\n".join(f"        # {n}" for n in site_notes)
 
-    # Staged dynamics block
-    # Growth uses a finer timestep — high PKA ke on plain EAM often blows rhomax / loses atoms at full dt.
-    dt_growth = max(dt / 10.0, 1e-6)
+    # Staged dynamics block (step counts already match growth dt scaling in schedule)
     stage_lines: list[str] = []
     if schedule["auto"]:
         for idx, st in enumerate(schedule["stages"]):
@@ -603,23 +657,20 @@ def write_cascade_input(
             nrun = int(st["steps"])
             sid = st["id"]
             undump = "undump 1\n" if idx > 0 else ""
-            # Scale growth steps so physical time ≈ original schedule fraction
             if sid == "growth" and dt_growth < dt:
-                nrun_eff = max(nrun, int(round(nrun * (dt / dt_growth))))
                 dt_line = f"timestep {dt_growth}"
             else:
-                nrun_eff = nrun
                 dt_line = f"timestep {dt}"
             stage_lines.append(
                 textwrap.dedent(
                     f"""\
-                    # --- Stage: {st['label']} ({sid}) steps={nrun_eff} dump_every={every} ---
+                    # --- Stage: {st['label']} ({sid}) steps={nrun} dump_every={every} ---
                     print "Aegis cascade stage start: {sid}"
                     {dt_line}
                     {undump}dump 1 all custom {every} dump.cascade.*.lammpstrj id type x y z
                     dump_modify 1 sort id pad 9
                     write_dump all custom dump.stage.{sid}.lammpstrj id type x y z modify sort id
-                    run {nrun_eff}
+                    run {nrun}
                     print "Aegis cascade stage end: {sid}"
                     """
                 )
@@ -681,7 +732,8 @@ def write_cascade_input(
         velocity all create {T} {seed} mom yes rot yes
         {ensemble}
 
-        # Thermalize briefly
+        # Thermalize briefly at the user metal timestep (not LAMMPS default)
+        timestep {dt}
         run 1000
 
         # Reference structure BEFORE cascade (OVITO-like "before")

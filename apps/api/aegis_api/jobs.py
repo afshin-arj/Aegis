@@ -506,7 +506,11 @@ class JobManager:
                             ) from exc
                     # Cascade timeline so UI Results wiring works without write_cascade_input
                     if mode == "cascade":
-                        from lammps.templates import plan_cascade_stages
+                        from lammps.templates import (
+                            apply_growth_timestep_scaling,
+                            plan_cascade_stages,
+                            timestep_metal_ps,
+                        )
 
                         schedule = plan_cascade_stages(
                             energy_eV=float(params.get("pka_energy_eV") or 5000),
@@ -514,6 +518,10 @@ class JobManager:
                             max_steps=int(params.get("max_steps") or 1000),
                             dump_every=int(params.get("dump_every") or 100),
                             auto=bool(params.get("cascade_auto_stages", True)),
+                        )
+                        schedule = apply_growth_timestep_scaling(
+                            schedule,
+                            dt_ps=timestep_metal_ps(params.get("timestep_fs")),
                         )
                         (job_dir / "cascade_timeline.json").write_text(
                             json.dumps(schedule, indent=2), encoding="utf-8"
@@ -558,9 +566,18 @@ class JobManager:
                         write_cascade_input(in_path, **write_kw)
                     if self._is_cancelled(job_id):
                         return
-                    from lammps.mpi import build_lammps_command, resolve_mpi_procs
+                    from lammps.mpi import build_lammps_command, probe_lammps_parallelism, resolve_mpi_procs
 
                     mpi_n = resolve_mpi_procs(params)
+                    if mpi_n > 1:
+                        probe = probe_lammps_parallelism(str(lmp_path))
+                        if probe.get("lammps_mpi_capable") is False:
+                            log.write(
+                                f"[Aegis] WARNING: LAMMPS at {lmp_path} looks serial/GUI — "
+                                f"refusing mpi_procs={mpi_n} (would spawn independent copies). "
+                                "Falling back to mpi_procs=1. Install *-MSMPI or set AEGIS_LAMMPS_BIN.\n"
+                            )
+                            mpi_n = 1
                     cmd = build_lammps_command(str(lmp_path), input_name=in_path.name, mpi_procs=mpi_n)
                     log.write(f"[Aegis] launching {' '.join(cmd)} (mpi_procs={mpi_n})\n")
                     if mpi_n > 1:
@@ -600,6 +617,18 @@ class JobManager:
                         return
                     if code != 0:
                         raise RuntimeError(f"LAMMPS exited with code {code}")
+                    # thermo_modify lost ignore can hide fatal cascade blow-ups
+                    log.flush()
+                    try:
+                        log_text = log_path.read_text(encoding="utf-8", errors="replace")
+                    except OSError:
+                        log_text = ""
+                    if "Lost atoms" in log_text:
+                        raise RuntimeError(
+                            "LAMMPS reported Lost atoms (cascade likely blew the potential / cell). "
+                            "Enlarge the cell, lower PKA energy, or use a finer timestep — "
+                            "refusing COMPLETED so defect metrics are not silently wrong."
+                        )
 
             if self._is_cancelled(job_id):
                 return

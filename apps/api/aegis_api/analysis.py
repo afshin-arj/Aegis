@@ -152,24 +152,66 @@ def analyze_job_dir(
         (job_dir / "defects.json").write_text(json.dumps(empty_sites, indent=2), encoding="utf-8")
         return empty_sites
 
-    occupied = [False] * len(sites)
     interstitial_pts: list[dict[str, Any]] = []
     # Spatial hash for nearest-site lookup (avoids O(N_atoms × N_sites))
     site_index = _build_site_index(sites, cell=max(a_ref * 0.75, 1.0))
     analysis_sampled = False
     atom_budget = 250_000
     atoms_use = atoms
+    sites_use = sites
+    occupied = [False] * len(sites)
     if len(atoms) > atom_budget:
-        step = max(1, len(atoms) // atom_budget)
-        atoms_use = atoms[::step][:atom_budget]
+        # Spatial sub-box (not atom stride): keeps Frenkel balance (V ≈ SIA).
+        # Striding atoms while keeping all sites made almost every site look vacant.
+        xs = [float(a["x"]) for a in atoms]
+        ys = [float(a["y"]) for a in atoms]
+        zs = [float(a["z"]) for a in atoms]
+        xmin, xmax = min(xs), max(xs)
+        ymin, ymax = min(ys), max(ys)
+        zmin, zmax = min(zs), max(zs)
+        # Shrink the longest edge until ≈atom_budget atoms remain
+        frac = max(0.2, min(1.0, (atom_budget / max(len(atoms), 1)) ** (1.0 / 3.0)))
+        x1 = xmin + (xmax - xmin) * frac
+        y1 = ymin + (ymax - ymin) * frac
+        z1 = zmin + (zmax - zmin) * frac
+        atoms_use = [
+            a
+            for a in atoms
+            if float(a["x"]) <= x1 and float(a["y"]) <= y1 and float(a["z"]) <= z1
+        ]
+        if len(atoms_use) < max(1000, atom_budget // 10):
+            # Degenerate box — fall back to first N atoms + sites near them only
+            atoms_use = atoms[:atom_budget]
+            pad = max(a_ref * 2.0, 1.0)
+            near_sites: list[tuple[float, float, float]] = []
+            for a in atoms_use:
+                ax, ay, az = float(a["x"]), float(a["y"]), float(a["z"])
+                for s in sites:
+                    if (ax - s[0]) ** 2 + (ay - s[1]) ** 2 + (az - s[2]) ** 2 <= (pad * pad):
+                        near_sites.append(s)
+            # Unique by rounded coords
+            seen: set[tuple[float, float, float]] = set()
+            sites_use = []
+            for s in near_sites:
+                key = (round(s[0], 4), round(s[1], 4), round(s[2], 4))
+                if key not in seen:
+                    seen.add(key)
+                    sites_use.append(s)
+        else:
+            sites_use = [
+                s for s in sites if s[0] <= x1 and s[1] <= y1 and s[2] <= z1
+            ]
+        occupied = [False] * len(sites_use)
+        site_index = _build_site_index(sites_use, cell=max(a_ref * 0.75, 1.0))
         analysis_sampled = True
         nano_note = (
-            f"{nano_note} Analysis sampled {len(atoms_use)}/{len(atoms)} atoms "
-            f"(budget {atom_budget})."
+            f"{nano_note} Analysis used a spatial sub-volume "
+            f"({len(atoms_use)}/{len(atoms)} atoms, {len(sites_use)}/{len(sites)} sites; "
+            f"budget {atom_budget}) to preserve Frenkel balance."
         ).strip()
 
     for atom in atoms_use:
-        best_i, best_d2 = _nearest_site(atom, sites, site_index, cell=max(a_ref * 0.75, 1.0))
+        best_i, best_d2 = _nearest_site(atom, sites_use, site_index, cell=max(a_ref * 0.75, 1.0))
         if best_i < 0:
             interstitial_pts.append({**atom, "kind": "interstitial"})
             continue
@@ -183,7 +225,7 @@ def analyze_job_dir(
 
     vacancies = [
         {"id": i, "x": s[0], "y": s[1], "z": s[2], "kind": "vacancy"}
-        for i, (s, occ) in enumerate(zip(sites, occupied))
+        for i, (s, occ) in enumerate(zip(sites_use, occupied))
         if not occ
     ]
 
@@ -206,8 +248,9 @@ def analyze_job_dir(
         "summary": {
             "n_atoms": len(atoms),
             "n_atoms_analyzed": len(atoms_use),
-            "analysis_sampled": analysis_sampled,
             "n_sites": len(sites),
+            "n_sites_analyzed": len(sites_use),
+            "analysis_sampled": analysis_sampled,
             "vacancies": n_vac,
             "interstitials": n_sia,
             "clusters": len(clusters),

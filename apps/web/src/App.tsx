@@ -261,7 +261,7 @@ const TAB_BACK: Partial<Record<TabId, { back: TabId; label: string }>> = {
   run: { back: "params", label: "Simulate" },
   results: { back: "run", label: "Run" },
   doe: { back: "results", label: "Results" },
-  engines: { back: "projects", label: "Projects" },
+  engines: { back: "doe", label: "Campaigns" },
 };
 
 function PanelGuide({
@@ -972,14 +972,8 @@ export default function App() {
       list.push("Cell size needs nx, ny, nz ≥ 2");
     }
     if (largeCell && !params.confirm_large) list.push("Large cell (>20³) — confirm in LAMMPS tab");
-    if (
-      cascadeCellRec &&
-      Math.min(params.nx, params.ny, params.nz) < Math.ceil(cascadeCellRec.n * 0.45)
-    ) {
-      list.push(
-        `Cascade cell ${params.nx}×${params.ny}×${params.nz} is far below the PKA guide (≥${cascadeCellRec.n}³) — enlarge cell or lower energy (Apply recommended cell)`,
-      );
-    }
+    // Soft warn only for undersized cascade cells (hard block blocked shipped examples /
+    // divertor defaults). RecommendCascadeCell UI still nudges enlarge/lower-E.
     if (material?.metadata_only) list.push("Material is metadata-only (no runnable lattice recipe)");
     if (material && !crystalSupported && !selectedPot?.is_placeholder) {
       list.push(`Crystal ${material.crystal} requires a supported lattice or a placeholder potential for verification runs`);
@@ -1824,6 +1818,11 @@ export default function App() {
     if (typeof body.kart_temperature_K === "number") setKartTemperatureK(body.kart_temperature_K);
     setError("");
     setTab("params");
+    // Clear skip after effects flush. If scenario_id was unchanged the scenario effect
+    // never runs — without this the flag sticks and the next scenario pick is ignored.
+    window.setTimeout(() => {
+      skipScenarioDefaults.current = false;
+    }, 0);
   }
 
   async function runJob() {
@@ -2788,18 +2787,24 @@ export default function App() {
                     setLatticeC(resolveLatticeC(m, null));
                     const hosts = m.composition
                       .filter((el) => Number(el.atomic_percent) > 0)
-                      .map((el) => el.symbol);
+                      .map((el) => normalizeSymbol(el.symbol))
+                      .filter(Boolean);
                     const host0 = hosts[0];
                     setParams((prev) => {
-                      const next = { ...prev };
-                      if (host0 && !hosts.includes(prev.pka_species)) {
-                        next.pka_species = host0;
+                      let next = { ...prev };
+                      if (host0) {
+                        next = remapPkaToHosts(next, hosts);
                       }
                       // Rewrite interstitial only when it tracked the old host PKA (keep He/Ne/etc.).
                       if (
                         host0 &&
-                        prev.interstitial_species === prev.pka_species &&
-                        !hosts.includes(prev.interstitial_species)
+                        normalizeSymbol(prev.interstitial_species) ===
+                          normalizeSymbol(prev.pka_species) &&
+                        !hosts.some(
+                          (h) =>
+                            h.toLowerCase() ===
+                            normalizeSymbol(prev.interstitial_species).toLowerCase(),
+                        )
                       ) {
                         next.interstitial_species = host0;
                       }
@@ -3669,7 +3674,7 @@ export default function App() {
                 <code>OMP_NUM_THREADS</code> in the handoff. ML-KMC / cluster dynamics stay serial today —
                 the thread field is recorded for provenance and future workers.
               </p>
-              {params.mpi_procs > 1 && !engines?.mpi_found && (
+              {params.mpi_procs > 1 && engines && !engines.mpi_found && (
                 <div className="alert alert-warn">
                   MPI launcher not found — run setup_and_run (MS-MPI / OpenMPI) or set AEGIS_MPIEXEC.
                 </div>
@@ -5167,11 +5172,15 @@ export default function App() {
                     type="button"
                     className="secondary"
                     onClick={() => {
+                      skipScenarioDefaults.current = true;
                       setMaterialId(jobSnapshot.material_id);
                       setPotentialId(jobSnapshot.potential_id);
                       setScenarioId(jobSnapshot.scenario_id);
                       setParams(jobSnapshot.run_params);
                       setTab("params");
+                      window.setTimeout(() => {
+                        skipScenarioDefaults.current = false;
+                      }, 0);
                     }}
                   >
                     Restore job recipe into editor
@@ -5702,7 +5711,7 @@ export default function App() {
               ]}
               backLabel={TAB_BACK.engines?.label}
               nextLabel={TAB_NEXT.engines?.label}
-              onBack={() => setTab("projects")}
+              onBack={() => setTab("doe")}
               onNext={() => setTab("params")}
             />
             <div className="grid-2">
