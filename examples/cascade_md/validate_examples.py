@@ -77,6 +77,13 @@ def main() -> int:
             if "timestep 0.001" not in text:
                 errors.append(f"{path.parent.name}: in.aegis missing 'timestep 0.001' (got metal dt_ps={dt_ps})")
                 continue
+            # Safety print must NOT contain the substring "Lost atoms" (jobs.py ERROR matcher)
+            if 'print' in text and "Lost atoms" in text:
+                errors.append(
+                    f"{path.parent.name}: cascade input print banner contains 'Lost atoms' "
+                    "(false-positive job failure)"
+                )
+                continue
             # Growth dt scaling must be reflected in cascade_timeline.json (UI scrubber)
             timeline = json.loads((dest / "cascade_timeline.json").read_text(encoding="utf-8"))
             growth = next((s for s in timeline.get("stages") or [] if s.get("id") == "growth"), None)

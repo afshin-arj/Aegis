@@ -160,6 +160,7 @@ def analyze_job_dir(
     atoms_use = atoms
     sites_use = sites
     occupied = [False] * len(sites)
+    sample_bounds: tuple[float, float, float, float, float, float] | None = None
     if len(atoms) > atom_budget:
         # Spatial sub-box (not atom stride): keeps Frenkel balance (V ≈ SIA).
         # Striding atoms while keeping all sites made almost every site look vacant.
@@ -169,15 +170,18 @@ def analyze_job_dir(
         xmin, xmax = min(xs), max(xs)
         ymin, ymax = min(ys), max(ys)
         zmin, zmax = min(zs), max(zs)
-        # Shrink the longest edge until ≈atom_budget atoms remain
+        # Shrink from the low corner until ≈atom_budget atoms remain
         frac = max(0.2, min(1.0, (atom_budget / max(len(atoms), 1)) ** (1.0 / 3.0)))
+        x0, y0, z0 = xmin, ymin, zmin
         x1 = xmin + (xmax - xmin) * frac
         y1 = ymin + (ymax - ymin) * frac
         z1 = zmin + (zmax - zmin) * frac
         atoms_use = [
             a
             for a in atoms
-            if float(a["x"]) <= x1 and float(a["y"]) <= y1 and float(a["z"]) <= z1
+            if x0 <= float(a["x"]) <= x1
+            and y0 <= float(a["y"]) <= y1
+            and z0 <= float(a["z"]) <= z1
         ]
         if len(atoms_use) < max(1000, atom_budget // 10):
             # Degenerate box — fall back to first N atoms + sites near them only
@@ -197,10 +201,23 @@ def analyze_job_dir(
                 if key not in seen:
                     seen.add(key)
                     sites_use.append(s)
+            sample_bounds = None
         else:
             sites_use = [
-                s for s in sites if s[0] <= x1 and s[1] <= y1 and s[2] <= z1
+                s
+                for s in sites
+                if x0 <= s[0] <= x1 and y0 <= s[1] <= y1 and z0 <= s[2] <= z1
             ]
+            sample_bounds = (x0, x1, y0, y1, z0, z1)
+        if not sites_use:
+            # Avoid classifying every atom as SIA when the crop missed the lattice
+            sites_use = sites
+            atoms_use = atoms[:atom_budget]
+            sample_bounds = None
+            nano_note = (
+                f"{nano_note} Spatial crop found no lattice sites — fell back to first "
+                f"{len(atoms_use)} atoms on the full site grid."
+            ).strip()
         occupied = [False] * len(sites_use)
         site_index = _build_site_index(sites_use, cell=max(a_ref * 0.75, 1.0))
         analysis_sampled = True
@@ -291,6 +308,16 @@ def analyze_job_dir(
             if not sub_sites:
                 sub_stats[label] = {"n_sites": 0, "vacancies_proxy": 0}
                 continue
+            if sample_bounds is not None:
+                x0, x1, y0, y1, z0, z1 = sample_bounds
+                sub_sites = [
+                    s
+                    for s in sub_sites
+                    if x0 <= s[0] <= x1 and y0 <= s[1] <= y1 and z0 <= s[2] <= z1
+                ]
+                if not sub_sites:
+                    sub_stats[label] = {"n_sites": 0, "vacancies_proxy": 0, "sampled": True}
+                    continue
             allowed_types: set[int] | None = None
             if type_symbols:
                 want = "c" if label.lower().startswith("c") else None
@@ -317,6 +344,7 @@ def analyze_job_dir(
             sub_stats[label] = {
                 "n_sites": len(sub_sites),
                 "vacancies_proxy": sum(1 for o in sub_occ if not o),
+                "sampled": analysis_sampled,
             }
         summary["summary"]["sublattice"] = sub_stats
         summary["summary"]["sublattice_species_aware"] = species_aware

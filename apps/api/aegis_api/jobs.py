@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -617,13 +618,16 @@ class JobManager:
                         return
                     if code != 0:
                         raise RuntimeError(f"LAMMPS exited with code {code}")
-                    # thermo_modify lost ignore can hide fatal cascade blow-ups
+                    # thermo_modify lost ignore can hide fatal cascade blow-ups.
+                    # Match real LAMMPS ERROR lines only — not our own safety print banner.
                     log.flush()
                     try:
                         log_text = log_path.read_text(encoding="utf-8", errors="replace")
                     except OSError:
                         log_text = ""
-                    if "Lost atoms" in log_text:
+                    if re.search(r"(?i)\bERROR\b.*\bLost atoms\b", log_text) or re.search(
+                        r"(?i)^\s*Lost atoms:", log_text, flags=re.MULTILINE
+                    ):
                         raise RuntimeError(
                             "LAMMPS reported Lost atoms (cascade likely blew the potential / cell). "
                             "Enlarge the cell, lower PKA energy, or use a finer timestep — "

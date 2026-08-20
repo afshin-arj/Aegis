@@ -890,6 +890,7 @@ export default function App() {
   const watchedJobId = useRef<string | null>(null);
   const modeDirty = useRef(false);
   const skipScenarioDefaults = useRef(false);
+  const [scenarioApplyEpoch, setScenarioApplyEpoch] = useState(0);
   const [examples, setExamples] = useState<
     { id: string; title: string; summary: string; warnings: string[]; job: Record<string, unknown> }[]
   >([]);
@@ -1292,7 +1293,7 @@ export default function App() {
       const merged = { ...prev, ...defaults } as RunParams;
       return remapPkaToHosts(merged, hostSymbolsOf(composition));
     });
-  }, [scenarioId, scenarios]);
+  }, [scenarioId, scenarios, scenarioApplyEpoch]);
 
   useEffect(() => {
     if (tab !== "engines") return;
@@ -1818,11 +1819,9 @@ export default function App() {
     if (typeof body.kart_temperature_K === "number") setKartTemperatureK(body.kart_temperature_K);
     setError("");
     setTab("params");
-    // Clear skip after effects flush. If scenario_id was unchanged the scenario effect
-    // never runs — without this the flag sticks and the next scenario pick is ignored.
-    window.setTimeout(() => {
-      skipScenarioDefaults.current = false;
-    }, 0);
+    // Bump epoch so the scenario effect always runs (even if scenario_id unchanged)
+    // and consumes the skip flag — avoids setTimeout races that re-apply divertor defaults.
+    setScenarioApplyEpoch((n) => n + 1);
   }
 
   async function runJob() {
@@ -2849,6 +2848,10 @@ export default function App() {
             )}
             {composition.map((row, idx) => {
               const wtValues = atToWt(composition);
+              const syncHosts = (next: ElementFraction[]) => {
+                setComposition(next);
+                setParams((prev) => remapPkaToHosts(prev, hostSymbolsOf(next)));
+              };
               return (
               <div className="comp-row" key={idx}>
                 <Field label="Element">
@@ -2862,7 +2865,7 @@ export default function App() {
                     onBlur={(e) => {
                       const next = [...composition];
                       next[idx] = { ...row, symbol: normalizeSymbol(e.target.value) };
-                      setComposition(next);
+                      syncHosts(next);
                     }}
                   />
                 </Field>
@@ -2876,9 +2879,9 @@ export default function App() {
                       if (compUnit === "at%") {
                         const next = [...composition];
                         next[idx] = { ...row, atomic_percent: v };
-                        setComposition(next);
+                        syncHosts(next);
                       } else {
-                        setComposition(wtEditToAt(composition, idx, v));
+                        syncHosts(wtEditToAt(composition, idx, v));
                       }
                     }}
                   />
@@ -2887,7 +2890,7 @@ export default function App() {
                   className="secondary"
                   type="button"
                   aria-label={`Remove ${row.symbol}`}
-                  onClick={() => setComposition(composition.filter((_, i) => i !== idx))}
+                  onClick={() => syncHosts(composition.filter((_, i) => i !== idx))}
                 >
                   Remove
                 </button>
@@ -5174,13 +5177,22 @@ export default function App() {
                     onClick={() => {
                       skipScenarioDefaults.current = true;
                       setMaterialId(jobSnapshot.material_id);
+                      const m = materials.find((x) => x.id === jobSnapshot.material_id);
+                      if (m) {
+                        setComposition(m.composition);
+                        setLattice(m.lattice_constant_A);
+                        setLatticeC(resolveLatticeC(m, null));
+                      }
                       setPotentialId(jobSnapshot.potential_id);
                       setScenarioId(jobSnapshot.scenario_id);
-                      setParams(jobSnapshot.run_params);
+                      setParams(
+                        remapPkaToHosts(
+                          jobSnapshot.run_params,
+                          hostSymbolsOf(m?.composition || composition),
+                        ),
+                      );
                       setTab("params");
-                      window.setTimeout(() => {
-                        skipScenarioDefaults.current = false;
-                      }, 0);
+                      setScenarioApplyEpoch((n) => n + 1);
                     }}
                   >
                     Restore job recipe into editor

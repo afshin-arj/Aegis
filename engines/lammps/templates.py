@@ -694,7 +694,7 @@ def write_cascade_input(
             run 0
             # High-energy PKAs can drive EAM tables off-range; do not abort the whole job.
             thermo_modify lost ignore
-            print "Aegis: thermo_modify lost ignore (cascade safety; check log for Lost atoms)"
+            print "Aegis: thermo_modify lost ignore (cascade safety; check log for ERROR Lost)"
             timestep {dt_growth}
             {dynamics}
             """
@@ -703,7 +703,7 @@ def write_cascade_input(
         dynamics_header = textwrap.dedent(
             f"""\
             thermo_modify lost ignore
-            print "Aegis: thermo_modify lost ignore (cascade safety; check log for Lost atoms)"
+            print "Aegis: thermo_modify lost ignore (cascade safety; check log for ERROR Lost)"
             {dynamics}
             """
         )
@@ -929,6 +929,7 @@ def write_implant_input(
 
         velocity all create {T} {seed} mom yes rot yes
         {ensemble}
+        timestep {dt}
         run 500
 
         # Reference lattice BEFORE ion insertion
@@ -1100,6 +1101,7 @@ def write_surface_input(
 
         velocity all create {T} {seed} mom yes rot yes
         {ensemble}
+        timestep {dt}
         run 500
 
         # Reference free surface BEFORE irradiation
@@ -1289,6 +1291,7 @@ def write_interstitial_input(
 
         velocity all create {T} {seed} mom yes rot yes
         {ensemble}
+        timestep {dt}
         run 500
 
         # Reference BEFORE interstitial insertion
