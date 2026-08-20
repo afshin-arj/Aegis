@@ -927,6 +927,9 @@ def create_job(body: JobCreate) -> JobInfo:
     try:
         validate_potential_coverage(material, potential, body.run_params)
         validate_cascade_pka(material, body.run_params)
+        from aegis_api.jobs import _validate_mode_structure
+
+        _validate_mode_structure(body.run_params.model_dump(mode="json"))
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     # Large cell guard
@@ -969,6 +972,9 @@ def create_campaign(body: DoeCampaignCreate) -> DoeCampaignInfo:
     try:
         validate_potential_coverage(material, potential, body.base.run_params)
         validate_cascade_pka(material, body.base.run_params)
+        from aegis_api.jobs import _validate_mode_structure
+
+        _validate_mode_structure(body.base.run_params.model_dump(mode="json"))
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     # Large cell guard (same as single-job path; campaigns auto-confirm in create otherwise)

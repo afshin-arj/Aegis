@@ -483,6 +483,8 @@ class JobInfo(BaseModel):
     run_kart_anneal: bool = False
     run_mmonca_okmc: bool = False
     kmc_tier: KmcTier | None = None
+    # Snapshot of material used for the run (includes material_override edits)
+    material: Material | None = None
     defect_summary: dict[str, Any] | None = None
     kart_summary: dict[str, Any] | None = None
     mmonca_summary: dict[str, Any] | None = None

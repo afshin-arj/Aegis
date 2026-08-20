@@ -330,14 +330,19 @@ def ideal_sites(
     *,
     c: float | None = None,
     z_max: float | None = None,
+    origin: tuple[float, float, float] = (0.0, 0.0, 0.0),
 ) -> list[tuple[float, float, float]]:
     """Ideal lattice sites in Å for Wigner–Seitz proxy analysis.
 
     For HCP/hex, sites are built from the same lattice vectors as ``lattice_line``
     (a1, a2, a3 with fractional basis), using an orthogonal bounding-box estimate
     of nx,ny,nz from dump extents.
+
+    ``origin`` shifts the grid to match dump box lo (xlo/ylo/zlo) so imports and
+    non-zero-origin cells register correctly.
     """
     lx, ly, lz = box
+    ox, oy, oz = origin
     cry = normalize_crystal(crystal)
     a = max(float(a), 1e-6)
     if cry in {"hcp", "hex"}:
@@ -356,12 +361,16 @@ def ideal_sites(
             for j in range(ny):
                 for k in range(nz):
                     for fx, fy, fz in basis_offsets(cry):
-                        x = (i + fx) * a1x + (j + fy) * a2x
-                        y = (i + fx) * a1y + (j + fy) * a2y
-                        z = (k + fz) * c_len
+                        x = ox + (i + fx) * a1x + (j + fy) * a2x
+                        y = oy + (i + fx) * a1y + (j + fy) * a2y
+                        z = oz + (k + fz) * c_len
                         if z_max is not None and z > z_max:
                             continue
-                        if -1e-6 <= x <= lx + 1e-6 and -1e-6 <= y <= ly + 1e-6 and z <= lz + 1e-6:
+                        if (
+                            ox - 1e-6 <= x <= ox + lx + 1e-6
+                            and oy - 1e-6 <= y <= oy + ly + 1e-6
+                            and z <= oz + lz + 1e-6
+                        ):
                             sites.append((x, y, z))
         return sites
 
@@ -372,8 +381,10 @@ def ideal_sites(
     for i in range(nx):
         for j in range(ny):
             for k in range(nz):
-                for ox, oy, oz in basis_offsets(cry):
-                    x, y, z = i * a + ox * a, j * a + oy * a, k * a + oz * a
+                for bx, by, bz in basis_offsets(cry):
+                    x = ox + i * a + bx * a
+                    y = oy + j * a + by * a
+                    z = oz + k * a + bz * a
                     if z_max is not None and z > z_max:
                         continue
                     sites.append((x, y, z))
@@ -387,12 +398,14 @@ def ideal_sites_sublattice(
     *,
     c: float | None = None,
     z_max: float | None = None,
+    origin: tuple[float, float, float] = (0.0, 0.0, 0.0),
 ) -> dict[str, list[tuple[float, float, float]]]:
     """For WC hex: split sites into W (basis 0) and C (basis 1)."""
     cry = normalize_crystal(crystal)
     if cry != "hex":
-        return {"host": ideal_sites(box, cry, a, c=c, z_max=z_max)}
+        return {"host": ideal_sites(box, cry, a, c=c, z_max=z_max, origin=origin)}
     lx, ly, lz = box
+    ox, oy, oz = origin
     a = max(float(a), 1e-6)
     c_len = float(c) if c and c > 0 else a * 0.976
     a1x, a1y = a, 0.0
@@ -408,12 +421,16 @@ def ideal_sites_sublattice(
         for j in range(ny):
             for k in range(nz):
                 for label, (fx, fy, fz) in (("W", bases[0]), ("C", bases[1] if len(bases) > 1 else bases[0])):
-                    x = (i + fx) * a1x + (j + fy) * a2x
-                    y = (i + fx) * a1y + (j + fy) * a2y
-                    z = (k + fz) * c_len
+                    x = ox + (i + fx) * a1x + (j + fy) * a2x
+                    y = oy + (i + fx) * a1y + (j + fy) * a2y
+                    z = oz + (k + fz) * c_len
                     if z_max is not None and z > z_max:
                         continue
-                    if -1e-6 <= x <= lx + 1e-6 and -1e-6 <= y <= ly + 1e-6 and z <= lz + 1e-6:
+                    if (
+                        ox - 1e-6 <= x <= ox + lx + 1e-6
+                        and oy - 1e-6 <= y <= oy + ly + 1e-6
+                        and z <= oz + lz + 1e-6
+                    ):
                         (w_sites if label == "W" else c_sites).append((x, y, z))
     return {"W": w_sites, "C": c_sites}
 

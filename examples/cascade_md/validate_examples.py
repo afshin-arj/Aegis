@@ -84,6 +84,15 @@ def main() -> int:
                     "(false-positive job failure)"
                 )
                 continue
+            # thermo_modify lost ignore must precede PKA delay / velocity kicks
+            lost_i = text.find("thermo_modify lost ignore")
+            vel_i = text.find("velocity pka_")
+            if lost_i < 0 or (vel_i >= 0 and lost_i > vel_i):
+                errors.append(f"{path.parent.name}: thermo_modify lost ignore must precede PKA velocity")
+                continue
+            if "group pka_cand_" not in text or "reduce min" not in text:
+                errors.append(f"{path.parent.name}: expected single-atom PKA selection (min id)")
+                continue
             # Growth dt scaling must be reflected in cascade_timeline.json (UI scrubber)
             timeline = json.loads((dest / "cascade_timeline.json").read_text(encoding="utf-8"))
             growth = next((s for s in timeline.get("stages") or [] if s.get("id") == "growth"), None)

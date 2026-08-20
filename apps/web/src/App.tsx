@@ -143,6 +143,14 @@ type JobInfo = {
   run_params: RunParams;
   run_kart_anneal: boolean;
   run_mmonca_okmc?: boolean;
+  material?: {
+    id: string;
+    composition: ElementFraction[];
+    lattice_constant_A: number;
+    lattice_c_A?: number | null;
+    crystal?: string;
+    name?: string;
+  } | null;
   defect_summary?: Record<string, number | string | object>;
   kart_summary?: Record<string, unknown>;
   mmonca_summary?: Record<string, unknown>;
@@ -807,6 +815,13 @@ export default function App() {
     run_params: RunParams;
     execution_mode?: string | null;
     structure_provenance?: Record<string, unknown> | null;
+    material?: {
+      id: string;
+      composition: ElementFraction[];
+      lattice_constant_A: number;
+      lattice_c_A?: number | null;
+      crystal?: string;
+    } | null;
   } | null>(null);
   const [showAllBlockers, setShowAllBlockers] = useState(false);
   const [structurePreview, setStructurePreview] = useState<{
@@ -890,6 +905,8 @@ export default function App() {
   const watchedJobId = useRef<string | null>(null);
   const modeDirty = useRef(false);
   const skipScenarioDefaults = useRef(false);
+  /** Epoch that should skip applying scenario defaults (Strict Mode–safe; not a one-shot bool). */
+  const skipScenarioEpoch = useRef<number | null>(null);
   const [scenarioApplyEpoch, setScenarioApplyEpoch] = useState(0);
   const [examples, setExamples] = useState<
     { id: string; title: string; summary: string; warnings: string[]; job: Record<string, unknown> }[]
@@ -1272,6 +1289,12 @@ export default function App() {
   useEffect(() => {
     const sc = scenarios.find((s) => s.id === scenarioId);
     if (!sc) return;
+    // Recipe load / Restore stamps skipScenarioEpoch — keep skipping for that epoch so
+    // React Strict Mode's double effect invoke cannot re-apply divertor defaults.
+    if (skipScenarioEpoch.current != null && skipScenarioEpoch.current === scenarioApplyEpoch) {
+      skipScenarioDefaults.current = false;
+      return;
+    }
     if (skipScenarioDefaults.current) {
       skipScenarioDefaults.current = false;
       return;
@@ -1437,6 +1460,7 @@ export default function App() {
           run_params: { ...defaultParams, ...(info.run_params as Partial<RunParams>) } as RunParams,
           execution_mode: info.execution_mode,
           structure_provenance: info.structure_provenance,
+          material: info.material ?? null,
         });
       } else {
         setJobSnapshot(null);
@@ -1820,8 +1844,12 @@ export default function App() {
     setError("");
     setTab("params");
     // Bump epoch so the scenario effect always runs (even if scenario_id unchanged)
-    // and consumes the skip flag — avoids setTimeout races that re-apply divertor defaults.
-    setScenarioApplyEpoch((n) => n + 1);
+    // and stamps skipScenarioEpoch (Strict Mode–safe — not a one-shot bool).
+    setScenarioApplyEpoch((n) => {
+      const next = n + 1;
+      skipScenarioEpoch.current = next;
+      return next;
+    });
   }
 
   async function runJob() {
@@ -2426,8 +2454,11 @@ export default function App() {
                   setDefects(null);
                   setKartSummary(null);
                   setMlKmcSummary(null);
+                  setCdSummary(null);
+                  setKpsSummary(null);
                   setCascadeTimeline(null);
                   setDxaSummary(null);
+                  setJobSnapshot(null);
                 }}
               >
                 New study
@@ -3594,7 +3625,14 @@ export default function App() {
             </p>
             <div className="row">
               <Field label="Fuel preset" htmlFor="scenario">
-                <select id="scenario" value={scenarioId} onChange={(e) => setScenarioId(e.target.value)}>
+                <select
+                  id="scenario"
+                  value={scenarioId}
+                  onChange={(e) => {
+                    skipScenarioEpoch.current = null;
+                    setScenarioId(e.target.value);
+                  }}
+                >
                   {scenarios.map((s) => (
                     <option key={s.id} value={s.id}>
                       {s.label} ({s.fuel})
@@ -3639,7 +3677,7 @@ export default function App() {
                 "Compute first: MPI ranks for LAMMPS, OpenMP threads for k-ART.",
                 "Then Mode → System (cell) → Structure → cascade/implant options.",
                 "Optional post-cascade kMC at the bottom. Nanostructures live in Structure (not a separate tab).",
-                "Click Submit in the top bar, or Next: Run to watch the log.",
+                "Click Submit job below (or the top bar). Open Run log only opens the log tab — it does not submit.",
               ]}
               backLabel={TAB_BACK.params?.label}
               nextLabel={TAB_NEXT.params?.label}
@@ -4286,6 +4324,7 @@ export default function App() {
                               ? {
                                   ...material,
                                   composition,
+                                  lattice_constant_A: lattice,
                                   lattice_c_A: effectiveLatticeC ?? material.lattice_c_A,
                                 }
                               : undefined,
@@ -4934,7 +4973,7 @@ export default function App() {
                 Submit job
               </button>
               <button type="button" className="secondary" onClick={() => setTab("run")}>
-                Next: Run →
+                Open Run log →
               </button>
             </div>
           </section>
@@ -5177,22 +5216,33 @@ export default function App() {
                     onClick={() => {
                       skipScenarioDefaults.current = true;
                       setMaterialId(jobSnapshot.material_id);
-                      const m = materials.find((x) => x.id === jobSnapshot.material_id);
-                      if (m) {
-                        setComposition(m.composition);
-                        setLattice(m.lattice_constant_A);
-                        setLatticeC(resolveLatticeC(m, null));
+                      const catalog = materials.find((x) => x.id === jobSnapshot.material_id);
+                      const snap = jobSnapshot.material;
+                      const comp = snap?.composition?.length
+                        ? snap.composition
+                        : catalog?.composition || composition;
+                      const a0 =
+                        snap?.lattice_constant_A != null
+                          ? snap.lattice_constant_A
+                          : catalog?.lattice_constant_A;
+                      if (a0 != null) setLattice(a0);
+                      if (snap?.lattice_c_A != null) {
+                        setLatticeC(snap.lattice_c_A);
+                      } else if (catalog) {
+                        setLatticeC(resolveLatticeC(catalog, null));
                       }
+                      setComposition(comp);
                       setPotentialId(jobSnapshot.potential_id);
                       setScenarioId(jobSnapshot.scenario_id);
                       setParams(
-                        remapPkaToHosts(
-                          jobSnapshot.run_params,
-                          hostSymbolsOf(m?.composition || composition),
-                        ),
+                        remapPkaToHosts(jobSnapshot.run_params, hostSymbolsOf(comp)),
                       );
                       setTab("params");
-                      setScenarioApplyEpoch((n) => n + 1);
+                      setScenarioApplyEpoch((n) => {
+                        const next = n + 1;
+                        skipScenarioEpoch.current = next;
+                        return next;
+                      });
                     }}
                   >
                     Restore job recipe into editor

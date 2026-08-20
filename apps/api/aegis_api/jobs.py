@@ -235,7 +235,17 @@ class JobManager:
         return sorted(self._jobs.values(), key=lambda j: j.created_at, reverse=True)
 
     def get(self, job_id: str) -> JobInfo | None:
-        return self._jobs.get(job_id)
+        info = self._jobs.get(job_id)
+        if info is None:
+            return None
+        if info.material is None:
+            mat_path = self.runs_root / job_id / "material.json"
+            if mat_path.exists():
+                try:
+                    info.material = Material(**json.loads(mat_path.read_text(encoding="utf-8")))
+                except Exception:  # noqa: BLE001
+                    pass
+        return info
 
     def create(self, body: JobCreate, material: Material, potential: Potential) -> JobInfo:
         job_id = uuid4().hex[:12]
@@ -253,6 +263,7 @@ class JobManager:
             run_kart_anneal=body.run_kart_anneal,
             run_mmonca_okmc=body.run_mmonca_okmc,
             kmc_tier=body.kmc_tier,
+            material=material,
         )
         job_dir = self.runs_root / job_id
         job_dir.mkdir(parents=True, exist_ok=True)
@@ -573,12 +584,10 @@ class JobManager:
                     if mpi_n > 1:
                         probe = probe_lammps_parallelism(str(lmp_path))
                         if probe.get("lammps_mpi_capable") is False:
-                            log.write(
-                                f"[Aegis] WARNING: LAMMPS at {lmp_path} looks serial/GUI — "
-                                f"refusing mpi_procs={mpi_n} (would spawn independent copies). "
-                                "Falling back to mpi_procs=1. Install *-MSMPI or set AEGIS_LAMMPS_BIN.\n"
+                            raise RuntimeError(
+                                f"LAMMPS at {lmp_path} looks serial/GUI — refusing mpi_procs={mpi_n}. "
+                                "Install *-MSMPI / set AEGIS_LAMMPS_BIN to an MPI build, or set mpi_procs=1."
                             )
-                            mpi_n = 1
                     cmd = build_lammps_command(str(lmp_path), input_name=in_path.name, mpi_procs=mpi_n)
                     log.write(f"[Aegis] launching {' '.join(cmd)} (mpi_procs={mpi_n})\n")
                     if mpi_n > 1:

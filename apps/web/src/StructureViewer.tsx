@@ -185,12 +185,14 @@ export default function StructureViewer({ jobId, refreshKey }: Props) {
   const [err, setErr] = useState("");
   const [scrubErr, setScrubErr] = useState("");
   const scrubReq = useRef(0);
+  const pendingSeekTs = useRef<number | null>(null);
 
   const afterFrames = useMemo(() => index?.after_indices ?? [], [index]);
 
   useEffect(() => {
     // Invalidate any in-flight scrub from a previous job
     scrubReq.current += 1;
+    pendingSeekTs.current = null;
     setAfter(null);
     setScrubErr("");
 
@@ -242,10 +244,12 @@ export default function StructureViewer({ jobId, refreshKey }: Props) {
   }, [jobId, refreshKey]);
 
   useEffect(() => {
-    const onSeek = (ev: Event) => {
-      const detail = (ev as CustomEvent<{ timestep?: number }>).detail;
-      const target = Number(detail?.timestep ?? 0);
-      if (!index?.frames?.length || !afterFrames.length) return;
+    const seekTo = (target: number) => {
+      if (!index?.frames?.length || !afterFrames.length) {
+        pendingSeekTs.current = target;
+        return;
+      }
+      pendingSeekTs.current = null;
       let bestLocal = 0;
       let bestDist = Infinity;
       afterFrames.forEach((fi, local) => {
@@ -259,7 +263,14 @@ export default function StructureViewer({ jobId, refreshKey }: Props) {
       });
       void scrub(bestLocal);
     };
+    const onSeek = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ timestep?: number }>).detail;
+      seekTo(Number(detail?.timestep ?? 0));
+    };
     window.addEventListener("aegis-seek-timestep", onSeek);
+    if (pendingSeekTs.current != null && index?.frames?.length && afterFrames.length) {
+      seekTo(pendingSeekTs.current);
+    }
     return () => window.removeEventListener("aegis-seek-timestep", onSeek);
   }, [index, afterFrames, jobId]);
 

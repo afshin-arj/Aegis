@@ -623,22 +623,30 @@ def write_cascade_input(
                 region pka_pick_{i} sphere {cx:.6f} {cy:.6f} {cz:.6f} {rad:.4f} units {units}
                 group pka_reg_{i} region pka_pick_{i}
                 group pka_type_{i} type {pka_type}
-                group pka_{i} intersect pka_reg_{i} pka_type_{i}
+                group pka_cand_{i} intersect pka_reg_{i} pka_type_{i}
                 # Expand search if FP miss; abort if still empty (alloy minority PKA)
-                variable npka_{i} equal count(pka_{i})
+                variable npka_{i} equal count(pka_cand_{i})
                 if "${{npka_{i}}} == 0" then &
                   "region pka_pick_{i} sphere {cx:.6f} {cy:.6f} {cz:.6f} {rad2:.4f} units {units}" &
                   "group pka_reg_{i} region pka_pick_{i}" &
-                  "group pka_{i} intersect pka_reg_{i} pka_type_{i}"
-                variable npka_{i} equal count(pka_{i})
+                  "group pka_cand_{i} intersect pka_reg_{i} pka_type_{i}"
+                variable npka_{i} equal count(pka_cand_{i})
                 if "${{npka_{i}}} == 0" then &
                   "region pka_pick_{i} sphere {cx:.6f} {cy:.6f} {cz:.6f} {rad3:.4f} units {units}" &
                   "group pka_reg_{i} region pka_pick_{i}" &
-                  "group pka_{i} intersect pka_reg_{i} pka_type_{i}"
-                variable npka_{i} equal count(pka_{i})
+                  "group pka_cand_{i} intersect pka_reg_{i} pka_type_{i}"
+                variable npka_{i} equal count(pka_cand_{i})
                 if "${{npka_{i}}} == 0" then &
                   "print 'Aegis ERROR: no type-{pka_type} ({primary}) atom near PKA site {i+1}'" &
                   "quit 1"
+                # Kick exactly one atom (min id) — expanded spheres can contain many hosts
+                compute pka_cid_{i} pka_cand_{i} property/atom id
+                compute pka_min_{i} pka_cand_{i} reduce min c_pka_cid_{i}
+                run 0
+                variable pka_atom_{i} equal c_pka_min_{i}
+                group pka_{i} id ${{pka_atom_{i}}}
+                uncompute pka_min_{i}
+                uncompute pka_cid_{i}
                 velocity pka_{i} set {dvx * speed:.6f} {dvy * speed:.6f} {dvz * speed:.6f} units box
                 """
             )
@@ -692,21 +700,12 @@ def write_cascade_input(
         dynamics_header = textwrap.dedent(
             f"""\
             run 0
-            # High-energy PKAs can drive EAM tables off-range; do not abort the whole job.
-            thermo_modify lost ignore
-            print "Aegis: thermo_modify lost ignore (cascade safety; check log for ERROR Lost)"
             timestep {dt_growth}
             {dynamics}
             """
         )
     else:
-        dynamics_header = textwrap.dedent(
-            f"""\
-            thermo_modify lost ignore
-            print "Aegis: thermo_modify lost ignore (cascade safety; check log for ERROR Lost)"
-            {dynamics}
-            """
-        )
+        dynamics_header = dynamics
 
     script = textwrap.dedent(
         f"""\
@@ -743,6 +742,10 @@ def write_cascade_input(
         thermo {int(params.get("thermo_every", 100))}
         thermo_style custom step temp pe ke etotal press
         {restart}
+
+        # Enable lost-ignore BEFORE any PKA delay runs (multi-PKA) or cascade stages
+        thermo_modify lost ignore
+        print "Aegis: thermo_modify lost ignore (cascade safety; check log for ERROR Lost)"
 
         {pka_script}
         # Capture cascade t=0 immediately after PKA kick(s)
@@ -1007,15 +1010,14 @@ def write_surface_input(
             """
         )
     elif structure_file:
-        Lx, Ly, Lz = _structure_box_A(path, material, params)
-        z_top = Lz + float(vacuum) * a
+        vacuum_A = float(vacuum) * a
         geometry = textwrap.dedent(
             f"""\
-            # Prebuilt nanostructure (+ vacuum via change_box along z)
+            # Prebuilt nanostructure (+ vacuum via change_box along z; preserve zlo)
             read_data {structure_file}
             {masses}
             {lattice_cmd}
-            change_box all z final 0 {z_top:.6f} units box
+            change_box all z delta 0 {vacuum_A:.6f} units box
             """
         )
     else:

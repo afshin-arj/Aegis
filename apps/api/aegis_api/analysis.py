@@ -120,7 +120,12 @@ def analyze_job_dir(
         (job_dir / "defects.json").write_text(json.dumps(empty, indent=2), encoding="utf-8")
         return empty
 
-    sites = crystal_reg.ideal_sites(box, cry, a_ref, c=c_ref, z_max=None)
+    origin = (
+        float(box_meta.get("xlo") or 0.0),
+        float(box_meta.get("ylo") or 0.0),
+        float(box_meta.get("zlo") or 0.0),
+    )
+    sites = crystal_reg.ideal_sites(box, cry, a_ref, c=c_ref, z_max=None, origin=origin)
     run_mode = (mode or "").lower()
     if run_mode == "surface":
         # Vacuum slab must not be counted as vacancies — limit WS grid to substrate height.
@@ -130,7 +135,7 @@ def analyze_job_dir(
         if zs:
             # Assume vacuum is the empty upper portion; use max occupied z + small pad as site limit
             z_max = max(zs) + 0.25 * a_ref
-            sites = crystal_reg.ideal_sites(box, cry, a_ref, c=c_ref, z_max=z_max)
+            sites = crystal_reg.ideal_sites(box, cry, a_ref, c=c_ref, z_max=z_max, origin=origin)
 
     if not sites:
         empty_sites = {
@@ -301,7 +306,7 @@ def analyze_job_dir(
                     type_symbols = [str(s) for s in ts]
             except Exception:  # noqa: BLE001
                 type_symbols = []
-        sub = crystal_reg.ideal_sites_sublattice(box, cry, a_ref, c=c_ref)
+        sub = crystal_reg.ideal_sites_sublattice(box, cry, a_ref, c=c_ref, origin=origin)
         sub_stats: dict[str, Any] = {}
         species_aware = False
         for label, sub_sites in sub.items():
