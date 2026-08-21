@@ -134,6 +134,7 @@ def build_kart_package(
     atoms, box, origin = _read_last_dump_atoms(job_dir)
     lx, ly, lz = box
     ox, oy, oz = origin
+    shift = (0.0, 0.0, 0.0)
     if not atoms:
         # Minimal fallback cell so the package is still inspectable
         a = float(material.get("lattice_constant_A") or 3.165)
@@ -146,6 +147,7 @@ def build_kart_package(
     else:
         # Remap absolute dump coords into a [0, L] cell for k-ART / LAMMPS data
         if abs(ox) > 1e-9 or abs(oy) > 1e-9 or abs(oz) > 1e-9:
+            shift = (ox, oy, oz)
             for a in atoms:
                 a["x"] = float(a["x"]) - ox
                 a["y"] = float(a["y"]) - oy
@@ -245,9 +247,12 @@ def build_kart_package(
     sia = [p for p in points if p.get("kind") in ("interstitial", "displaced")]
 
     def _xyz(path: Path, rows: list[dict[str, Any]], label: str) -> None:
+        sx, sy, sz = shift
         lines = [str(len(rows)), label]
         for p in rows:
-            lines.append(f"X {p['x']:.6f} {p['y']:.6f} {p['z']:.6f}")
+            lines.append(
+                f"X {float(p['x']) - sx:.6f} {float(p['y']) - sy:.6f} {float(p['z']) - sz:.6f}"
+            )
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     _xyz(work / "defects_vacancies.xyz", vac, "Aegis vacancies")

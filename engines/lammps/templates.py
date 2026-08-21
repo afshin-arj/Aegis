@@ -43,6 +43,21 @@ def _has_elem(elems: list[str], symbol: str) -> bool:
     return any(e.lower() == want for e in elems)
 
 
+def _composition_host_elems(material: dict[str, Any], elems: list[str]) -> list[str]:
+    """Substrate species = material composition ∩ script type list.
+
+    Do not strip self-ions / self-SIAs from multi-host alloys (W→W–Re must keep W+Re).
+    Hetero projectiles (He) stay out of the lattice create and are added later as inserts.
+    """
+    comp = {
+        _norm_sym(str(c.get("symbol") or "")).lower()
+        for c in material.get("composition") or []
+        if float(c.get("atomic_percent") or 0) > 0 and c.get("symbol")
+    }
+    hosts = [e for e in elems if _norm_sym(e).lower() in comp]
+    return hosts or list(elems[:1]) or ["W"]
+
+
 def timestep_metal_ps(timestep_fs: float | None) -> float:
     """Convert UI ``timestep_fs`` (femtoseconds) to LAMMPS metal timestep (picoseconds).
 
@@ -933,7 +948,7 @@ def write_implant_input(
     beam_note = f"Insert {ion_count} × {ion} near top surface (angle={angle_deg} deg from normal)"
 
     ion_type = _elem_index(elems, ion)
-    host_elems = [e for e in elems if e.lower() != ion.lower()] or elems[:1]
+    host_elems = _composition_host_elems(material, elems)
     ensemble = _ensemble_fix(params)
     dump, dump_mod = _dump_command(params, "dump.implant.*.lammpstrj")
     restart = _restart_block(params)
@@ -1113,7 +1128,7 @@ def write_surface_input(
 
     masses = "\n".join(f"mass {i+1} {_approx_mass(sym)}" for i, sym in enumerate(elems))
     ion_type = _elem_index(elems, ion)
-    host_elems = [e for e in elems if e.lower() != ion.lower()] or elems[:1]
+    host_elems = _composition_host_elems(material, elems)
     lattice_cmd = _lattice_line(material, params)
     nw_axis = _nanowire_axis(params)
     if structure_file and nw_axis:
@@ -1312,7 +1327,7 @@ def write_interstitial_input(
     species = _norm_sym(str(params.get("interstitial_species") or "He"))
     if not _has_elem(elems, species):
         elems = elems + [species]
-    host_elems = [e for e in elems if e.lower() != species.lower()] or elems[:1]
+    host_elems = _composition_host_elems(material, elems)
 
     a = float(material.get("lattice_constant_A", 3.165))
     crystal = str(material.get("crystal", "bcc"))
@@ -1488,7 +1503,7 @@ def _create_atoms_block(material: dict[str, Any], elems: list[str], *, region: s
         for c in material["composition"]
         if float(c.get("atomic_percent") or 0) > 0
     }
-    lines = [f"create_atoms 1 {target}", "group all_atoms type 1"]
+    lines = [f"create_atoms 1 {target}"]
     remaining = 1.0
     for i, sym in enumerate(elems):
         typ = i + 1
@@ -1497,8 +1512,11 @@ def _create_atoms_block(material: dict[str, Any], elems: list[str], *, region: s
             continue
         if remaining <= 0:
             break
-        f = min(frac / remaining, 1.0) if remaining else 0
-        lines.append(f"set group all_atoms type/fraction {typ} {f:.6f} {1000 + i}")
+        # Restrict to remaining type-1 atoms — type/fraction on ``all`` would
+        # re-roll already retyped species and skew ternary+ compositions.
+        f = min(frac / remaining, 1.0) if remaining else 0.0
+        lines.append("group remaining_host type 1")
+        lines.append(f"set group remaining_host type/fraction {typ} {f:.6f} {1000 + i}")
         remaining -= frac
     return "\n".join(lines)
 

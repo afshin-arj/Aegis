@@ -45,7 +45,7 @@ export function StructureAtomCanvas({
   label,
 }: {
   atoms: AtomXYZ[];
-  box?: { lx: number; ly: number; lz: number };
+  box?: { lx: number; ly: number; lz: number; xlo?: number; ylo?: number; zlo?: number };
   label: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -72,6 +72,9 @@ export function StructureAtomCanvas({
     const cy = (box?.ly ?? 0) / 2;
     const cz = (box?.lz ?? 0) / 2;
     const span = Math.max(box?.lx ?? 10, box?.ly ?? 10, box?.lz ?? 10, 4);
+    const xlo = box?.xlo ?? 0;
+    const ylo = box?.ylo ?? 0;
+    const zlo = box?.zlo ?? 0;
 
     if (box) {
       const edges = new THREE.EdgesGeometry(new THREE.BoxGeometry(box.lx, box.ly, box.lz));
@@ -101,7 +104,8 @@ export function StructureAtomCanvas({
       const mesh = new THREE.InstancedMesh(geo, mat, list.length);
       const m = new THREE.Matrix4();
       list.forEach((a, i) => {
-        m.setPosition(a.x, a.y, a.z);
+        // Dump coords are absolute; box outline is drawn in [0,L] — shift by origin
+        m.setPosition(a.x - xlo, a.y - ylo, a.z - zlo);
         mesh.setMatrixAt(i, m);
       });
       mesh.instanceMatrix.needsUpdate = true;
@@ -214,11 +218,11 @@ export default function StructureViewer({ jobId, refreshKey }: Props) {
       setErr("");
       try {
         const traj = await api<TrajIndex>(`/api/jobs/${jobId}/trajectory`);
-        if (cancelled || scrubReq.current !== loadToken) return;
+        // Scrub/seek may bump scrubReq during index fetch — still apply index+before
+        if (cancelled) return;
         setIndex(traj);
         if (traj.before_index != null) {
           const bf = await api<TrajFrame>(`/api/jobs/${jobId}/trajectory/${traj.before_index}`);
-          // Before must not be cancelled by cascade-stage seek (scrub bumps scrubReq)
           if (cancelled) return;
           setBefore(bf);
         } else {

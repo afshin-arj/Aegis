@@ -156,12 +156,18 @@ def _render_frame(
     lx = float(box.get("lx") or 1.0)
     ly = float(box.get("ly") or 1.0)
     lz = float(box.get("lz") or 1.0)
+    xlo = float(box.get("xlo") or 0.0)
+    ylo = float(box.get("ylo") or 0.0)
+    zlo = float(box.get("zlo") or 0.0)
     if proj == "xz":
         ax_u, ax_v, dim_u, dim_v = "x", "z", lx, lz
+        lo_u, lo_v = xlo, zlo
     elif proj == "yz":
         ax_u, ax_v, dim_u, dim_v = "y", "z", ly, lz
+        lo_u, lo_v = ylo, zlo
     else:
         ax_u, ax_v, dim_u, dim_v = "x", "y", lx, ly
+        lo_u, lo_v = xlo, ylo
 
     margin = 28
     plot = size - 2 * margin
@@ -179,8 +185,8 @@ def _render_frame(
     # Draw smaller atoms when dense
     r = 2 if len(atoms) > 1500 else 3 if len(atoms) > 600 else 4
     for a in atoms:
-        u = float(a.get(ax_u, 0.0))
-        v = float(a.get(ax_v, 0.0))
+        u = float(a.get(ax_u, 0.0)) - lo_u
+        v = float(a.get(ax_v, 0.0)) - lo_v
         # Flip v so +axis points up (image y grows downward)
         px = ox + u * scale
         py = oy + (dim_v - v) * scale

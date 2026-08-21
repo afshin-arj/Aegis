@@ -901,6 +901,7 @@ export default function App() {
   const [compUnit, setCompUnit] = useState<"at%" | "wt%">("at%");
   const [projectFilter, setProjectFilter] = useState<string>("");
   const loadJobReq = useRef(0);
+  const submitInFlight = useRef(false);
   const potReq = useRef(0);
   const campReq = useRef(0);
   const libReq = useRef(0);
@@ -1206,6 +1207,8 @@ export default function App() {
       })
       .catch((err) => {
         if (reqId !== potReq.current) return;
+        setPotentials([]);
+        setPotentialId("");
         setPotsForMaterialId(materialId);
         setError(err instanceof Error ? err.message : String(err));
       });
@@ -1597,7 +1600,17 @@ export default function App() {
     const mat = materialId;
     const reqId = ++potReq.current;
     setPotsForMaterialId("");
-    const p = await api<Potential[]>(`/api/potentials?material_id=${mat}`);
+    let p: Potential[];
+    try {
+      p = await api<Potential[]>(`/api/potentials?material_id=${mat}`);
+    } catch (err) {
+      if (reqId === potReq.current) {
+        setPotentials([]);
+        setPotentialId("");
+        setPotsForMaterialId(mat);
+      }
+      throw err;
+    }
     if (reqId !== potReq.current) return;
     setPotentials(p);
     setPotsForMaterialId(mat);
@@ -1902,6 +1915,7 @@ export default function App() {
     }
     // Invalidate any in-flight loadJob so it cannot clobber this new run
     const runToken = ++loadJobReq.current;
+    submitInFlight.current = true;
     setBusy(true);
     setError("");
     try {
@@ -1977,6 +1991,7 @@ export default function App() {
         setError(err instanceof Error ? err.message : String(err));
       }
     } finally {
+      submitInFlight.current = false;
       if (runToken === loadJobReq.current) setBusy(false);
     }
   }
@@ -2510,7 +2525,9 @@ export default function App() {
                 className="secondary"
                 onClick={() => {
                   loadJobReq.current += 1;
-                  setBusy(false);
+                  // Do not clear busy while a Submit POST is in flight — that
+                  // re-enables Submit and can create duplicate jobs.
+                  if (!submitInFlight.current) setBusy(false);
                   setProjectName("untitled");
                   setProjectFilter("");
                   setJob(null);
