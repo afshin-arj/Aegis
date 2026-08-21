@@ -17,6 +17,27 @@ def _norm_sym(sym: str) -> str:
     return s[0].upper() + s[1:].lower()
 
 
+def _box_A_from_data(path: Path) -> list[float] | None:
+    xlo = xhi = ylo = yhi = zlo = zhi = None
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) >= 4 and parts[2] == "xlo" and parts[3] == "xhi":
+            xlo, xhi = float(parts[0]), float(parts[1])
+        elif len(parts) >= 4 and parts[2] == "ylo" and parts[3] == "yhi":
+            ylo, yhi = float(parts[0]), float(parts[1])
+        elif len(parts) >= 4 and parts[2] == "zlo" and parts[3] == "zhi":
+            zlo, zhi = float(parts[0]), float(parts[1])
+        if xlo is not None and ylo is not None and zlo is not None:
+            break
+    if None in (xlo, xhi, ylo, yhi, zlo, zhi):
+        return None
+    return [float(xhi) - float(xlo), float(yhi) - float(ylo), float(zhi) - float(zlo)]
+
+
 def import_structure(src: Path, out_data: Path) -> dict[str, Any]:
     src = Path(src)
     if not src.exists():
@@ -33,6 +54,9 @@ def import_structure(src: Path, out_data: Path) -> dict[str, Any]:
             "atom_count": n_guess,
             "note": "Imported LAMMPS data file",
         }
+        box = _box_A_from_data(out_data)
+        if box:
+            meta["box_A"] = box
         if type_symbols:
             meta["type_symbols"] = type_symbols
             meta["n_atom_types"] = len(type_symbols)
@@ -64,6 +88,7 @@ def import_structure(src: Path, out_data: Path) -> dict[str, Any]:
             masses=True,
             specorder=type_symbols or None,
         )
+        cell = atoms.get_cell()
         return {
             "backend": "import",
             "source": str(src),
@@ -71,6 +96,7 @@ def import_structure(src: Path, out_data: Path) -> dict[str, Any]:
             "type_symbols": type_symbols,
             "n_atom_types": len(type_symbols) if type_symbols else None,
             "type_symbols_resolved": bool(type_symbols),
+            "box_A": [float(cell[0, 0]), float(cell[1, 1]), float(cell[2, 2])],
             "note": f"Imported via ASE from {src.name}",
         }
     except Exception as exc:  # noqa: BLE001

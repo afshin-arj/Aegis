@@ -125,6 +125,20 @@ def analyze_job_dir(
         float(box_meta.get("ylo") or 0.0),
         float(box_meta.get("zlo") or 0.0),
     )
+    # Axis-aligned WS grid — non-100 / prism orients are approximate
+    orient = "100"
+    rp_path = job_dir / "run_params.json"
+    if rp_path.exists():
+        try:
+            orient = str(json.loads(rp_path.read_text(encoding="utf-8")).get("crystal_orient") or "100")
+        except Exception:  # noqa: BLE001
+            orient = "100"
+    if orient.lower() not in {"100", "basal", ""}:
+        note = (
+            f"crystal_orient={orient}: WS ideal sites are axis-aligned (not re-oriented) — "
+            "V/SIA counts are approximate; prefer OVITO DXA."
+        )
+        nano_note = f"{nano_note} {note}".strip() if nano_note else note
     sites = crystal_reg.ideal_sites(box, cry, a_ref, c=c_ref, z_max=None, origin=origin)
     run_mode = (mode or "").lower()
     if run_mode == "surface":

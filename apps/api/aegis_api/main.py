@@ -92,6 +92,21 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _job_material(info: JobInfo, job_id: str):
+    """Prefer the job's material snapshot (override) over the catalog preset."""
+    if info.material is not None:
+        return info.material
+    mat_path = RUNS_ROOT / job_id / "material.json"
+    if mat_path.exists():
+        try:
+            return Material(**json.loads(mat_path.read_text(encoding="utf-8")))
+        except Exception:  # noqa: BLE001
+            pass
+    if info.material_id:
+        return store.get_material(info.material_id)
+    return None
+
+
 @app.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "service": "aegis"}
@@ -1222,7 +1237,7 @@ def post_kart_anneal(job_id: str, body: KartAnnealRequest) -> dict[str, Any]:
     try:
         from kmc.router import recommend_kmc
 
-        material = store.get_material(info.material_id) if info.material_id else None
+        material = _job_material(info, job_id)
         req_path = job_dir / "request.json"
         req = json.loads(req_path.read_text(encoding="utf-8")) if req_path.exists() else {}
         sk = str(
@@ -1310,7 +1325,7 @@ def post_ml_kmc_anneal(job_id: str, body: MlKmcAnnealRequest) -> dict[str, Any]:
     job_dir = RUNS_ROOT / job_id
     from kmc.router import recommend_kmc
 
-    material = store.get_material(info.material_id) if info.material_id else None
+    material = _job_material(info, job_id)
     router = recommend_kmc(
         material=material.model_dump(mode="json") if material else None,
         target_time_s=1.0,
@@ -1381,7 +1396,7 @@ def post_cd_run(job_id: str, body: ClusterDynamicsRequest) -> dict[str, Any]:
     job_dir = RUNS_ROOT / job_id
     from kmc.router import recommend_kmc
 
-    material = store.get_material(info.material_id) if info.material_id else None
+    material = _job_material(info, job_id)
     router = recommend_kmc(
         material=material.model_dump(mode="json") if material else None,
         target_time_s=float(body.target_time_s),

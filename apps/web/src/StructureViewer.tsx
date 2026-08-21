@@ -192,6 +192,7 @@ export default function StructureViewer({ jobId, refreshKey }: Props) {
   useEffect(() => {
     // Invalidate any in-flight scrub from a previous job
     scrubReq.current += 1;
+    const loadToken = scrubReq.current;
     pendingSeekTs.current = null;
     setAfter(null);
     setScrubErr("");
@@ -213,20 +214,21 @@ export default function StructureViewer({ jobId, refreshKey }: Props) {
       setErr("");
       try {
         const traj = await api<TrajIndex>(`/api/jobs/${jobId}/trajectory`);
-        if (cancelled) return;
+        if (cancelled || scrubReq.current !== loadToken) return;
         setIndex(traj);
         if (traj.before_index != null) {
           const bf = await api<TrajFrame>(`/api/jobs/${jobId}/trajectory/${traj.before_index}`);
-          if (cancelled) return;
+          if (cancelled || scrubReq.current !== loadToken) return;
           setBefore(bf);
         } else {
           setBefore(null);
         }
         const firstAfter = traj.after_indices[0];
-        setAfterIdx(0);
         if (firstAfter != null) {
           const af = await api<TrajFrame>(`/api/jobs/${jobId}/trajectory/${firstAfter}`);
-          if (cancelled) return;
+          // Skip if scrub/seek advanced scrubReq, or a pending seek will apply
+          if (cancelled || scrubReq.current !== loadToken || pendingSeekTs.current != null) return;
+          setAfterIdx(0);
           setAfter(af);
         } else {
           setAfter(null);

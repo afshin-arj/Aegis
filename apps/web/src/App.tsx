@@ -1344,6 +1344,31 @@ export default function App() {
         if (cancelled) return;
         setJob((prev) => (prev?.id === watchedId ? info : prev));
         setJobs((history) => [info, ...history.filter((item) => item.id !== info.id)]);
+        if (info.run_params) {
+          setJobSnapshot((prev) => {
+            if (prev && prev.material_id === info.material_id && watchedJobId.current === watchedId) {
+              return {
+                ...prev,
+                run_params: { ...defaultParams, ...(info.run_params as Partial<RunParams>) } as RunParams,
+                execution_mode: info.execution_mode ?? prev.execution_mode,
+                structure_provenance: info.structure_provenance ?? prev.structure_provenance,
+                material: info.material ?? prev.material,
+                potential_id: info.potential_id,
+                scenario_id: info.scenario_id,
+              };
+            }
+            if (watchedJobId.current !== watchedId) return prev;
+            return {
+              material_id: info.material_id,
+              potential_id: info.potential_id,
+              scenario_id: info.scenario_id,
+              run_params: { ...defaultParams, ...(info.run_params as Partial<RunParams>) } as RunParams,
+              execution_mode: info.execution_mode,
+              structure_provenance: info.structure_provenance,
+              material: info.material ?? null,
+            };
+          });
+        }
         if (!["completed", "failed", "cancelled"].includes(info.status)) return;
         clearInterval(timer);
         if (info.status === "completed" || info.status === "failed") {
@@ -1449,6 +1474,7 @@ export default function App() {
       setKartSummary(null);
       setMlKmcSummary(null);
       setCdSummary(null);
+      setKpsSummary(null);
       setCascadeTimeline(null);
       setDxaSummary(null);
       setJob(info);
@@ -1905,9 +1931,23 @@ export default function App() {
       setKartSummary(null);
       setMlKmcSummary(null);
       setCdSummary(null);
+      setKpsSummary(null);
       setCascadeTimeline(null);
       setDxaSummary(null);
       setJob(info);
+      if (info.run_params) {
+        setJobSnapshot({
+          material_id: info.material_id,
+          potential_id: info.potential_id,
+          scenario_id: info.scenario_id,
+          run_params: { ...defaultParams, ...(info.run_params as Partial<RunParams>) } as RunParams,
+          execution_mode: info.execution_mode,
+          structure_provenance: info.structure_provenance,
+          material: info.material ?? null,
+        });
+      } else {
+        setJobSnapshot(null);
+      }
       setLogEpoch((n) => n + 1);
       setJobs((history) => [info, ...history.filter((item) => item.id !== info.id)]);
       setTab("run");

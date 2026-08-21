@@ -213,7 +213,16 @@ def build_with_atomsk(
             write(str(out_data), atoms, format="lammps-data", atom_style="atomic", masses=True)
 
         n = _count_atoms(out_data)
-        return {
+        box_A = None
+        try:
+            from ase.io import read as ase_read
+
+            atoms_box = ase_read(str(out_data), format="lammps-data")
+            cell = atoms_box.get_cell()
+            box_A = [float(cell[0, 0]), float(cell[1, 1]), float(cell[2, 2])]
+        except Exception:  # noqa: BLE001
+            box_A = None
+        meta_out: dict[str, Any] = {
             "atom_count": n,
             "host_symbol": sym,
             "n_grains": n_grains if ("poly" in kind or kind == "bicrystal") else 1,
@@ -222,6 +231,9 @@ def build_with_atomsk(
             "gb": gb_meta,
             "note": "Built with Atomsk",
         }
+        if box_A:
+            meta_out["box_A"] = box_A
+        return meta_out
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
