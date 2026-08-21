@@ -218,7 +218,8 @@ export default function StructureViewer({ jobId, refreshKey }: Props) {
         setIndex(traj);
         if (traj.before_index != null) {
           const bf = await api<TrajFrame>(`/api/jobs/${jobId}/trajectory/${traj.before_index}`);
-          if (cancelled || scrubReq.current !== loadToken) return;
+          // Before must not be cancelled by cascade-stage seek (scrub bumps scrubReq)
+          if (cancelled) return;
           setBefore(bf);
         } else {
           setBefore(null);
@@ -230,13 +231,13 @@ export default function StructureViewer({ jobId, refreshKey }: Props) {
           if (cancelled || scrubReq.current !== loadToken || pendingSeekTs.current != null) return;
           setAfterIdx(0);
           setAfter(af);
-        } else {
+        } else if (scrubReq.current === loadToken) {
           setAfter(null);
         }
       } catch (e) {
         if (!cancelled) setErr(String(e));
       } finally {
-        if (!cancelled) setBusy(false);
+        if (!cancelled && scrubReq.current === loadToken) setBusy(false);
       }
     })();
     return () => {

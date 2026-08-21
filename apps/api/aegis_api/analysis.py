@@ -141,13 +141,10 @@ def analyze_job_dir(
         nano_note = f"{nano_note} {note}".strip() if nano_note else note
     sites = crystal_reg.ideal_sites(box, cry, a_ref, c=c_ref, z_max=None, origin=origin)
     run_mode = (mode or "").lower()
-    if run_mode == "surface":
+    if run_mode in {"surface", "implant"}:
         # Vacuum slab must not be counted as vacancies — limit WS grid to substrate height.
-        # Heuristic: host atoms cluster below vacuum; use 75th percentile of z as slab top fallback
-        # via box fraction when params unknown. Prefer occupied z span of densest lower region.
         zs = sorted(a["z"] for a in atoms)
         if zs:
-            # Assume vacuum is the empty upper portion; use max occupied z + small pad as site limit
             z_max = max(zs) + 0.25 * a_ref
             sites = crystal_reg.ideal_sites(box, cry, a_ref, c=c_ref, z_max=z_max, origin=origin)
 

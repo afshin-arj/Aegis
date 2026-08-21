@@ -815,6 +815,8 @@ export default function App() {
     run_params: RunParams;
     execution_mode?: string | null;
     structure_provenance?: Record<string, unknown> | null;
+    run_kart_anneal?: boolean;
+    run_mmonca_okmc?: boolean;
     material?: {
       id: string;
       composition: ElementFraction[];
@@ -894,6 +896,7 @@ export default function App() {
   const [zblDoi, setZblDoi] = useState("");
   const [zblCite, setZblCite] = useState("");
   const [zblAttest, setZblAttest] = useState(false);
+  const [potsForMaterialId, setPotsForMaterialId] = useState("");
   const [busy, setBusy] = useState(false);
   const [compUnit, setCompUnit] = useState<"at%" | "wt%">("at%");
   const [projectFilter, setProjectFilter] = useState<string>("");
@@ -974,7 +977,7 @@ export default function App() {
   const blockers = useMemo(() => {
     const list: string[] = [];
     if (!potentialId) list.push("Select a potential");
-    if (potentialId && !selectedPot) {
+    if (potentialId && potsForMaterialId === materialId && !selectedPot) {
       list.push("Selected potential is not in the list — reselect after changing material");
     }
     if (selectedPot && !selectedPot.available && !selectedPot.is_placeholder) {
@@ -1096,6 +1099,8 @@ export default function App() {
     params.precipitate_species,
     composition,
     material,
+    materialId,
+    potsForMaterialId,
     crystalSupported,
     crystalInfo,
     latticeC,
@@ -1188,6 +1193,7 @@ export default function App() {
       .then((p) => {
         if (reqId !== potReq.current) return;
         setPotentials(p);
+        setPotsForMaterialId(materialId);
         setPotentialId((prev) => {
           if (prev && p.some((x) => x.id === prev)) return prev;
           const avail = p.find((x) => x.available) || p.find((x) => x.is_placeholder) || p[0];
@@ -1355,6 +1361,8 @@ export default function App() {
                 material: info.material ?? prev.material,
                 potential_id: info.potential_id,
                 scenario_id: info.scenario_id,
+                run_kart_anneal: Boolean(info.run_kart_anneal),
+                run_mmonca_okmc: Boolean(info.run_mmonca_okmc),
               };
             }
             if (watchedJobId.current !== watchedId) return prev;
@@ -1366,6 +1374,8 @@ export default function App() {
               execution_mode: info.execution_mode,
               structure_provenance: info.structure_provenance,
               material: info.material ?? null,
+              run_kart_anneal: Boolean(info.run_kart_anneal),
+              run_mmonca_okmc: Boolean(info.run_mmonca_okmc),
             };
           });
         }
@@ -1487,6 +1497,8 @@ export default function App() {
           execution_mode: info.execution_mode,
           structure_provenance: info.structure_provenance,
           material: info.material ?? null,
+          run_kart_anneal: Boolean(info.run_kart_anneal),
+          run_mmonca_okmc: Boolean(info.run_mmonca_okmc),
         });
       } else {
         setJobSnapshot(null);
@@ -1540,8 +1552,6 @@ export default function App() {
     } catch (err) {
       if (reqId === loadJobReq.current) {
         setError(err instanceof Error ? err.message : String(err));
-        // Re-subscribe WS for the still-selected job if a prior clear left the log empty
-        setLogEpoch((n) => n + 1);
       }
     } finally {
       if (reqId === loadJobReq.current) setBusy(false);
@@ -1944,6 +1954,8 @@ export default function App() {
           execution_mode: info.execution_mode,
           structure_provenance: info.structure_provenance,
           material: info.material ?? null,
+          run_kart_anneal: Boolean(info.run_kart_anneal),
+          run_mmonca_okmc: Boolean(info.run_mmonca_okmc),
         });
       } else {
         setJobSnapshot(null);
@@ -5124,7 +5136,7 @@ export default function App() {
                 steps={[
                   "Scrub the trajectory; click cascade stages to jump in time.",
                   "Read vacancy / SIA / cluster metrics. kMC / DXA appear only if you enabled them on Simulate.",
-                  "A single good recipe can then be swept on Campaigns. Re-edit Simulate to change the cell.",
+                  "Use Restore job recipe into editor to reload this job’s material overrides, then Campaigns to sweep.",
                 ]}
                 backLabel={TAB_BACK.results?.label}
                 nextLabel={TAB_NEXT.results?.label}
@@ -5277,6 +5289,12 @@ export default function App() {
                       setParams(
                         remapPkaToHosts(jobSnapshot.run_params, hostSymbolsOf(comp)),
                       );
+                      if (typeof jobSnapshot.run_kart_anneal === "boolean") {
+                        setRunKart(jobSnapshot.run_kart_anneal);
+                      }
+                      if (typeof jobSnapshot.run_mmonca_okmc === "boolean") {
+                        setRunMmonca(jobSnapshot.run_mmonca_okmc);
+                      }
                       setTab("params");
                       setScenarioApplyEpoch((n) => {
                         const next = n + 1;

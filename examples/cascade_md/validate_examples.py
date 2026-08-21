@@ -93,6 +93,12 @@ def main() -> int:
             if "group pka_cand_" not in text or "reduce min" not in text:
                 errors.append(f"{path.parent.name}: expected single-atom PKA selection (min id)")
                 continue
+            if "variable n_before_" in text and "equal $(atoms)" not in text and "equal atoms" in text:
+                errors.append(
+                    f"{path.parent.name}: n_before must use immediate $(atoms) "
+                    "(plain equal atoms re-evaluates → empty ion group)"
+                )
+                continue
             # Growth dt scaling must be reflected in cascade_timeline.json (UI scrubber)
             timeline = json.loads((dest / "cascade_timeline.json").read_text(encoding="utf-8"))
             growth = next((s for s in timeline.get("stages") or [] if s.get("id") == "growth"), None)

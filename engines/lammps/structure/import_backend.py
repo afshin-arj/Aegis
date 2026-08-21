@@ -18,6 +18,20 @@ def _norm_sym(sym: str) -> str:
 
 
 def _box_A_from_data(path: Path) -> list[float] | None:
+    bounds = _box_bounds_from_data(path)
+    if bounds is None:
+        return None
+    return [bounds[0], bounds[1], bounds[2]]
+
+
+def _box_origin_from_data(path: Path) -> list[float] | None:
+    bounds = _box_bounds_from_data(path)
+    if bounds is None:
+        return None
+    return [bounds[3], bounds[4], bounds[5]]
+
+
+def _box_bounds_from_data(path: Path) -> list[float] | None:
     xlo = xhi = ylo = yhi = zlo = zhi = None
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -35,7 +49,14 @@ def _box_A_from_data(path: Path) -> list[float] | None:
             break
     if None in (xlo, xhi, ylo, yhi, zlo, zhi):
         return None
-    return [float(xhi) - float(xlo), float(yhi) - float(ylo), float(zhi) - float(zlo)]
+    return [
+        float(xhi) - float(xlo),
+        float(yhi) - float(ylo),
+        float(zhi) - float(zlo),
+        float(xlo),
+        float(ylo),
+        float(zlo),
+    ]
 
 
 def import_structure(src: Path, out_data: Path) -> dict[str, Any]:
@@ -56,7 +77,10 @@ def import_structure(src: Path, out_data: Path) -> dict[str, Any]:
         }
         box = _box_A_from_data(out_data)
         if box:
-            meta["box_A"] = box
+            meta["box_A"] = box[:3] if len(box) > 3 else box
+        origin = _box_origin_from_data(out_data)
+        if origin:
+            meta["box_origin_A"] = origin
         if type_symbols:
             meta["type_symbols"] = type_symbols
             meta["n_atom_types"] = len(type_symbols)
