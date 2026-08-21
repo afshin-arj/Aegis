@@ -977,6 +977,9 @@ export default function App() {
   const blockers = useMemo(() => {
     const list: string[] = [];
     if (!potentialId) list.push("Select a potential");
+    if (materialId && potsForMaterialId !== materialId) {
+      list.push("Loading potentials for this material…");
+    }
     if (potentialId && potsForMaterialId === materialId && !selectedPot) {
       list.push("Selected potential is not in the list — reselect after changing material");
     }
@@ -1189,6 +1192,7 @@ export default function App() {
   useEffect(() => {
     if (!materialId) return;
     const reqId = ++potReq.current;
+    setPotsForMaterialId("");
     api<Potential[]>(`/api/potentials?material_id=${materialId}`)
       .then((p) => {
         if (reqId !== potReq.current) return;
@@ -1202,6 +1206,7 @@ export default function App() {
       })
       .catch((err) => {
         if (reqId !== potReq.current) return;
+        setPotsForMaterialId(materialId);
         setError(err instanceof Error ? err.message : String(err));
       });
     const qs = new URLSearchParams({ material_id: materialId });
@@ -1591,9 +1596,11 @@ export default function App() {
   async function refreshPotentials(selectId?: string) {
     const mat = materialId;
     const reqId = ++potReq.current;
+    setPotsForMaterialId("");
     const p = await api<Potential[]>(`/api/potentials?material_id=${mat}`);
     if (reqId !== potReq.current) return;
     setPotentials(p);
+    setPotsForMaterialId(mat);
     if (selectId) {
       setPotentialId(selectId);
     } else {
@@ -1894,7 +1901,7 @@ export default function App() {
       return;
     }
     // Invalidate any in-flight loadJob so it cannot clobber this new run
-    loadJobReq.current += 1;
+    const runToken = ++loadJobReq.current;
     setBusy(true);
     setError("");
     try {
@@ -1936,6 +1943,9 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
+      // Keep history even if another loadJob started mid-flight; only apply UI if we still own the token
+      setJobs((history) => [info, ...history.filter((item) => item.id !== info.id)]);
+      if (runToken !== loadJobReq.current) return;
       setLog("");
       setDefects(null);
       setKartSummary(null);
@@ -1961,12 +1971,13 @@ export default function App() {
         setJobSnapshot(null);
       }
       setLogEpoch((n) => n + 1);
-      setJobs((history) => [info, ...history.filter((item) => item.id !== info.id)]);
       setTab("run");
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (runToken === loadJobReq.current) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
-      setBusy(false);
+      if (runToken === loadJobReq.current) setBusy(false);
     }
   }
 
@@ -2499,6 +2510,7 @@ export default function App() {
                 className="secondary"
                 onClick={() => {
                   loadJobReq.current += 1;
+                  setBusy(false);
                   setProjectName("untitled");
                   setProjectFilter("");
                   setJob(null);

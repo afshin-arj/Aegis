@@ -34,6 +34,27 @@ def _crystal_flag(material: dict[str, Any]) -> str:
     return mapping[cry]
 
 
+def _create_unit_cmd(
+    atomsk_bin: str,
+    cry: str,
+    a: float,
+    c: float | None,
+    sym: str,
+    out: Path,
+    *,
+    nx: int,
+    ny: int,
+    nz: int,
+) -> list[str]:
+    """Atomsk ``--create`` with a and (for hcp) c lattice constants."""
+    cmd = [atomsk_bin, "--create", cry, str(a)]
+    if cry == "hcp":
+        c_use = float(c) if c and c > 0 else a * 1.633
+        cmd.append(str(c_use))
+    cmd.extend([sym, str(out), "-duplicate", str(nx), str(ny), str(nz)])
+    return cmd
+
+
 def build_with_atomsk(
     out_data: Path,
     *,
@@ -45,9 +66,12 @@ def build_with_atomsk(
     if kind not in {"polycrystal", "polycrystal_void", "void", "bicrystal"}:
         raise ValueError(f"Atomsk builder does not support structure_kind={kind}")
 
+    from lammps import crystal as crystal_reg
+
     sym = _host_symbol(material)
     cry = _crystal_flag(material)
     a = float(material.get("lattice_constant_A") or 3.165)
+    c = crystal_reg.resolve_c_A(material, cry) if cry == "hcp" else None
     nx = int(params.get("nx") or 8)
     ny = int(params.get("ny") or 8)
     nz = int(params.get("nz") or 8)
@@ -77,18 +101,9 @@ def build_with_atomsk(
             g2 = work / "grain2.xsf"
             bi = work / "bicrystal.lmp"
             _run(
-                [
-                    atomsk_bin,
-                    "--create",
-                    cry,
-                    str(a),
-                    sym,
-                    str(g1),
-                    "-duplicate",
-                    str(half[0]),
-                    str(half[1]),
-                    str(half[2]),
-                ],
+                _create_unit_cmd(
+                    atomsk_bin, cry, a, c, sym, g1, nx=half[0], ny=half[1], nz=half[2]
+                ),
                 work,
             )
             # Second grain: copy then rotate about merge axis by misorientation
@@ -149,18 +164,9 @@ def build_with_atomsk(
             }
             n_grains = 2
         else:
-            cmd_create = [
-                atomsk_bin,
-                "--create",
-                cry,
-                str(a),
-                sym,
-                str(crystal_xsf),
-                "-duplicate",
-                str(nx),
-                str(ny),
-                str(nz),
-            ]
+            cmd_create = _create_unit_cmd(
+                atomsk_bin, cry, a, c, sym, crystal_xsf, nx=nx, ny=ny, nz=nz
+            )
             _run(cmd_create, work)
             if kind in {"polycrystal", "polycrystal_void"}:
                 cmd_poly = [
@@ -176,10 +182,11 @@ def build_with_atomsk(
                 try:
                     _run(cmd_poly, work)
                 except RuntimeError:
+                    c_part = f" {c}" if cry == "hcp" and c and c > 0 else (f" {a * 1.633}" if cry == "hcp" else "")
                     cmd_poly = [
                         atomsk_bin,
                         "--polycrystal",
-                        f"{cry} {a} {sym}",
+                        f"{cry} {a}{c_part} {sym}",
                         f"{n_grains} random",
                         str(poly_lmp),
                         "lmp",

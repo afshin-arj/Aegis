@@ -9,8 +9,11 @@ from typing import Any
 
 def _read_last_dump_atoms(
     job_dir: Path,
-) -> tuple[list[dict[str, Any]], tuple[float, float, float]]:
-    """Prefer cascade/implant dumps over dump.initial and dump.stage bookmarks."""
+) -> tuple[list[dict[str, Any]], tuple[float, float, float], tuple[float, float, float]]:
+    """Prefer cascade/implant dumps over dump.initial and dump.stage bookmarks.
+
+    Returns ``(atoms, (Lx, Ly, Lz), (xlo, ylo, zlo))``.
+    """
     patterns = (
         "dump.cascade.*.lammpstrj",
         "dump.implant.*.lammpstrj",
@@ -29,12 +32,12 @@ def _read_last_dump_atoms(
     ]
     dumps = non_initial or [p for p in uniq if not p.name.startswith("dump.stage")] or uniq
     if not dumps:
-        return [], (0.0, 0.0, 0.0)
+        return [], (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)
     path = dumps[-1]
     text = path.read_text(encoding="utf-8", errors="replace").strip().splitlines()
     starts = [i for i, line in enumerate(text) if line.startswith("ITEM: TIMESTEP")]
     if not starts:
-        return [], (0.0, 0.0, 0.0)
+        return [], (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)
     i = starts[-1]
     while i < len(text) and not text[i].startswith("ITEM: NUMBER OF ATOMS"):
         i += 1
@@ -60,7 +63,7 @@ def _read_last_dump_atoms(
                 "z": float(parts[idx["z"]]),
             }
         )
-    return atoms, (xhi - xlo, yhi - ylo, zhi - zlo)
+    return atoms, (xhi - xlo, yhi - ylo, zhi - zlo), (xlo, ylo, zlo)
 
 
 def _mass(symbol: str) -> float:
@@ -128,16 +131,26 @@ def build_kart_package(
         shutil.rmtree(work)
     work.mkdir(parents=True, exist_ok=True)
 
-    atoms, box = _read_last_dump_atoms(job_dir)
+    atoms, box, origin = _read_last_dump_atoms(job_dir)
     lx, ly, lz = box
+    ox, oy, oz = origin
     if not atoms:
         # Minimal fallback cell so the package is still inspectable
         a = float(material.get("lattice_constant_A") or 3.165)
         lx = ly = lz = 2 * a
+        ox = oy = oz = 0.0
         atoms = [
             {"id": 1, "type": 1, "x": 0.0, "y": 0.0, "z": 0.0},
             {"id": 2, "type": 1, "x": a / 2, "y": a / 2, "z": a / 2},
         ]
+    else:
+        # Remap absolute dump coords into a [0, L] cell for k-ART / LAMMPS data
+        if abs(ox) > 1e-9 or abs(oy) > 1e-9 or abs(oz) > 1e-9:
+            for a in atoms:
+                a["x"] = float(a["x"]) - ox
+                a["y"] = float(a["y"]) - oy
+                a["z"] = float(a["z"]) - oz
+            ox = oy = oz = 0.0
 
     def _norm(sym: str) -> str:
         s = str(sym or "").strip()

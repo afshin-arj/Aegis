@@ -139,14 +139,23 @@ def analyze_job_dir(
             "V/SIA counts are approximate; prefer OVITO DXA."
         )
         nano_note = f"{nano_note} {note}".strip() if nano_note else note
+    sites_z_max: float | None = None
     sites = crystal_reg.ideal_sites(box, cry, a_ref, c=c_ref, z_max=None, origin=origin)
     run_mode = (mode or "").lower()
     if run_mode in {"surface", "implant"}:
-        # Vacuum slab must not be counted as vacancies — limit WS grid to substrate height.
-        zs = sorted(a["z"] for a in atoms)
-        if zs:
-            z_max = max(zs) + 0.25 * a_ref
-            sites = crystal_reg.ideal_sites(box, cry, a_ref, c=c_ref, z_max=z_max, origin=origin)
+        # Vacuum slab must not be counted as vacancies. Clip to substrate height —
+        # NOT max(final-frame z), which includes beam ions and sputtered atoms.
+        sites_z_max = _substrate_z_max(
+            job_dir,
+            a_ref=a_ref,
+            c_ref=c_ref,
+            cry=cry,
+            origin_z=origin[2],
+        )
+        if sites_z_max is not None:
+            sites = crystal_reg.ideal_sites(
+                box, cry, a_ref, c=c_ref, z_max=sites_z_max, origin=origin
+            )
 
     if not sites:
         empty_sites = {
@@ -317,7 +326,9 @@ def analyze_job_dir(
                     type_symbols = [str(s) for s in ts]
             except Exception:  # noqa: BLE001
                 type_symbols = []
-        sub = crystal_reg.ideal_sites_sublattice(box, cry, a_ref, c=c_ref, origin=origin)
+        sub = crystal_reg.ideal_sites_sublattice(
+            box, cry, a_ref, c=c_ref, z_max=sites_z_max, origin=origin
+        )
         sub_stats: dict[str, Any] = {}
         species_aware = False
         for label, sub_sites in sub.items():
@@ -375,7 +386,7 @@ def analyze_job_dir(
                 "to match metal↔metal and C↔C sites (engineering proxy)."
             ).strip()
 
-    if run_mode == "surface":
+    if run_mode in {"surface", "implant"}:
         surface = analyze_surface_metrics(job_dir, lattice_A=a_ref, ion_type_hint=None)
         if surface:
             summary["surface"] = surface
@@ -384,6 +395,54 @@ def analyze_job_dir(
 
     (job_dir / "defects.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     return summary
+
+
+def _substrate_z_max(
+    job_dir: Path,
+    *,
+    a_ref: float,
+    c_ref: float | None,
+    cry: str,
+    origin_z: float,
+) -> float | None:
+    """Upper z for WS sites that excludes the vacuum / beam region.
+
+    Prefer host max-z from ``dump.initial`` (pre-beam). Fall back to
+    ``nz * layer`` from run_params when the initial dump is missing.
+    """
+    from lammps import crystal as crystal_reg
+
+    initial_path = job_dir / "dump.initial.lammpstrj"
+    if initial_path.exists():
+        before, _, _ = _read_last_frame(initial_path)
+        if before:
+            return max(float(a["z"]) for a in before) + 0.25 * a_ref
+
+    layer = a_ref
+    if cry in {"hcp", "hex"}:
+        layer = float(c_ref) if c_ref and c_ref > 0 else a_ref * (1.633 if cry == "hcp" else 0.976)
+    nz = None
+    rp_path = job_dir / "run_params.json"
+    if rp_path.exists():
+        try:
+            rp = json.loads(rp_path.read_text(encoding="utf-8"))
+            nz = int(rp.get("nz") or 0) or None
+        except Exception:  # noqa: BLE001
+            nz = None
+    if nz and nz > 0:
+        return float(origin_z) + float(nz) * layer + 0.25 * a_ref
+    # Last resort: densest lower slab from material.json lattice only
+    mat_path = job_dir / "material.json"
+    if mat_path.exists() and nz is None:
+        try:
+            mat = json.loads(mat_path.read_text(encoding="utf-8"))
+            if cry in {"hcp", "hex"}:
+                c_mat = crystal_reg.resolve_c_A(mat, cry)
+                if c_mat and c_mat > 0:
+                    layer = float(c_mat)
+        except Exception:  # noqa: BLE001
+            pass
+    return None
 
 
 def analyze_surface_metrics(
@@ -428,9 +487,16 @@ def analyze_surface_metrics(
     fuzz_atoms = [a for a in after_host if a["z"] > z0 + fuzz_tol]
     # Inward recession of the mean host surface (positive => net erosion/recession)
     recession_A = mean_z0 - mean_z1
-    # Implanted species: types not in initial host set
+    # Implanted species: hetero types first; self-ions via ids created after dump.initial
     before_types = {a["type"] for a in before}
-    ions = [a for a in after if a["type"] not in before_types or (ion_type_hint and a["type"] == ion_type_hint)]
+    hetero = [a for a in after if a["type"] not in before_types]
+    max_id0 = max((int(a.get("id") or 0) for a in before), default=0)
+    new_by_id = [a for a in after if int(a.get("id") or 0) > max_id0]
+    ions = hetero
+    if not ions and ion_type_hint:
+        ions = [a for a in after if a["type"] == ion_type_hint]
+    if not ions:
+        ions = new_by_id
     if not ions:
         # Fallback: highest type id
         max_type = max(a["type"] for a in after)
